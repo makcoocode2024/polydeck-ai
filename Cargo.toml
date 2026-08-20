@@ -1,0 +1,71 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/gateway",
+    "crates/inject",
+    "src-tauri",
+]
+resolver = "2"
+
+[workspace.package]
+version = "2.0.2"
+edition = "2021"
+authors = ["PolyDeck Team"]
+license = "MIT"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Async runtime
+tokio = { version = "1.42", features = ["full"] }
+tokio-stream = "0.1"
+
+# HTTP
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"] }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+futures-util = { version = "0.3", features = ["sink"] }
+url = "2.5"
+regex = "1.11"
+
+# Crypto & hashing
+sha2 = "0.10"
+hex = "0.4"
+chacha20poly1305 = "0.10"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Utils
+dirs = "6.0"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+sysinfo = "0.39"
+ts-rs = { version = "10.0", features = ["chrono-impl"] }
+windows-sys = { version = "0.60", features = ["Win32_Storage_FileSystem"] }
+
+# Tauri
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-build = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+tauri-plugin-updater = "2"
+tauri-plugin-dialog = "2"
+
+
+
+[profile.dev]
+debug = 1
+
+[profile.test]
+debug = 1

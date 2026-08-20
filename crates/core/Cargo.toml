@@ -1,0 +1,58 @@
+﻿[package]
+name = "polydeck-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dirs.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+sysinfo.workspace = true
+ts-rs.workspace = true
+sha2.workspace = true
+hex.workspace = true
+chacha20poly1305.workspace = true
+url.workspace = true
+getrandom = "0.3"
+windows-sys.workspace = true
+
+reqwest = { workspace = true, features = ["json", "stream", "rustls-tls"] }
+
+# Credential storage - all platforms
+keyring = { version = "3.6", features = ["windows-native", "apple-native", "sync-secret-service"] }
+
+# File operations
+tempfile = "3.14"
+
+# Filesystem monitoring
+notify = "8.2"
+
+# Database
+rusqlite = { version = "0.37", features = ["bundled"] }
+
+# Config parsing - preserves comments and formatting
+toml_edit = "0.23"
+
+# Platform detection
+cfg-if = "1.0"
+directories = "6.0"
+
+# SSE parsing
+eventsource-stream = "0.2"
+async-stream = "0.3"
+bytes = "1"
+futures-util.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+tempfile = "3.14"
+

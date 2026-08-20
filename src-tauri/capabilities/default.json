@@ -1,0 +1,13 @@
+{
+  "identifier": "default",
+  "description": "Default capability set",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "notification:default",
+    "dialog:default",
+    "deep-link:default",
+    "updater:default"
+  ]
+}
