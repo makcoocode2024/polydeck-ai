@@ -7,22 +7,38 @@ use serde_json::json;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-#[tokio::test]
-#[ignore = "Live network test against subtoken.vip"]
-async fn test_full_gateway_and_clients_flow() {
-    let base_url = "https://subtoken.vip";
-    let api_key = "sk-d40a498260c10e1c6a1017aa0c027bd296b8c4189fb6d3ad3b89ecad6e68bf9d";
+/// Credentials come from the environment; nothing here may be committed.
+///
+/// This test previously carried a live relay key as a string literal, which sat
+/// in a public repository from the initial commit onward. Set both variables to
+/// run it:
+///
+/// ```text
+/// LIVE_GATEWAY_BASE_URL=https://your-relay LIVE_GATEWAY_API_KEY=sk-... \
+///   cargo test -p polydeck-gateway --test live_gateway_integration -- --ignored
+/// ```
+fn live_credentials() -> Option<(String, String)> {
+    let base_url = std::env::var("LIVE_GATEWAY_BASE_URL").ok()?;
+    let api_key = std::env::var("LIVE_GATEWAY_API_KEY").ok()?;
+    let (base_url, api_key) = (base_url.trim().to_string(), api_key.trim().to_string());
+    (!base_url.is_empty() && !api_key.is_empty()).then_some((base_url, api_key))
+}
 
-    let mut rules = Vec::new();
-    rules.push(ModelRewriteRule::exact(
-        "claude-3-7-sonnet-20250219",
-        "subtoken-sonnet-4-6",
-    ));
-    rules.push(ModelRewriteRule::exact(
-        "claude-3-5-sonnet-20241022",
-        "subtoken-sonnet-4-6",
-    ));
-    rules.push(ModelRewriteRule::exact("gpt-4o", "gemini-3.7-flash-high"));
+#[tokio::test]
+#[ignore = "Live network test; needs LIVE_GATEWAY_BASE_URL and LIVE_GATEWAY_API_KEY"]
+async fn test_full_gateway_and_clients_flow() {
+    let Some((base_url, api_key)) = live_credentials() else {
+        eprintln!("skipping: set LIVE_GATEWAY_BASE_URL and LIVE_GATEWAY_API_KEY to run this test");
+        return;
+    };
+    let base_url = base_url.as_str();
+    let api_key = api_key.as_str();
+
+    let rules = vec![
+        ModelRewriteRule::exact("claude-3-7-sonnet-20250219", "subtoken-sonnet-4-6"),
+        ModelRewriteRule::exact("claude-3-5-sonnet-20241022", "subtoken-sonnet-4-6"),
+        ModelRewriteRule::exact("gpt-4o", "gemini-3.7-flash-high"),
+    ];
 
     let config = GatewayConfig {
         listen_addr: Some(SocketAddr::from(([127, 0, 0, 1], 18889))),
