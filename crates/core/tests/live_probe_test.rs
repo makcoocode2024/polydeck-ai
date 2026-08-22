@@ -1,5 +1,12 @@
 use polydeck_core::chat_history::HistoryStore;
 
+/// Exercise the history store against whatever transcripts the host has.
+///
+/// `sync_all` reads the real Claude and Codex session directories, so how much
+/// it finds is a property of the machine, not of the code. Asserting a non-empty
+/// result made this fail on any host without local transcripts — every CI runner
+/// included. So the query paths are checked unconditionally and the assertions
+/// that need transcripts run only when some were found.
 #[tokio::test]
 async fn test_chat_history_db() {
     let store = HistoryStore::open_in_memory().unwrap();
@@ -18,5 +25,29 @@ async fn test_chat_history_db() {
         "Stats: total_sessions = {}, total_messages = {}, total_tokens = {}",
         stats.total_sessions, stats.total_messages, stats.total_tokens
     );
-    assert!(!list.is_empty(), "Should have indexed sessions in memory");
+
+    // Holds on an empty host too. `list_summaries` caps at 500 rows while the
+    // stats count the whole table, so they agree exactly only below the cap.
+    const SUMMARY_LIMIT: usize = 500;
+    let expected = (stats.total_sessions as usize).min(SUMMARY_LIMIT);
+    assert_eq!(
+        expected,
+        list.len(),
+        "usage stats report {} sessions, so the summary list should hold {expected} (capped at {SUMMARY_LIMIT}), got {}",
+        stats.total_sessions,
+        list.len()
+    );
+
+    if count == 0 {
+        println!("no local transcripts on this host; skipping the indexed-content assertions");
+        return;
+    }
+    assert!(
+        !list.is_empty(),
+        "sync_all reported {count} sessions but the summary list is empty"
+    );
+    assert!(
+        list.iter().all(|s| !s.id.is_empty()),
+        "every indexed session needs an id"
+    );
 }
