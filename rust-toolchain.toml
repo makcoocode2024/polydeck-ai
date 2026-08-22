@@ -1,0 +1,9 @@
+[toolchain]
+# Pinned so `cargo fmt --check` and `cargo clippy -- -D warnings` give the same
+# verdict locally and in CI. Without a pin, CI's `dtolnay/rust-toolchain@stable`
+# tracks whatever stable is current: a clippy release that adds a lint turns the
+# gate red on a commit that touched nothing, and the failure cannot be seen from
+# a machine one version behind. Bump this deliberately, then fix what the new
+# clippy finds in the same commit.
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]
