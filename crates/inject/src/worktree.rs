@@ -48,6 +48,9 @@ pub enum WorktreeError {
 }
 
 fn create_cmd(executable: &str) -> Command {
+    // Only the Windows branch below mutates `cmd`; elsewhere the binding is
+    // returned untouched, so `mut` is genuinely unused there.
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut cmd = Command::new(executable);
     #[cfg(windows)]
     {
