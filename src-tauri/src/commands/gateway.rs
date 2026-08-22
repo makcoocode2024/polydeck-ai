@@ -22,7 +22,13 @@ pub fn build_gateway_config(
         _ => polydeck_gateway::ResponsesMode::Auto,
     };
     let (opus_display, sonnet_display, haiku_display) =
-        polydeck_core::profile_switch::claude_display_names(primary);
+        polydeck_core::profile_switch::claude_wire_names(primary);
+    // Resolve the tiers here rather than letting the rewriter guess again. Its
+    // own name-based guess is a fallback for callers that have not resolved the
+    // tiers, and two guesses that disagree put the picker label and the routing
+    // on different models.
+    let (opus_model, sonnet_model, haiku_model) =
+        polydeck_core::profile_switch::claude_tier_candidates(primary);
 
     polydeck_gateway::GatewayConfig {
         listen_addr: Some(std::net::SocketAddr::from(([127, 0, 0, 1], 18888))),
@@ -41,9 +47,9 @@ pub fn build_gateway_config(
             &primary.models,
             primary.supports_1m_context.unwrap_or(false),
             polydeck_gateway::model_rewrite::TierOverrides {
-                sonnet_model: primary.sonnet_model.as_deref(),
-                opus_model: primary.opus_model.as_deref(),
-                haiku_model: primary.haiku_model.as_deref(),
+                sonnet_model: Some(sonnet_model),
+                opus_model: Some(opus_model),
+                haiku_model: Some(haiku_model),
                 // Claude Code sends the display names the profile writer gave it,
                 // so the gateway resolves the effective ones, not the raw fields.
                 sonnet_display_name: Some(sonnet_display),
