@@ -281,27 +281,169 @@ fn inject_max_price(body: &mut Value, max_price: Option<f64>) {
     }
 }
 
-async fn handle_models(State(state): State<Arc<AppState>>) -> Response<Body> {
+/// The effort values every supported upstream is expected to accept.
+const EFFORT_WHITELIST: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// Capability-normalize a reasoning effort before it leaves the gateway.
+///
+/// Upstreams 400 on effort values they do not support (DeepSeek rejects
+/// anything outside low/medium/high/xhigh/max), and Claude Code sends values
+/// like `minimal` or `none` that mean nothing upstream. Returns the rewritten
+/// effort to send, or `None` when the field should be dropped.
+fn normalize_effort(effort: &str, model: &str) -> Option<String> {
+    let clean = effort.trim().to_ascii_lowercase();
+    // Auto-thinking models (DeepSeek reasoner/R1, QwQ) ignore effort and error
+    // if forced; drop it before the whitelist so even a valid level is stripped.
+    let model_lower = model.to_ascii_lowercase();
+    if model_lower.contains("reasoner") || model_lower.contains("r1") || model_lower.contains("qwq") {
+        warn!("Model {model} runs its own thinking; dropping reasoning_effort={effort}");
+        return None;
+    }
+    if EFFORT_WHITELIST.iter().any(|&l| l == clean) {
+        return Some(clean);
+    }
+    match clean.as_str() {
+        "minimal" => Some("low".to_string()),
+        // DeepSeek non-reasoner models accept the full range; unknown values
+        // here are an upstream contract violation and must not 400.
+        "none" | "off" | "0" | "false" => None,
+        other => {
+            warn!("Dropping unsupported reasoning_effort={other} for model {model}");
+            None
+        }
+    }
+}
+
+/// Sanitize reasoning effort on an Anthropic Messages body (top-level field).
+/// Returns the rewritten effort value if the field was kept.
+fn sanitize_messages_effort(body: &mut Value, model: &str) -> Option<String> {
+    let effort = body.get("reasoning_effort").and_then(Value::as_str)?;
+    match normalize_effort(effort, model) {
+        Some(clean) => { body["reasoning_effort"] = Value::String(clean.clone()); Some(clean) }
+        None => { body.as_object_mut().map(|o| o.remove("reasoning_effort")); None }
+    }
+}
+
+async fn handle_models(
+    State(state): State<Arc<AppState>>, headers: HeaderMap,
+) -> Response<Body> {
     state.health.increment_connections();
     let _guard = ConnectionGuard(&state.health);
     debug!("Processing GET /models request");
-    match state.upstream.get_models().await {
-        Ok(resp) => {
-            if resp.status().is_success() {
-                let json: Value = match resp.json().await {
-                    Ok(v) => v,
-                    Err(_) => return json_error(StatusCode::BAD_GATEWAY, "Invalid models upstream response"),
-                };
-                Response::builder()
-                    .status(StatusCode::OK)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(json.to_string()))
-                    .unwrap()
-            } else {
-                passthrough_verbatim(resp).await
+    let upstream_resp = match state.upstream.get_models().await {
+        Ok(resp) => resp,
+        Err(e) => return json_error(StatusCode::BAD_GATEWAY, format!("Failed to fetch models: {}", e)),
+    };
+    if !upstream_resp.status().is_success() {
+        return passthrough_verbatim(upstream_resp).await;
+    }
+    let json: Value = match upstream_resp.json().await {
+        Ok(v) => v,
+        Err(_) => return json_error(StatusCode::BAD_GATEWAY, "Invalid models upstream response"),
+    };
+    let is_claude_code = is_claude_code_client(&headers);
+    let response = synthesize_models_response(json, is_claude_code);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(response.to_string()))
+        .unwrap()
+}
+
+/// Detect whether the caller is Claude Code (whose gateway model discovery
+/// expects an Anthropic-shaped page with per-model capability metadata).
+///
+/// Claude Code 2.x can omit `x-claude-code-session-id` on the discovery call and
+/// send only `anthropic-version`, so also match its `claude-code/` user-agent.
+fn is_claude_code_client(headers: &HeaderMap) -> bool {
+    if headers.contains_key("x-claude-code-session-id") {
+        return true;
+    }
+    headers.get("user-agent").and_then(|ua| ua.to_str().ok())
+        .is_some_and(|ua| ua.starts_with("claude-code/"))
+}
+
+/// Default capability blob for models that carry no capability metadata.
+///
+/// Claude Code decides whether a model gets an effort picker from
+/// `capabilities.effort.supported`, not from the model name, so third-party
+/// names (gpt-5.6-luna, deepseek-v4-pro-0813) need this synthesized or the
+/// picker never appears. `max` stays unsupported because few upstreams serve it.
+fn synthesize_capabilities() -> Value {
+    serde_json::json!({
+        "effort": {
+            "supported": true,
+            "low": {"supported": true},
+            "medium": {"supported": true},
+            "high": {"supported": true},
+            "xhigh": {"supported": true},
+            "max": {"supported": false}
+        },
+        "thinking": {
+            "supported": true,
+            "types": {
+                "enabled": {"supported": true},
+                "adaptive": {"supported": true}
+            }
+        },
+        "image_input": {"supported": true},
+        "pdf_input": {"supported": false},
+        "batch": {"supported": false},
+        "citations": {"supported": false},
+        "code_execution": {"supported": false},
+        "context_management": {"supported": false}
+    })
+}
+
+/// Turn a raw upstream `/models` payload into the shape Claude Code consumes.
+///
+/// Upstreams return either an OpenAI list (`{"data":[{id,...}]}`) or an
+/// Anthropic page (`{"data":[...], "has_more":...}`). We walk `data[]`, inject
+/// capabilities, prefix non-Claude model ids with `claude-code/` (Claude Code's
+/// model picker filters on that prefix), and always emit an Anthropic page.
+fn synthesize_models_response(raw: Value, is_claude_code: bool) -> Value {
+    let data = raw.get("data").and_then(Value::as_array).cloned().unwrap_or_default();
+    let models: Vec<Value> = data.into_iter().map(|mut m| {
+        if m.get("capabilities").is_none() {
+            m["capabilities"] = synthesize_capabilities();
+        }
+        if !m.get("max_input_tokens").and_then(Value::as_u64).is_some() {
+            m["max_input_tokens"] = serde_json::json!(200000);
+        }
+        if !m.get("max_tokens").and_then(Value::as_u64).is_some() {
+            m["max_tokens"] = serde_json::json!(32000);
+        }
+        if is_claude_code {
+            let id = m.get("id").and_then(Value::as_str).unwrap_or("");
+            if !id.is_empty() && !id.starts_with("claude-code/")
+                && !id.starts_with("claude-") && !id.starts_with("anthropic/")
+                && !id.starts_with("anthropic.") {
+                m["id"] = Value::String(format!("claude-code/{id}"));
             }
         }
-        Err(e) => json_error(StatusCode::BAD_GATEWAY, format!("Failed to fetch models: {}", e)),
+        m
+    }).collect();
+
+    let mut resp = serde_json::json!({
+        "data": models,
+        "has_more": false,
+        "first_id": models.first().and_then(|m| m.get("id")).cloned().unwrap_or(Value::String(String::new())),
+        "last_id": models.last().and_then(|m| m.get("id")).cloned().unwrap_or(Value::String(String::new())),
+        "object": "list"
+    });
+    // Preserve an upstream pagination cursor when present.
+    if let Some(last_id) = raw.get("last_id") {
+        resp["last_id"] = last_id.clone();
+    }
+    resp
+}
+
+/// Strip a `claude-code/` discovery prefix from a model id, returning the
+/// upstream-facing name and whether the prefix was present.
+fn strip_claude_code_prefix(model: &str) -> (String, bool) {
+    match model.strip_prefix("claude-code/") {
+        Some(rest) if !rest.is_empty() => (rest.to_string(), true),
+        _ => (model.to_string(), false),
     }
 }
 
@@ -314,8 +456,15 @@ async fn handle_models(State(state): State<Arc<AppState>>) -> Response<Body> {
 /// persist the wrong model on `/resume`.
 fn rewrite_model_in_place(body: &mut Value, rewriter: &ModelRewriter) -> Option<String> {
     let client_model = body.get("model")?.as_str()?.to_string();
-    let rewritten = rewriter.rewrite_request(&client_model);
-    if rewritten != client_model {
+    // The `claude-code/` prefix is a picker-only alias, not part of the model
+    // name. Strip it before rewriting so `claude-code/gpt-5.6-luna` maps to
+    // whatever upstream serves `gpt-5.6-luna`.
+    let (bare, had_prefix) = strip_claude_code_prefix(&client_model);
+    let rewritten = rewriter.rewrite_request(&bare);
+    if had_prefix && rewritten == bare {
+        // No rewrite rule touched it; keep the bare name, drop the prefix.
+        body["model"] = Value::String(bare);
+    } else if rewritten != client_model {
         debug!("Rewrote model {} -> {}", client_model, rewritten);
         body["model"] = Value::String(rewritten);
     }
@@ -330,6 +479,8 @@ async fn handle_messages(
     debug!("Processing /messages request");
     let client_model = rewrite_model_in_place(&mut body, &state.rewriter);
     inject_thinking_if_needed(&mut body, state.default_effort_level.as_deref());
+    let upstream_model = body.get("model").and_then(Value::as_str).map(str::to_string).unwrap_or_default();
+    sanitize_messages_effort(&mut body, &upstream_model);
     let is_stream = body.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
     let start = std::time::Instant::now();
     let attempt = match send_upstream(&state, Endpoint::Messages, &headers, body).await {
@@ -376,17 +527,45 @@ async fn handle_count_tokens(
 }
 
 async fn handle_responses(
-    State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<Value>,
+    State(state): State<Arc<AppState>>, headers: HeaderMap, Json(mut body): Json<Value>,
 ) -> Response<Body> {
     state.health.increment_connections();
     let _guard = ConnectionGuard(&state.health);
     debug!("Processing /v1/responses request");
-    let mut body = body;
     inject_max_price(&mut body, state.max_price_per_request);
+    sanitize_responses_effort(&mut body);
     if state.forward_responses_natively() {
         return handle_native_responses(&state, &headers, body).await;
     }
     handle_bridged_responses(&state, &headers, body).await
+}
+
+/// Sanitize reasoning effort on an OpenAI Responses body (`/reasoning/effort`).
+/// The model lives at `/model`; missing it means no upstream name to judge the
+/// effort against, so pass through untouched.
+fn sanitize_responses_effort(body: &mut Value) {
+    let Some(effort) = body.pointer("/reasoning/effort").and_then(Value::as_str) else { return };
+    let model = body.get("model").and_then(Value::as_str).unwrap_or("");
+    match normalize_effort(effort, model) {
+        Some(clean) => {
+            if let Some(reasoning) = body.get_mut("reasoning").and_then(|r| r.as_object_mut()) {
+                reasoning.insert("effort".to_string(), Value::String(clean));
+            }
+        }
+        None => {
+            let now_empty = match body.get_mut("reasoning").and_then(|r| r.as_object_mut()) {
+                Some(reasoning) => {
+                    reasoning.remove("effort");
+                    reasoning.is_empty()
+                }
+                None => false,
+            };
+            // Don't ship a bare `reasoning: {}`; picky relays reject it.
+            if now_empty {
+                body.as_object_mut().map(|o| o.remove("reasoning"));
+            }
+        }
+    }
 }
 
 async fn handle_native_responses(state: &AppState, headers: &HeaderMap, body: Value) -> Response<Body> {
@@ -816,6 +995,147 @@ mod tests {
         });
         inject_thinking_if_needed(&mut body5, Some("high"));
         assert_eq!(body5["thinking"]["budget_tokens"], 4000);
+    }
+
+    #[test]
+    fn normalize_effort_keeps_whitelisted_levels() {
+        for level in ["low", "medium", "high", "xhigh", "max"] {
+            assert_eq!(normalize_effort(level, "gpt-5.6-luna"), Some(level.to_string()), "{level}");
+            assert_eq!(normalize_effort(&level.to_uppercase(), "gpt-5.6-luna"), Some(level.to_string()), "{level} upper");
+        }
+    }
+
+    #[test]
+    fn normalize_effort_maps_minimal_to_low() {
+        assert_eq!(normalize_effort("minimal", "gpt-5.6-luna"), Some("low".to_string()));
+    }
+
+    #[test]
+    fn normalize_effort_drops_disabled_and_unknown() {
+        assert_eq!(normalize_effort("none", "gpt-5.6-luna"), None);
+        assert_eq!(normalize_effort("off", "gpt-5.6-luna"), None);
+        assert_eq!(normalize_effort("bogus", "gpt-5.6-luna"), None);
+    }
+
+    #[test]
+    fn normalize_effort_drops_for_autothinking_models() {
+        // DeepSeek reasoner variants and QwQ auto-think; effort would 400.
+        assert_eq!(normalize_effort("high", "deepseek-r1"), None);
+        assert_eq!(normalize_effort("high", "deepseek-reasoner"), None);
+        assert_eq!(normalize_effort("high", "qwen-qwq-32b"), None);
+        // A plain DeepSeek model keeps a valid effort.
+        assert_eq!(normalize_effort("high", "deepseek-v4-pro-0813"), Some("high".to_string()));
+    }
+
+    #[test]
+    fn sanitize_messages_effort_removes_bad_field() {
+        let mut body = serde_json::json!({ "model": "deepseek-v4-pro-0813", "reasoning_effort": "bogus" });
+        sanitize_messages_effort(&mut body, "deepseek-v4-pro-0813");
+        assert!(body.get("reasoning_effort").is_none());
+
+        let mut body2 = serde_json::json!({ "model": "deepseek-v4-pro-0813", "reasoning_effort": "max" });
+        sanitize_messages_effort(&mut body2, "deepseek-v4-pro-0813");
+        assert_eq!(body2["reasoning_effort"], "max");
+    }
+
+    #[test]
+    fn sanitize_responses_effort_rewrites_in_reasoning_object() {
+        let mut body = serde_json::json!({
+            "model": "gpt-5.6-luna",
+            "reasoning": { "effort": "minimal" }
+        });
+        sanitize_responses_effort(&mut body);
+        assert_eq!(body["reasoning"]["effort"], "low");
+
+        // Effort was the only key, so the empty `reasoning` object goes too.
+        let mut body2 = serde_json::json!({
+            "model": "qwen-qwq-32b",
+            "reasoning": { "effort": "high" }
+        });
+        sanitize_responses_effort(&mut body2);
+        assert!(body2.get("reasoning").is_none());
+
+        // Siblings survive: only `effort` is stripped.
+        let mut body3 = serde_json::json!({
+            "model": "qwen-qwq-32b",
+            "reasoning": { "effort": "high", "summary": "none" }
+        });
+        sanitize_responses_effort(&mut body3);
+        assert!(body3["reasoning"].get("effort").is_none());
+        assert_eq!(body3["reasoning"]["summary"], "none");
+
+        // `none` from a stale config.toml is what 400'd the relay; it must drop.
+        let mut body4 = serde_json::json!({
+            "model": "deepseek-v4-pro-0813",
+            "reasoning": { "effort": "none", "summary": "none" }
+        });
+        sanitize_responses_effort(&mut body4);
+        assert!(body4["reasoning"].get("effort").is_none());
+    }
+
+    #[test]
+    fn synthesize_models_response_prefixes_third_party_names() {
+        let raw = serde_json::json!({
+            "data": [
+                { "id": "gpt-5.6-luna" },
+                { "id": "claude-opus-5" },
+                { "id": "deepseek-v4-pro-0813" }
+            ]
+        });
+        let resp = synthesize_models_response(raw.clone(), true);
+        let ids: Vec<&str> = resp["data"].as_array().unwrap().iter()
+            .map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["claude-code/gpt-5.6-luna", "claude-opus-5", "claude-code/deepseek-v4-pro-0813"]);
+
+        // Every model gets capabilities with effort enabled and Anthropic page fields.
+        assert_eq!(resp["has_more"], false);
+        assert_eq!(resp["first_id"], "claude-code/gpt-5.6-luna");
+        for m in resp["data"].as_array().unwrap() {
+            assert_eq!(m["capabilities"]["effort"]["supported"], true);
+            assert_eq!(m["capabilities"]["effort"]["max"]["supported"], false);
+        }
+
+        // Non-Claude-Code clients keep the ids untouched.
+        let resp_plain = synthesize_models_response(raw, false);
+        let ids_plain: Vec<&str> = resp_plain["data"].as_array().unwrap().iter()
+            .map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(ids_plain, vec!["gpt-5.6-luna", "claude-opus-5", "deepseek-v4-pro-0813"]);
+    }
+
+    #[test]
+    fn synthesize_models_response_preserves_existing_capabilities() {
+        let raw = serde_json::json!({
+            "data": [
+                { "id": "m1", "capabilities": { "effort": { "supported": false } } }
+            ]
+        });
+        let resp = synthesize_models_response(raw, true);
+        assert_eq!(resp["data"][0]["capabilities"]["effort"]["supported"], false);
+    }
+
+    #[test]
+    fn rewrite_model_in_place_strips_claude_code_prefix() {
+        let rules = crate::model_rewrite::generate_provider_model_rewrites(
+            &["gpt-5.6-luna".to_string()],
+            false,
+        );
+        let rewriter = ModelRewriter::new(&rules).unwrap();
+
+        let mut body = serde_json::json!({ "model": "claude-code/gpt-5.6-luna" });
+        let client_model = rewrite_model_in_place(&mut body, &rewriter);
+        // Client echo keeps the full picker id.
+        assert_eq!(client_model.as_deref(), Some("claude-code/gpt-5.6-luna"));
+        // Upstream gets the bare name (self-map passthrough).
+        assert_eq!(body["model"], "gpt-5.6-luna");
+    }
+
+    #[test]
+    fn strip_claude_code_prefix_edge_cases() {
+        assert_eq!(strip_claude_code_prefix("claude-code/gpt-5.6-luna").0, "gpt-5.6-luna");
+        assert_eq!(strip_claude_code_prefix("claude-code/gpt-5.6-luna").1, true);
+        assert_eq!(strip_claude_code_prefix("gpt-5.6-luna").0, "gpt-5.6-luna");
+        assert_eq!(strip_claude_code_prefix("gpt-5.6-luna").1, false);
+        assert_eq!(strip_claude_code_prefix("claude-code/").0, "claude-code/");
     }
 
 }

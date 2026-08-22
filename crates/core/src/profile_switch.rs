@@ -177,6 +177,21 @@ async fn write_client_config(client: &str, profile: &Profile) -> AppResult<()> {
     }
 }
 
+/// The conservative effort ladder handed to models no rule recognises.
+///
+/// An empty `supported_reasoning_levels` leaves Codex's effort submenu with
+/// nothing to select, and the menu then cannot be committed or dismissed except
+/// with Esc. Third-party relay catalogs are full of names no pattern here
+/// matches (`deepseek-v4-pro-0813`, `qwen3.8-max`), so they get low/medium/high
+/// — the subset essentially every reasoning-capable upstream accepts.
+fn fallback_reasoning_levels() -> serde_json::Value {
+    serde_json::json!([
+        { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
+        { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
+        { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" }
+    ])
+}
+
 fn get_model_reasoning_config(slug: &str) -> (serde_json::Value, serde_json::Value, bool) {
     let lower = slug.to_ascii_lowercase();
 
@@ -196,7 +211,13 @@ fn get_model_reasoning_config(slug: &str) -> (serde_json::Value, serde_json::Val
         || lower.starts_with("llama");
 
     if is_explicit_non_reasoning {
-        return (serde_json::Value::Null, serde_json::json!([]), false);
+        // Still hand Codex one selectable entry: `supported_reasoning_levels: []`
+        // leaves its effort submenu empty and the menu stops responding to
+        // anything but Esc. `none` is the honest level for these models.
+        let levels = serde_json::json!([
+            { "effort": "none", "description": "关闭推理思考 (No reasoning)" }
+        ]);
+        return (serde_json::json!("none"), levels, false);
     }
 
     // 1. Sol family (旗舰: 支持 none, low, medium, high, xhigh, max)
@@ -304,7 +325,9 @@ fn get_model_reasoning_config(slug: &str) -> (serde_json::Value, serde_json::Val
         ]);
         (serde_json::json!("high"), levels, true)
     } else {
-        (serde_json::Value::Null, serde_json::json!([]), false)
+        // Unrecognised name: assume a reasoning model with the safe three-level
+        // ladder rather than declaring no levels, which hangs Codex's menu.
+        (serde_json::json!("medium"), fallback_reasoning_levels(), true)
     }
 }
 
@@ -1141,6 +1164,70 @@ mod tests {
         assert!(gem_supp);
         assert_eq!(gem_def, "high");
         assert_eq!(gem_levels.as_array().unwrap().len(), 3);
+    }
+
+    /// Codex's effort submenu hangs on an empty `supported_reasoning_levels`:
+    /// nothing is selectable, so the menu can neither be committed nor closed
+    /// except with Esc. No model may ever advertise zero levels.
+    #[test]
+    fn every_model_advertises_at_least_one_reasoning_level() {
+        let names = [
+            // Third-party relay names that match no pattern in the table.
+            "deepseek-v4-pro-0813",
+            "deepseek-v4-flash-0731",
+            "qwen3.8-max",
+            "some-unknown-model",
+            // Explicitly non-reasoning models.
+            "gpt-4o",
+            "gpt-4-turbo",
+            "gpt-3.5-turbo",
+            "deepseek-chat",
+            "deepseek-v3",
+            "glm-4.6",
+            "llama-3.3-70b",
+            "claude-3-5-sonnet",
+            // Recognised reasoning families.
+            "gpt-5.6-sol",
+            "gpt-5.6-luna",
+            "gemini-2.5-pro",
+            "claude-opus-5",
+            "deepseek-reasoner",
+            "qwen-qwq-32b",
+        ];
+        for name in names {
+            let (default, levels, _supports) = get_model_reasoning_config(name);
+            let levels = levels.as_array().expect("levels is an array");
+            assert!(!levels.is_empty(), "{name} advertises no reasoning levels");
+            // The default must be one of the advertised levels, or Codex has
+            // nothing valid preselected.
+            let default = default.as_str().expect("default level is a string");
+            assert!(
+                levels.iter().any(|l| l["effort"] == default),
+                "{name}: default {default} is not among its levels",
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_third_party_models_get_the_safe_three_level_ladder() {
+        for name in ["deepseek-v4-pro-0813", "qwen3.8-max", "brand-new-model"] {
+            let (default, levels, supports) = get_model_reasoning_config(name);
+            assert!(supports, "{name}");
+            assert_eq!(default, "medium", "{name}");
+            let efforts: Vec<&str> = levels.as_array().unwrap().iter()
+                .map(|l| l["effort"].as_str().unwrap()).collect();
+            assert_eq!(efforts, vec!["low", "medium", "high"], "{name}");
+        }
+    }
+
+    #[test]
+    fn non_reasoning_models_offer_none_rather_than_nothing() {
+        let (default, levels, supports) = get_model_reasoning_config("gpt-4o");
+        assert!(!supports, "gpt-4o must not claim reasoning summaries");
+        assert_eq!(default, "none");
+        let efforts: Vec<&str> = levels.as_array().unwrap().iter()
+            .map(|l| l["effort"].as_str().unwrap()).collect();
+        assert_eq!(efforts, vec!["none"]);
     }
 
     #[tokio::test]
