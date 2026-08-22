@@ -25,6 +25,12 @@ pub struct UpdateStore {
     config: UpdateConfig,
 }
 
+impl Default for UpdateStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UpdateStore {
     pub fn new() -> Self {
         Self {

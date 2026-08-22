@@ -18,5 +18,5 @@ async fn test_chat_history_db() {
         "Stats: total_sessions = {}, total_messages = {}, total_tokens = {}",
         stats.total_sessions, stats.total_messages, stats.total_tokens
     );
-    assert!(list.len() > 0, "Should have indexed sessions in memory");
+    assert!(!list.is_empty(), "Should have indexed sessions in memory");
 }

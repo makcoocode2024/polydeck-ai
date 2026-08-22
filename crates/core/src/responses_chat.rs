@@ -449,9 +449,13 @@ pub fn responses_to_chat(
             if effort_clean == "minimal" {
                 body.insert("reasoning_effort".into(), Value::String("low".into()));
                 warnings.push("Chat 后端不支持 minimal 推理档位，已自动平滑映射为 low".into());
-            } else if matches!(effort_clean.as_str(), "low" | "medium" | "high") {
-                body.insert("reasoning_effort".into(), Value::String(effort_clean));
-            } else if is_deepseek && matches!(effort_clean.as_str(), "xhigh" | "max") {
+            // Levels this upstream takes verbatim: low..high everywhere, plus
+            // xhigh/max on DeepSeek, which accepts the extended range. Kept as
+            // one arm because the action is the same; the `xhigh`/`max` arm
+            // below then only sees upstreams that need the downgrade.
+            } else if matches!(effort_clean.as_str(), "low" | "medium" | "high")
+                || (is_deepseek && matches!(effort_clean.as_str(), "xhigh" | "max"))
+            {
                 body.insert("reasoning_effort".into(), Value::String(effort_clean));
             } else if matches!(effort_clean.as_str(), "xhigh" | "max") {
                 body.insert("reasoning_effort".into(), Value::String("high".into()));

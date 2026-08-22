@@ -151,7 +151,7 @@ impl ProxyManager {
         let active_proxy = sys_proxy
             .or_else(|| env_https.clone())
             .or_else(|| env_http.clone())
-            .or_else(|| env_all)
+            .or(env_all)
             .or_else(|| {
                 tools
                     .iter()

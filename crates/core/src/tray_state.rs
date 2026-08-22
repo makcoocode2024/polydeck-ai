@@ -20,6 +20,12 @@ pub struct TrayState {
     pub active_profile: Option<String>,
 }
 
+impl Default for TrayState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TrayState {
     pub fn new() -> Self {
         Self {
