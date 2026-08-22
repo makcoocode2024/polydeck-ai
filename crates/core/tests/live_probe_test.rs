@@ -29,7 +29,7 @@ async fn test_chat_history_db() {
     // Holds on an empty host too. `list_summaries` caps at 500 rows while the
     // stats count the whole table, so they agree exactly only below the cap.
     const SUMMARY_LIMIT: usize = 500;
-    let expected = (stats.total_sessions as usize).min(SUMMARY_LIMIT);
+    let expected = stats.total_sessions.min(SUMMARY_LIMIT);
     assert_eq!(
         expected,
         list.len(),
