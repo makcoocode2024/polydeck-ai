@@ -324,9 +324,7 @@ fn sanitize_messages_effort(body: &mut Value, model: &str) -> Option<String> {
     }
 }
 
-async fn handle_models(
-    State(state): State<Arc<AppState>>, headers: HeaderMap,
-) -> Response<Body> {
+async fn handle_models(State(state): State<Arc<AppState>>) -> Response<Body> {
     state.health.increment_connections();
     let _guard = ConnectionGuard(&state.health);
     debug!("Processing GET /models request");
@@ -341,26 +339,12 @@ async fn handle_models(
         Ok(v) => v,
         Err(_) => return json_error(StatusCode::BAD_GATEWAY, "Invalid models upstream response"),
     };
-    let is_claude_code = is_claude_code_client(&headers);
-    let response = synthesize_models_response(json, is_claude_code);
+    let response = synthesize_models_response(json);
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(response.to_string()))
         .unwrap()
-}
-
-/// Detect whether the caller is Claude Code (whose gateway model discovery
-/// expects an Anthropic-shaped page with per-model capability metadata).
-///
-/// Claude Code 2.x can omit `x-claude-code-session-id` on the discovery call and
-/// send only `anthropic-version`, so also match its `claude-code/` user-agent.
-fn is_claude_code_client(headers: &HeaderMap) -> bool {
-    if headers.contains_key("x-claude-code-session-id") {
-        return true;
-    }
-    headers.get("user-agent").and_then(|ua| ua.to_str().ok())
-        .is_some_and(|ua| ua.starts_with("claude-code/"))
 }
 
 /// Separators relays put between a model name and an effort suffix.
@@ -434,7 +418,15 @@ fn synthesize_capabilities(serves_max: bool) -> Value {
 /// Anthropic page (`{"data":[...], "has_more":...}`). We walk `data[]`, inject
 /// capabilities, prefix non-Claude model ids with `claude-code/` (Claude Code's
 /// model picker filters on that prefix), and always emit an Anthropic page.
-fn synthesize_models_response(raw: Value, is_claude_code: bool) -> Value {
+/// Build the Anthropic-shaped `/v1/models` page Claude Code's discovery expects.
+///
+/// Ids are passed through verbatim. A `claude-code/` namespace prefix was tried
+/// here first, on the assumption Claude Code needed third-party names marked as
+/// foreign; the picker silently dropped every prefixed entry instead, so a
+/// 7-model catalog showed only the 3 whose names already began with `claude-`.
+/// Requests still accept the prefix (see `strip_claude_code_prefix`) so a name
+/// persisted by an older build keeps resolving.
+fn synthesize_models_response(raw: Value) -> Value {
     let data = raw.get("data").and_then(Value::as_array).cloned().unwrap_or_default();
     let serves_max = upstream_serves_max_effort(&data);
     let models: Vec<Value> = data.into_iter().map(|mut m| {
@@ -446,14 +438,6 @@ fn synthesize_models_response(raw: Value, is_claude_code: bool) -> Value {
         }
         if !m.get("max_tokens").and_then(Value::as_u64).is_some() {
             m["max_tokens"] = serde_json::json!(32000);
-        }
-        if is_claude_code {
-            let id = m.get("id").and_then(Value::as_str).unwrap_or("");
-            if !id.is_empty() && !id.starts_with("claude-code/")
-                && !id.starts_with("claude-") && !id.starts_with("anthropic/")
-                && !id.starts_with("anthropic.") {
-                m["id"] = Value::String(format!("claude-code/{id}"));
-            }
         }
         m
     }).collect();
@@ -1247,8 +1231,11 @@ mod tests {
         assert!(body4["reasoning"].get("effort").is_none());
     }
 
+    /// Ids reach the picker verbatim. Namespacing third-party names under
+    /// `claude-code/` made Claude Code drop them from the picker entirely, so a
+    /// catalog of 7 offered only the 3 already named `claude-*`.
     #[test]
-    fn synthesize_models_response_prefixes_third_party_names() {
+    fn synthesize_models_response_passes_ids_through_verbatim() {
         let raw = serde_json::json!({
             "data": [
                 { "id": "gpt-5.6-luna" },
@@ -1256,25 +1243,20 @@ mod tests {
                 { "id": "deepseek-v4-pro-0813" }
             ]
         });
-        let resp = synthesize_models_response(raw.clone(), true);
+        let resp = synthesize_models_response(raw);
         let ids: Vec<&str> = resp["data"].as_array().unwrap().iter()
             .map(|m| m["id"].as_str().unwrap()).collect();
-        assert_eq!(ids, vec!["claude-code/gpt-5.6-luna", "claude-opus-5", "claude-code/deepseek-v4-pro-0813"]);
+        assert_eq!(ids, vec!["gpt-5.6-luna", "claude-opus-5", "deepseek-v4-pro-0813"]);
 
         // Every model gets capabilities with effort enabled and Anthropic page fields.
         assert_eq!(resp["has_more"], false);
-        assert_eq!(resp["first_id"], "claude-code/gpt-5.6-luna");
+        assert_eq!(resp["first_id"], "gpt-5.6-luna");
+        assert_eq!(resp["last_id"], "deepseek-v4-pro-0813");
         for m in resp["data"].as_array().unwrap() {
             assert_eq!(m["capabilities"]["effort"]["supported"], true);
             // No `-max` id in this catalog, so the level stays off.
             assert_eq!(m["capabilities"]["effort"]["max"]["supported"], false);
         }
-
-        // Non-Claude-Code clients keep the ids untouched.
-        let resp_plain = synthesize_models_response(raw, false);
-        let ids_plain: Vec<&str> = resp_plain["data"].as_array().unwrap().iter()
-            .map(|m| m["id"].as_str().unwrap()).collect();
-        assert_eq!(ids_plain, vec!["gpt-5.6-luna", "claude-opus-5", "deepseek-v4-pro-0813"]);
     }
 
     /// A relay that exposes `max` as its own model id does serve the level, so
@@ -1289,7 +1271,7 @@ mod tests {
                 { "id": "model-T" }
             ]
         });
-        let resp = synthesize_models_response(raw, true);
+        let resp = synthesize_models_response(raw);
         for m in resp["data"].as_array().unwrap() {
             assert_eq!(m["capabilities"]["effort"]["max"]["supported"], true);
             assert_eq!(m["capabilities"]["effort"]["xhigh"]["supported"], true);
@@ -1346,7 +1328,7 @@ mod tests {
                 { "id": "m1", "capabilities": { "effort": { "supported": false } } }
             ]
         });
-        let resp = synthesize_models_response(raw, true);
+        let resp = synthesize_models_response(raw);
         assert_eq!(resp["data"][0]["capabilities"]["effort"]["supported"], false);
     }
 
