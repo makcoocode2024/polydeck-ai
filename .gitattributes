@@ -1,0 +1,38 @@
+# core.autocrlf is enabled on this repo, which rewrites LF -> CRLF on checkout.
+# That is only safe for genuinely 8-bit text: in a UTF-16 file a 0x0A byte is
+# usually just the low half of some other character, so inserting 0x0D shifts
+# every following code unit by one and destroys the file. Two scripts were lost
+# that way, so encoding is pinned explicitly here.
+
+* text=auto
+
+# Windows shell scripts. Windows PowerShell 5.1 reads a .ps1 as the system ANSI
+# code page unless it starts with a UTF-8 BOM, so these must stay UTF-8 with BOM
+# and must never be converted to UTF-16.
+*.ps1 text eol=crlf working-tree-encoding=UTF-8
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Keep tool-generated and cross-platform text at LF.
+*.rs text eol=lf
+*.toml text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
+
+# Binaries git must never touch.
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.exe binary
+*.dll binary
+*.msi binary
+*.zip binary
