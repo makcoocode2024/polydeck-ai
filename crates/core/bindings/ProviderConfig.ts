@@ -4,4 +4,16 @@ import type { ProtocolKind } from "./ProtocolKind";
 import type { RateLimitSettings } from "./RateLimitSettings";
 import type { ReasoningConfidence } from "./ReasoningConfidence";
 
-export type ProviderConfig = { id: string, name: string, baseUrl: string, protocol: ProtocolKind, defaultModel: string, models: Array<string>, isPrimary: boolean, codexCompat: CodexToolCompat, reasoningConfidence: ReasoningConfidence, acceptInvalidCerts: boolean, maxPricePerRequest: number | null, rateLimit: RateLimitSettings, };
+export type ProviderConfig = { id: string, name: string, baseUrl: string, protocol: ProtocolKind, defaultModel: string, models: Array<string>, isPrimary: boolean, codexCompat: CodexToolCompat, reasoningConfidence: ReasoningConfidence, acceptInvalidCerts: boolean, maxPricePerRequest: number | null, rateLimit: RateLimitSettings, supports1mContext: boolean | null, defaultEffortLevel: string | null, opusModel: string | null, sonnetModel: string | null, haikuModel: string | null, 
+/**
+ * Name Claude Code should *show* for each tier, written into `~/.claude.json`
+ * in place of the bare `opus`/`sonnet`/`haiku` aliases.
+ *
+ * Claude Code only grants a model its real context window, pricing and
+ * feature set when it recognises the name, and the bare aliases resolve
+ * inconsistently across its `/model` picker, `--model` flag and subagent
+ * frontmatter. Naming a current built-in model here makes all three agree.
+ * Only meaningful with the gateway enabled — it is what maps the display
+ * name back to the provider's real model. Empty falls back to the alias.
+ */
+opusDisplayName: string | null, sonnetDisplayName: string | null, haikuDisplayName: string | null, };

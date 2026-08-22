@@ -1,4 +1,4 @@
-//! Gateway configuration types
+﻿//! Gateway configuration types
 
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -51,6 +51,23 @@ pub struct UpstreamConfig {
     pub responses_mode: ResponsesMode,
     #[serde(default)]
     pub rate_limit: polydeck_core::profile::RateLimitSettings,
+    #[serde(default)]
+    pub default_effort_level: Option<String>,
+}
+
+/// How `ModelRewriteRule::from` should be interpreted.
+///
+/// Model names routinely contain regex metacharacters (`claude-opus-5[1m]`,
+/// `glm-4.6`), so guessing from the string alone misclassifies them. Generated
+/// rules always state their kind; `Auto` only exists for hand-written configs
+/// that predate this field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchKind {
+    #[default]
+    Auto,
+    Literal,
+    Regex,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,13 +77,18 @@ pub struct ModelRewriteRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub description: Option<String>,
+    #[serde(default)]
+    pub match_kind: MatchKind,
 }
 
 fn default_true() -> bool { true }
 
 impl ModelRewriteRule {
     pub fn exact(from: impl Into<String>, to: impl Into<String>) -> Self {
-        Self { from: from.into(), to: to.into(), enabled: true, description: None }
+        Self { from: from.into(), to: to.into(), enabled: true, description: None, match_kind: MatchKind::Literal }
+    }
+    pub fn regex(from: impl Into<String>, to: impl Into<String>) -> Self {
+        Self { from: from.into(), to: to.into(), enabled: true, description: None, match_kind: MatchKind::Regex }
     }
     pub fn with_description(mut self, desc: impl Into<String>) -> Self {
         self.description = Some(desc.into());

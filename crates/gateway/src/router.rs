@@ -1,4 +1,4 @@
-//! Request routing and handlers
+﻿//! Request routing and handlers
 
 use crate::{
     client::{Endpoint, UpstreamClient},
@@ -43,6 +43,7 @@ pub struct AppState {
     pub primary_provider_id: String,
     pub rate_limit_settings: polydeck_core::profile::RateLimitSettings,
     pub max_retries: u32,
+    pub default_effort_level: Option<String>,
 }
 
 impl AppState {
@@ -227,6 +228,51 @@ pub fn build_router(app_state: Arc<AppState>, middleware_state: Arc<MiddlewareSt
         .layer(middleware::from_fn(loopback_only_middleware))
 }
 
+
+pub fn effort_to_budget_tokens(effort: &str) -> Option<u64> {
+    match effort.trim().to_ascii_lowercase().as_str() {
+        "none" | "off" | "0" | "false" => None,
+        "low" => Some(2048),
+        "medium" => Some(8192),
+        "high" => Some(16384),
+        "xhigh" => Some(32768),
+        "max" => Some(63999),
+        other => other.parse::<u64>().ok().filter(|&b| b >= 1024),
+    }
+}
+
+pub fn inject_thinking_if_needed(body: &mut Value, default_effort_level: Option<&str>) {
+    if body.get("thinking").is_some() {
+        return;
+    }
+
+    let effort = default_effort_level.unwrap_or("high");
+    let Some(budget_tokens) = effort_to_budget_tokens(effort) else {
+        return;
+    };
+
+    let max_tokens = body.get("max_tokens").and_then(|v| v.as_u64());
+
+    let effective_budget = match max_tokens {
+        Some(max) if max <= 1024 => {
+            return;
+        }
+        Some(max) if budget_tokens >= max => {
+            max.saturating_sub(1).max(1024)
+        }
+        _ => budget_tokens,
+    };
+
+    body["thinking"] = serde_json::json!({
+        "type": "enabled",
+        "budget_tokens": effective_budget
+    });
+
+    if let Some(temp) = body.get_mut("temperature") {
+        *temp = serde_json::json!(1.0);
+    }
+}
+
 fn inject_max_price(body: &mut Value, max_price: Option<f64>) {
     if let Some(price) = max_price {
         if let Some(obj) = body.as_object_mut() {
@@ -242,20 +288,10 @@ async fn handle_models(State(state): State<Arc<AppState>>) -> Response<Body> {
     match state.upstream.get_models().await {
         Ok(resp) => {
             if resp.status().is_success() {
-                let mut json: Value = match resp.json().await {
+                let json: Value = match resp.json().await {
                     Ok(v) => v,
                     Err(_) => return json_error(StatusCode::BAD_GATEWAY, "Invalid models upstream response"),
                 };
-                if let Some(arr) = json.get_mut("data").and_then(|d| d.as_array_mut()) {
-                    for item in arr.iter_mut() {
-                        if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
-                            let original = state.rewriter.rewrite_response(id);
-                            if original != id {
-                                item["id"] = Value::String(original);
-                            }
-                        }
-                    }
-                }
                 Response::builder()
                     .status(StatusCode::OK)
                     .header(header::CONTENT_TYPE, "application/json")
@@ -269,19 +305,31 @@ async fn handle_models(State(state): State<Arc<AppState>>) -> Response<Body> {
     }
 }
 
+/// Point `body["model"]` at the upstream model, returning the name the client
+/// sent.
+///
+/// Responses have to echo that original string back: the mapping is many-to-one,
+/// so the upstream name cannot be translated back, and handing the client an
+/// unfamiliar (or retired) model name makes it show a deprecation warning and
+/// persist the wrong model on `/resume`.
+fn rewrite_model_in_place(body: &mut Value, rewriter: &ModelRewriter) -> Option<String> {
+    let client_model = body.get("model")?.as_str()?.to_string();
+    let rewritten = rewriter.rewrite_request(&client_model);
+    if rewritten != client_model {
+        debug!("Rewrote model {} -> {}", client_model, rewritten);
+        body["model"] = Value::String(rewritten);
+    }
+    Some(client_model)
+}
+
 async fn handle_messages(
     State(state): State<Arc<AppState>>, headers: HeaderMap, Json(mut body): Json<Value>,
 ) -> Response<Body> {
     state.health.increment_connections();
     let _guard = ConnectionGuard(&state.health);
     debug!("Processing /messages request");
-    if let Some(model) = body.get("model").and_then(|m| m.as_str()) {
-        let rewritten = state.rewriter.rewrite_request(model);
-        if rewritten != model {
-            debug!("Rewrote model {} -> {}", model, rewritten);
-            body["model"] = Value::String(rewritten);
-        }
-    }
+    let client_model = rewrite_model_in_place(&mut body, &state.rewriter);
+    inject_thinking_if_needed(&mut body, state.default_effort_level.as_deref());
     let is_stream = body.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
     let start = std::time::Instant::now();
     let attempt = match send_upstream(&state, Endpoint::Messages, &headers, body).await {
@@ -293,7 +341,7 @@ async fn handle_messages(
     state.health.record_request(start.elapsed().as_millis() as u64);
     if !upstream_response.status().is_success() { return passthrough_verbatim(upstream_response).await; }
     if is_stream { passthrough_raw_stream(upstream_response) }
-    else { passthrough_nonstream(upstream_response, &state.rewriter).await }
+    else { passthrough_nonstream(upstream_response, client_model).await }
 }
 
 async fn handle_count_tokens(
@@ -302,17 +350,29 @@ async fn handle_count_tokens(
     state.health.increment_connections();
     let _guard = ConnectionGuard(&state.health);
     debug!("Processing /messages/count_tokens request");
-    if let Some(model) = body.get("model").and_then(|m| m.as_str()) {
-        let rewritten = state.rewriter.rewrite_request(model);
-        if rewritten != model {
-            body["model"] = Value::String(rewritten);
+    rewrite_model_in_place(&mut body, &state.rewriter);
+    match send_upstream(&state, Endpoint::CountTokens, &headers, body.clone()).await {
+        Ok(attempt) => {
+            if attempt.response.status().is_success() {
+                passthrough_verbatim(attempt.response).await
+            } else {
+                let tokens = crate::rate_limiter::estimate_tokens(&body).max(1);
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::json!({ "input_tokens": tokens }).to_string()))
+                    .unwrap()
+            }
+        }
+        Err(_) => {
+            let tokens = crate::rate_limiter::estimate_tokens(&body).max(1);
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::json!({ "input_tokens": tokens }).to_string()))
+                .unwrap()
         }
     }
-    let attempt = match send_upstream(&state, Endpoint::CountTokens, &headers, body).await {
-        Ok(a) => a,
-        Err(e) => return e.into_response(),
-    };
-    passthrough_verbatim(attempt.response).await
 }
 
 async fn handle_responses(
@@ -366,14 +426,7 @@ async fn handle_bridged_responses(state: &AppState, headers: &HeaderMap, body: V
     };
     let mut chat_body = converted.body;
     let tools = converted.tools;
-    let client_model = chat_body.get("model").and_then(|m| m.as_str()).unwrap_or_default().to_string();
-    if !client_model.is_empty() {
-        let rewritten = state.rewriter.rewrite_request(&client_model);
-        if rewritten != client_model {
-            debug!("Rewrote model {} -> {}", client_model, rewritten);
-            chat_body["model"] = Value::String(rewritten);
-        }
-    }
+    let client_model = rewrite_model_in_place(&mut chat_body, &state.rewriter);
     let is_stream = chat_body.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
     let start = std::time::Instant::now();
     let attempt = match send_upstream(state, Endpoint::ChatCompletions, headers, chat_body).await {
@@ -384,8 +437,8 @@ async fn handle_bridged_responses(state: &AppState, headers: &HeaderMap, body: V
     let upstream_response = attempt.response;
     state.health.record_request(start.elapsed().as_millis() as u64);
     if !upstream_response.status().is_success() { return passthrough_verbatim(upstream_response).await; }
-    if is_stream { handle_responses_stream(upstream_response, client_model).await }
-    else { handle_responses_nonstream(upstream_response, &state.rewriter, &tools).await }
+    if is_stream { handle_responses_stream(upstream_response, client_model.unwrap_or_default()).await }
+    else { handle_responses_nonstream(upstream_response, client_model, &tools).await }
 }
 
 const POOL_REJECTION_MARKERS: [&str; 6] = [
@@ -454,13 +507,7 @@ async fn handle_chat_completions(
     state.health.increment_connections();
     let _guard = ConnectionGuard(&state.health);
     debug!("Processing /v1/chat/completions request");
-    if let Some(model) = body.get("model").and_then(|m| m.as_str()) {
-        let rewritten = state.rewriter.rewrite_request(model);
-        if rewritten != model {
-            debug!("Rewrote model {} -> {}", model, rewritten);
-            body["model"] = Value::String(rewritten);
-        }
-    }
+    let client_model = rewrite_model_in_place(&mut body, &state.rewriter);
     let is_stream = body.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
     let start = std::time::Instant::now();
     let attempt = match send_upstream(&state, Endpoint::ChatCompletions, &headers, body).await {
@@ -471,11 +518,11 @@ async fn handle_chat_completions(
     let upstream_response = attempt.response;
     state.health.record_request(start.elapsed().as_millis() as u64);
     if !upstream_response.status().is_success() { return passthrough_verbatim(upstream_response).await; }
-    if is_stream { passthrough_stream(upstream_response, &state.rewriter).await }
-    else { passthrough_nonstream(upstream_response, &state.rewriter).await }
+    if is_stream { passthrough_stream(upstream_response, client_model).await }
+    else { passthrough_nonstream(upstream_response, client_model).await }
 }
 
-async fn handle_responses_nonstream(upstream_response: reqwest::Response, rewriter: &ModelRewriter, tools: &ToolMap) -> Response<Body> {
+async fn handle_responses_nonstream(upstream_response: reqwest::Response, client_model: Option<String>, tools: &ToolMap) -> Response<Body> {
     let chat_response: Value = match upstream_response.json().await {
         Ok(v) => v,
         Err(e) => { error!("Failed to parse upstream JSON: {}", e); return json_error(StatusCode::BAD_GATEWAY, "Invalid upstream response"); }
@@ -484,10 +531,7 @@ async fn handle_responses_nonstream(upstream_response: reqwest::Response, rewrit
         Ok(r) => r,
         Err(e) => { error!("Failed to convert response: {}", e); return json_error(StatusCode::BAD_GATEWAY, e.to_string()); }
     };
-    if let Some(model) = resp.get("model").and_then(|m| m.as_str()) {
-        let original = rewriter.rewrite_response(model);
-        if original != model { resp["model"] = Value::String(original); }
-    }
+    restore_client_model(&mut resp, client_model.as_deref());
     Response::builder().status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(resp.to_string())).unwrap()
@@ -544,22 +588,29 @@ async fn handle_responses_stream(upstream_response: reqwest::Response, client_mo
         .body(Body::from_stream(ReceiverStream::new(rx))).unwrap()
 }
 
-async fn passthrough_nonstream(upstream_response: reqwest::Response, rewriter: &ModelRewriter) -> Response<Body> {
+/// Put the client's own model name back on a response body.
+///
+/// No-op when the client sent no model or the response carries none, so an
+/// upstream that omits the field keeps omitting it.
+fn restore_client_model(json: &mut Value, client_model: Option<&str>) {
+    let Some(client_model) = client_model else { return };
+    if json.get("model").and_then(|m| m.as_str()).is_some_and(|m| m != client_model) {
+        json["model"] = Value::String(client_model.to_string());
+    }
+}
+
+async fn passthrough_nonstream(upstream_response: reqwest::Response, client_model: Option<String>) -> Response<Body> {
     let mut json: Value = match upstream_response.json().await {
         Ok(v) => v,
         Err(e) => { error!("Failed to parse upstream JSON: {}", e); return json_error(StatusCode::BAD_GATEWAY, "Invalid upstream response"); }
     };
-    if let Some(model) = json.get("model").and_then(|m| m.as_str()) {
-        let original = rewriter.rewrite_response(model);
-        if original != model { json["model"] = Value::String(original); }
-    }
+    restore_client_model(&mut json, client_model.as_deref());
     Response::builder().status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(json.to_string())).unwrap()
 }
 
-async fn passthrough_stream(upstream_response: reqwest::Response, rewriter: &ModelRewriter) -> Response<Body> {
-    let rewriter = rewriter.clone();
+async fn passthrough_stream(upstream_response: reqwest::Response, client_model: Option<String>) -> Response<Body> {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(100);
     tokio::spawn(async move {
         let mut events = upstream_response.bytes_stream().eventsource();
@@ -592,10 +643,7 @@ async fn passthrough_stream(upstream_response: reqwest::Response, rewriter: &Mod
             };
             let payload = match serde_json::from_str::<Value>(&chunk) {
                 Ok(mut json) => {
-                    if let Some(model) = json.get("model").and_then(|m| m.as_str()) {
-                        let original = rewriter.rewrite_response(model);
-                        if original != model { json["model"] = Value::String(original); }
-                    }
+                    restore_client_model(&mut json, client_model.as_deref());
                     format!("data: {}\n\n", json)
                 }
                 Err(_) => format!("data: {}\n\n", chunk),
@@ -658,7 +706,33 @@ mod tests {
             primary_provider_id: "test".into(),
             rate_limit_settings: polydeck_core::profile::RateLimitSettings::default(),
             max_retries: 3,
+            default_effort_level: None,
         }
+    }
+
+    #[test]
+    fn response_echoes_the_name_the_client_sent() {
+        let rules = crate::model_rewrite::generate_provider_model_rewrites(
+            &["glm-4.6".to_string()],
+            false,
+        );
+        let rewriter = ModelRewriter::new(&rules).unwrap();
+
+        let mut request = serde_json::json!({ "model": "claude-opus-5" });
+        let client_model = rewrite_model_in_place(&mut request, &rewriter);
+        assert_eq!(client_model.as_deref(), Some("claude-opus-5"));
+        assert_eq!(request["model"], "glm-4.6");
+
+        let mut response = serde_json::json!({ "model": "glm-4.6", "id": "msg_1" });
+        restore_client_model(&mut response, client_model.as_deref());
+        assert_eq!(response["model"], "claude-opus-5");
+    }
+
+    #[test]
+    fn restore_client_model_leaves_a_modelless_response_alone() {
+        let mut response = serde_json::json!({ "id": "msg_1" });
+        restore_client_model(&mut response, Some("claude-opus-5"));
+        assert!(response.get("model").is_none());
     }
 
     #[test]
@@ -697,4 +771,51 @@ mod tests {
             assert!(is_missing_responses_error(status, b""), "{status}");
         }
     }
+    #[test]
+    fn test_inject_thinking_logic() {
+        let mut body1 = serde_json::json!({
+            "model": "claude-opus-5",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 32000,
+            "temperature": 0.7
+        });
+        inject_thinking_if_needed(&mut body1, Some("high"));
+        assert_eq!(body1["thinking"]["type"], "enabled");
+        assert_eq!(body1["thinking"]["budget_tokens"], 16384);
+        assert_eq!(body1["temperature"], 1.0);
+
+        let mut body2 = serde_json::json!({
+            "model": "claude-opus-5",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 2000
+        });
+        inject_thinking_if_needed(&mut body2, Some("max"));
+        assert_eq!(body2["thinking"]["type"], "enabled");
+        assert_eq!(body2["thinking"]["budget_tokens"], 1999);
+
+        let mut body3 = serde_json::json!({
+            "model": "claude-opus-5",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 500
+        });
+        inject_thinking_if_needed(&mut body3, Some("high"));
+        assert!(body3.get("thinking").is_none());
+
+        let mut body4 = serde_json::json!({
+            "model": "claude-opus-5",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 4000
+        });
+        inject_thinking_if_needed(&mut body4, Some("none"));
+        assert!(body4.get("thinking").is_none());
+
+        let mut body5 = serde_json::json!({
+            "model": "claude-opus-5",
+            "messages": [{"role": "user", "content": "hello"}],
+            "thinking": { "type": "enabled", "budget_tokens": 4000 }
+        });
+        inject_thinking_if_needed(&mut body5, Some("high"));
+        assert_eq!(body5["thinking"]["budget_tokens"], 4000);
+    }
+
 }

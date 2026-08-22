@@ -56,6 +56,20 @@ export interface ProviderConfig {
   acceptInvalidCerts: boolean;
   maxPricePerRequest: number | null;
   rateLimit?: RateLimitSettings;
+  supports1mContext?: boolean | null;
+  defaultEffortLevel?: string | null;
+  opusModel?: string | null;
+  sonnetModel?: string | null;
+  haikuModel?: string | null;
+  /**
+   * Names Claude Code is shown for each tier. Claude Code only applies a model's
+   * real context window and pricing to names it knows, so these default to
+   * current built-in Anthropic IDs. Gateway-only: it is what maps them back to
+   * the provider's real model.
+   */
+  opusDisplayName?: string | null;
+  sonnetDisplayName?: string | null;
+  haikuDisplayName?: string | null;
 }
 
 export interface McpServerConfig {

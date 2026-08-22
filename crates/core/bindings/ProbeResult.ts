@@ -4,4 +4,4 @@ import type { Confidence } from "./Confidence";
 import type { ModelInfo } from "./ModelInfo";
 import type { ProtocolKind } from "./ProtocolKind";
 
-export type ProbeResult = { protocol: ProtocolKind, confidence: Confidence, evidence: Array<string>, models: Array<ModelInfo>, codexCompat: CodexToolCompat, baseUrl: string, supportsStreaming: boolean, };
+export type ProbeResult = { protocol: ProtocolKind, confidence: Confidence, evidence: Array<string>, models: Array<ModelInfo>, codexCompat: CodexToolCompat, baseUrl: string, supportsStreaming: boolean, supports1mContext: boolean | null, };

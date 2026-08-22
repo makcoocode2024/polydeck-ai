@@ -1,4 +1,4 @@
-﻿//! Profile switching — atomically writes all client configs when switching profiles.
+//! Profile switching — atomically writes all client configs when switching profiles.
 //!
 //! If any step fails, the entire switch is rolled back.
 
@@ -7,6 +7,77 @@ use crate::profile::{Profile, ProfileManager};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use ts_rs::TS;
+
+pub const CLAUDE_CODE_SONNET_ALIASES: &[&str] = &["sonnet", "default", "claude-sonnet"];
+pub const CLAUDE_CODE_OPUS_ALIASES: &[&str] = &["opus", "opusplan", "claude-opus"];
+pub const CLAUDE_CODE_HAIKU_ALIASES: &[&str] = &["haiku", "claude-haiku"];
+
+// Names Claude Code is shown for each tier when the provider does not override
+// them. They have to be current built-in Anthropic IDs: Claude Code decides a
+// model's context window, price and feature set from the name, and falls back to
+// a 200K unknown-model profile for anything it does not recognise.
+//
+// Bump these when Anthropic ships a new generation. Fable and Mythos are absent
+// on purpose — Claude Code has no alias tier for them.
+pub const DEFAULT_OPUS_DISPLAY_NAME: &str = "claude-opus-5";
+pub const DEFAULT_SONNET_DISPLAY_NAME: &str = "claude-sonnet-5";
+/// Haiku 4.5 caps at 200K, so this tier has no `[1m]` form.
+pub const DEFAULT_HAIKU_DISPLAY_NAME: &str = "claude-haiku-4-5";
+
+/// Loopback port the built-in gateway listens on.
+const GATEWAY_PORT: u16 = 18888;
+
+/// Point every `keys` entry at `wire` in a `modelOverrides` map.
+///
+/// A `[1m]` key keeps its suffix only when `tier_supports_1m`; otherwise it
+/// collapses onto the plain wire name, since asking for a context window the
+/// upstream cannot serve fails the request outright.
+fn insert_tier(
+    overrides: &mut serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+    wire: &str,
+    tier_supports_1m: bool,
+) {
+    let wire_1m = format!("{wire}[1m]");
+    for key in keys {
+        let value = if key.ends_with("[1m]") && tier_supports_1m && !wire.ends_with("[1m]") {
+            wire_1m.as_str()
+        } else {
+            wire
+        };
+        overrides.insert((*key).to_string(), serde_json::Value::String(value.to_string()));
+    }
+}
+
+/// Trimmed `value`, or `fallback` when it is absent or blank.
+fn trimmed_or<'a>(value: Option<&'a str>, fallback: &'a str) -> &'a str {
+    value.map(str::trim).filter(|s| !s.is_empty()).unwrap_or(fallback)
+}
+
+/// The `(opus, sonnet, haiku)` names Claude Code is shown for this provider.
+///
+/// The gateway has to resolve the same names this module writes into
+/// `~/.claude.json`, so both sides read them from here.
+pub fn claude_display_names(provider: &crate::profile::ProviderConfig) -> (&str, &str, &str) {
+    (
+        trimmed_or(provider.opus_display_name.as_deref(), DEFAULT_OPUS_DISPLAY_NAME),
+        trimmed_or(provider.sonnet_display_name.as_deref(), DEFAULT_SONNET_DISPLAY_NAME),
+        trimmed_or(provider.haiku_display_name.as_deref(), DEFAULT_HAIKU_DISPLAY_NAME),
+    )
+}
+
+/// Strip a trailing `/v1` (and any trailing slashes) from an Anthropic base URL.
+///
+/// Claude Code talks to Anthropic-shaped endpoints through the official SDK,
+/// which appends the `/v1/...` path segment on its own. Keeping a `/v1` suffix
+/// in `ANTHROPIC_BASE_URL` makes it request `/v1/v1/messages`, which 404s.
+fn strip_anthropic_version_suffix(base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    match trimmed.strip_suffix("/v1") {
+        Some(stripped) => stripped.trim_end_matches('/').to_string(),
+        None => trimmed.to_string(),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -186,14 +257,21 @@ fn get_model_reasoning_config(slug: &str) -> (serde_json::Value, serde_json::Val
         return (serde_json::json!("high"), levels, true);
     }
 
-    // 6. Claude 3.7 / Claude 4 / Extended Thinking models (支持 none, low, medium, high, xhigh, max)
+    // 6. Claude 3.7+ / Claude 4+ / Claude 5+ / Opus / Sonnet / Extended Thinking models (支持 none, low, medium, high, xhigh, max)
     let is_claude_thinking = lower.contains("claude-3-7")
         || lower.contains("claude-3.7")
         || lower.contains("claude-4")
+        || lower.contains("claude-5")
+        || lower.contains("claude-opus")
+        || lower.contains("claude-sonnet")
         || lower.contains("sonnet-3-7")
         || lower.contains("sonnet-3.7")
+        || lower.contains("sonnet-4")
+        || lower.contains("sonnet-5")
         || lower.contains("opus-4")
-        || lower.contains("sonnet-4");
+        || lower.contains("opus-5")
+        || lower.contains("model-s")
+        || lower.contains("model-o");
 
     if is_claude_thinking {
         let levels = serde_json::json!([
@@ -235,6 +313,15 @@ pub fn build_codex_catalog(
     default_model: &str,
     models: &[String],
 ) -> serde_json::Value {
+    build_codex_catalog_with_1m(provider_name, default_model, models, false)
+}
+
+pub fn build_codex_catalog_with_1m(
+    provider_name: &str,
+    default_model: &str,
+    models: &[String],
+    supports_1m: bool,
+) -> serde_json::Value {
     let mut catalog_models: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -271,6 +358,8 @@ pub fn build_codex_catalog(
         catalog_models.push("gpt-4o".to_string());
     }
 
+    let context_window = if supports_1m { 1000000 } else { 200000 };
+
     let models_json: Vec<serde_json::Value> = catalog_models
         .iter()
         .filter(|slug| *slug != "codex-auto-review" && !slug.ends_with("auto-review"))
@@ -284,8 +373,8 @@ pub fn build_codex_catalog(
                 "default_reasoning_level": default_reasoning,
                 "default_reasoning_summary": "none",
                 "default_verbosity": "medium",
-                "context_window": 200000,
-                "max_context_window": 200000,
+                "context_window": context_window,
+                "max_context_window": context_window,
                 "effective_context_window_percent": 95,
                 "priority": i,
                 "input_modalities": ["text"],
@@ -362,7 +451,8 @@ async fn write_codex_config(
         .collect::<String>();
 
     // Write dynamic model catalog JSON for Codex /model command
-    let catalog_doc = build_codex_catalog(&provider.name, model_to_use, &provider.models);
+    let supports_1m = provider.supports_1m_context.unwrap_or(false);
+    let catalog_doc = build_codex_catalog_with_1m(&provider.name, model_to_use, &provider.models, supports_1m);
     let catalog_path = codex_dir.join("ai-deck-model-catalog.json");
     let catalog_content = serde_json::to_string_pretty(&catalog_doc)?;
     crate::storage::atomic_replace(&catalog_path, catalog_content.as_bytes())?;
@@ -377,7 +467,7 @@ async fn write_codex_config(
     doc["model"] = toml_edit::value(model_to_use);
     doc["model_provider"] = toml_edit::value(&provider_key);
     doc["model_catalog_json"] = toml_edit::value(catalog_path_str);
-    doc["model_context_window"] = toml_edit::value(200000);
+    doc["model_context_window"] = toml_edit::value(if supports_1m { 1000000 } else { 200000 });
     let (def_reasoning_level, _, supports_summaries) = get_model_reasoning_config(model_to_use);
     if let Some(level_str) = def_reasoning_level.as_str() {
         doc["model_reasoning_effort"] = toml_edit::value(level_str);
@@ -465,15 +555,14 @@ async fn write_claude_config(
         config = serde_json::json!({});
     }
 
+    // Claude Code uses the Anthropic SDK, which appends "/v1/messages" to
+    // ANTHROPIC_BASE_URL itself. A trailing "/v1" here would produce
+    // "/v1/v1/messages" -> 404, which Claude Code surfaces as the misleading
+    // "issue with the selected model" error, so the base URL must stay bare.
     let target_base_url = if gateway_enabled {
-        "http://127.0.0.1:18888/v1".to_string()
+        format!("http://127.0.0.1:{GATEWAY_PORT}")
     } else {
-        let base = provider.base_url.trim().trim_end_matches('/');
-        if base.ends_with("/v1") {
-            base.to_string()
-        } else {
-            format!("{base}/v1")
-        }
+        strip_anthropic_version_suffix(&provider.base_url)
     };
 
     let model_to_use = if !provider.default_model.trim().is_empty() {
@@ -481,73 +570,135 @@ async fn write_claude_config(
     } else if let Some(first) = provider.models.first().filter(|s| !s.trim().is_empty()) {
         first.trim()
     } else {
-        "claude-3-7-sonnet-latest"
+        // Last-resort fallback: use the generic "sonnet" alias rather than a
+        // pinned retired ID like claude-3-7-sonnet-latest, which would make
+        // Claude Code show a retirement banner.
+        "sonnet"
     };
 
-    // Find best candidates for Sonnet, Opus, Haiku
+    // Find best candidates for Sonnet, Opus, Haiku (custom overrides prioritized)
     let sonnet_candidate = provider
-        .models
-        .iter()
-        .find(|m| m.to_ascii_lowercase().contains("sonnet"))
-        .map(|s| s.as_str())
+        .sonnet_model
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| {
-            if model_to_use.to_ascii_lowercase().contains("sonnet") {
-                model_to_use
-            } else {
-                provider.models.first().map(|s| s.as_str()).unwrap_or(model_to_use)
-            }
+            provider
+                .models
+                .iter()
+                .find(|m| {
+                    let lower = m.to_ascii_lowercase();
+                    lower.contains("sonnet") || lower.contains("claude-3-7") || lower.contains("claude-3.7")
+                })
+                .map(|s| s.as_str())
+                .unwrap_or_else(|| {
+                    if model_to_use.to_ascii_lowercase().contains("sonnet") {
+                        model_to_use
+                    } else {
+                        provider.models.first().map(|s| s.as_str()).unwrap_or(model_to_use)
+                    }
+                })
         });
 
     let opus_candidate = provider
-        .models
-        .iter()
-        .find(|m| m.to_ascii_lowercase().contains("opus"))
-        .map(|s| s.as_str())
-        .unwrap_or(sonnet_candidate);
+        .opus_model
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            provider
+                .models
+                .iter()
+                .find(|m| m.to_ascii_lowercase().contains("opus"))
+                .map(|s| s.as_str())
+                .unwrap_or(sonnet_candidate)
+        });
 
     let haiku_candidate = provider
-        .models
-        .iter()
-        .find(|m| {
-            let lower = m.to_ascii_lowercase();
-            lower.contains("haiku") || lower.contains("flash") || lower.contains("mini")
-        })
-        .map(|s| s.as_str())
-        .unwrap_or(sonnet_candidate);
+        .haiku_model
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            provider
+                .models
+                .iter()
+                .find(|m| {
+                    let lower = m.to_ascii_lowercase();
+                    lower.contains("haiku") || lower.contains("flash") || lower.contains("mini")
+                })
+                .map(|s| s.as_str())
+                .unwrap_or(sonnet_candidate)
+        });
+
+    let supports_1m = provider.supports_1m_context.unwrap_or(false);
+
+    // The name that travels on the wire for each tier, which is also the name
+    // Claude Code shows. Only the gateway can translate a display name back to
+    // the provider's real model, so without it the wire has to carry the
+    // upstream names and no display name is possible.
+    let (sonnet_wire, opus_wire, haiku_wire) = if gateway_enabled {
+        let (opus, sonnet, haiku) = claude_display_names(provider);
+        (sonnet, opus, haiku)
+    } else {
+        (sonnet_candidate, opus_candidate, haiku_candidate)
+    };
 
     // 1. Update availableModels array
     let mut available_models = Vec::new();
     let mut seen_avail = HashSet::new();
+    let mut push_avail = |value: &str| {
+        if !value.is_empty() && seen_avail.insert(value.to_string()) {
+            available_models.push(value.to_string());
+        }
+    };
 
-    for alias in &["sonnet", "opus", "haiku"] {
-        if seen_avail.insert((*alias).to_string()) {
-            available_models.push((*alias).to_string());
+    // Display names lead the picker; they are the entries Claude Code can size
+    // and price correctly.
+    for wire in [opus_wire, sonnet_wire, haiku_wire] {
+        push_avail(wire);
+    }
+    // Haiku 4.5 has no 1M form, so only the two larger tiers get a `[1m]` entry.
+    if supports_1m {
+        for wire in [opus_wire, sonnet_wire] {
+            if !wire.ends_with("[1m]") {
+                push_avail(&format!("{wire}[1m]"));
+            }
         }
     }
-    if !model_to_use.is_empty() && seen_avail.insert(model_to_use.to_string()) {
-        available_models.push(model_to_use.to_string());
+    // Bare aliases stay available: they are what `--model opus` and subagent
+    // frontmatter pass, and some users type them from habit.
+    for alias in ["opus", "sonnet", "haiku"] {
+        push_avail(alias);
     }
+    push_avail(model_to_use);
     for m in &provider.models {
-        let trimmed = m.trim();
-        if !trimmed.is_empty() && seen_avail.insert(trimmed.to_string()) {
-            available_models.push(trimmed.to_string());
-        }
+        push_avail(m.trim());
     }
 
     config["availableModels"] = serde_json::to_value(&available_models)?;
 
     // 2. Update default model
-    if model_to_use.to_ascii_lowercase().contains("opus") {
-        config["model"] = serde_json::Value::String("opus".into());
-    } else if model_to_use.to_ascii_lowercase().contains("haiku") {
-        config["model"] = serde_json::Value::String("haiku".into());
-    } else if model_to_use.to_ascii_lowercase().contains("sonnet") {
-        config["model"] = serde_json::Value::String("sonnet".into());
+    let lower_default = model_to_use.to_ascii_lowercase();
+    let default_wire = if lower_default.contains("opus") {
+        opus_wire
+    } else if lower_default.contains("haiku") {
+        haiku_wire
+    } else if lower_default.contains("sonnet") {
+        sonnet_wire
     } else {
-        config["model"] = serde_json::Value::String(model_to_use.to_string());
-    }
+        // A provider-specific name with no tier word: pass it through as-is
+        // rather than guessing a tier and silently changing which model runs.
+        model_to_use
+    };
+    config["model"] = serde_json::Value::String(default_wire.to_string());
 
     // 3. Update modelOverrides map
+    //
+    // Every key resolves to its tier's wire name, so whichever Claude Code name
+    // a user or subagent asks for, one recognised name reaches the gateway.
+    //
+    // Retired model IDs (claude-3-opus*, claude-3-7-sonnet*, claude-3-5-haiku*)
+    // are deliberately omitted: Claude Code prints a "was retired on ..." banner
+    // for any key it finds here, even though the gateway already rewrites those
+    // names upstream. See gateway::model_rewrite for the actual remapping.
     let mut overrides = serde_json::Map::new();
 
     let sonnet_overrides = [
@@ -555,9 +706,6 @@ async fn write_claude_config(
         "claude-3-5-sonnet-20240620",
         "claude-3-5-sonnet-20241022",
         "claude-3-5-sonnet-latest",
-        "claude-3-7-sonnet",
-        "claude-3-7-sonnet-20250219",
-        "claude-3-7-sonnet-latest",
         "claude-sonnet-4-5",
         "claude-sonnet-4-5-20250929",
         "claude-sonnet-4-5-20250929[1m]",
@@ -567,14 +715,9 @@ async fn write_claude_config(
         "claude-sonnet-5",
         "claude-sonnet-5[1m]",
     ];
-    for key in &sonnet_overrides {
-        overrides.insert((*key).to_string(), serde_json::Value::String(sonnet_candidate.to_string()));
-    }
+    insert_tier(&mut overrides, &sonnet_overrides, sonnet_wire, supports_1m);
 
     let opus_overrides = [
-        "claude-3-opus",
-        "claude-3-opus-20240229",
-        "claude-3-opus-latest",
         "claude-opus-4-5",
         "claude-opus-4-5-20251101",
         "claude-opus-4-5-20251101[1m]",
@@ -588,16 +731,11 @@ async fn write_claude_config(
         "claude-opus-5",
         "claude-opus-5[1m]",
     ];
-    for key in &opus_overrides {
-        overrides.insert((*key).to_string(), serde_json::Value::String(opus_candidate.to_string()));
-    }
+    insert_tier(&mut overrides, &opus_overrides, opus_wire, supports_1m);
 
     let haiku_overrides = [
         "claude-3-haiku",
         "claude-3-haiku-20240307",
-        "claude-3-5-haiku",
-        "claude-3-5-haiku-20241022",
-        "claude-3-5-haiku-latest",
         "claude-haiku-4-5",
         "claude-haiku-4-5-20251001",
         "claude-haiku-4-5-20251001-v1",
@@ -605,15 +743,33 @@ async fn write_claude_config(
         "claude-haiku-4-5-20251001[1m]",
         "claude-haiku-4-5[1m]",
     ];
-    for key in &haiku_overrides {
-        overrides.insert((*key).to_string(), serde_json::Value::String(haiku_candidate.to_string()));
-    }
+    // Haiku 4.5 tops out at 200K, so its `[1m]` keys always fall back.
+    insert_tier(&mut overrides, &haiku_overrides, haiku_wire, false);
 
     for m in &provider.models {
         let trimmed = m.trim();
         if !trimmed.is_empty() {
             overrides.insert(trimmed.to_string(), serde_json::Value::String(trimmed.to_string()));
         }
+    }
+
+    // Short aliases mapping MUST be added after self-mapping loop to ensure
+    // aliases like "opus", "sonnet", "haiku", "default", "opusplan" correctly
+    // route to the target wire name.
+    insert_tier(&mut overrides, CLAUDE_CODE_SONNET_ALIASES, sonnet_wire, false);
+    insert_tier(&mut overrides, CLAUDE_CODE_OPUS_ALIASES, opus_wire, false);
+    insert_tier(&mut overrides, CLAUDE_CODE_HAIKU_ALIASES, haiku_wire, false);
+    // A custom display name needs a self-map, or Claude Code would leave it
+    // untouched only by luck of not being listed here.
+    for wire in [opus_wire, sonnet_wire, haiku_wire] {
+        overrides.insert(wire.to_string(), serde_json::Value::String(wire.to_string()));
+        if supports_1m && !wire.ends_with("[1m]") && wire != haiku_wire {
+            let wire_1m = format!("{wire}[1m]");
+            overrides.insert(wire_1m.clone(), serde_json::Value::String(wire_1m));
+        }
+    }
+    if !model_to_use.is_empty() && !overrides.contains_key(model_to_use) {
+        overrides.insert(model_to_use.to_string(), serde_json::Value::String(model_to_use.to_string()));
     }
 
     config["modelOverrides"] = serde_json::Value::Object(overrides);
@@ -647,66 +803,65 @@ async fn write_claude_config(
         };
 
         if !token_to_write.is_empty() {
-            env_obj.insert(
-                "ANTHROPIC_API_KEY".into(),
-                serde_json::Value::String(token_to_write.clone()),
-            );
-            // Crucial: keep ANTHROPIC_AUTH_TOKEN synchronized or remove stale tokens
+            // Write only ANTHROPIC_AUTH_TOKEN to avoid mutual exclusivity warnings in Claude Code
             env_obj.insert(
                 "ANTHROPIC_AUTH_TOKEN".into(),
                 serde_json::Value::String(token_to_write.clone()),
             );
+            env_obj.remove("ANTHROPIC_API_KEY");
         } else {
             env_obj.remove("ANTHROPIC_API_KEY");
             env_obj.remove("ANTHROPIC_AUTH_TOKEN");
         }
 
-        env_obj.insert(
-            "ANTHROPIC_DEFAULT_SONNET_MODEL".into(),
-            serde_json::Value::String(sonnet_candidate.to_string()),
-        );
-        env_obj.insert(
-            "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME".into(),
-            serde_json::Value::String(sonnet_candidate.to_string()),
-        );
-        env_obj.insert(
-            "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION".into(),
-            serde_json::Value::String(format!("{sonnet_candidate} via {}", provider.name)),
-        );
-
-        env_obj.insert(
-            "ANTHROPIC_DEFAULT_OPUS_MODEL".into(),
-            serde_json::Value::String(opus_candidate.to_string()),
-        );
-        env_obj.insert(
-            "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME".into(),
-            serde_json::Value::String(opus_candidate.to_string()),
-        );
-        env_obj.insert(
-            "ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION".into(),
-            serde_json::Value::String(format!("{opus_candidate} via {}", provider.name)),
-        );
-
-        env_obj.insert(
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL".into(),
-            serde_json::Value::String(haiku_candidate.to_string()),
-        );
-        env_obj.insert(
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME".into(),
-            serde_json::Value::String(haiku_candidate.to_string()),
-        );
-        env_obj.insert(
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION".into(),
-            serde_json::Value::String(format!("{haiku_candidate} via {}", provider.name)),
-        );
+        // `*_MODEL` is what actually goes on the wire when Claude Code resolves
+        // an alias itself, so it carries the wire name. `*_MODEL_NAME` and
+        // `*_MODEL_DESCRIPTION` are labels only — the `/model` picker ignores
+        // them — but the description is a useful place to show the real upstream
+        // model behind a display name.
+        for (tier, wire, upstream) in [
+            ("SONNET", sonnet_wire, sonnet_candidate),
+            ("OPUS", opus_wire, opus_candidate),
+            ("HAIKU", haiku_wire, haiku_candidate),
+        ] {
+            let description = if wire == upstream {
+                format!("{wire} via {}", provider.name)
+            } else {
+                format!("{wire} -> {upstream} via {}", provider.name)
+            };
+            env_obj.insert(
+                format!("ANTHROPIC_DEFAULT_{tier}_MODEL"),
+                serde_json::Value::String(wire.to_string()),
+            );
+            env_obj.insert(
+                format!("ANTHROPIC_DEFAULT_{tier}_MODEL_NAME"),
+                serde_json::Value::String(wire.to_string()),
+            );
+            env_obj.insert(
+                format!("ANTHROPIC_DEFAULT_{tier}_MODEL_DESCRIPTION"),
+                serde_json::Value::String(description),
+            );
+        }
 
         env_obj.insert(
             "CLAUDE_CODE_SUBAGENT_MODEL".into(),
             serde_json::Value::String("inherit".into()),
         );
+        let effort_level = if let Some(eff) = &provider.default_effort_level {
+            if !eff.trim().is_empty() {
+                eff.trim().to_string()
+            } else {
+                let (def_reasoning, _, _) = get_model_reasoning_config(model_to_use);
+                def_reasoning.as_str().unwrap_or("high").to_string()
+            }
+        } else {
+            let (def_reasoning, _, _) = get_model_reasoning_config(model_to_use);
+            def_reasoning.as_str().unwrap_or("high").to_string()
+        };
+
         env_obj.insert(
             "CLAUDE_CODE_EFFORT_LEVEL".into(),
-            serde_json::Value::String("max".into()),
+            serde_json::Value::String(effort_level),
         );
     }
 
@@ -729,23 +884,11 @@ async fn write_claude_config(
     }
     if let Some(obj) = claude_json.as_object_mut() {
         obj.insert("hasCompletedOnboarding".into(), serde_json::Value::Bool(true));
-        let maybe_key = crate::credentials::get_api_key(profile_id).ok();
-        let token = if let Some(key) = &maybe_key {
-            if !key.trim().is_empty() {
-                key.trim().to_string()
-            } else if gateway_enabled {
-                "ai-deck-local".to_string()
-            } else {
-                String::new()
-            }
-        } else if gateway_enabled {
-            "ai-deck-local".to_string()
-        } else {
-            String::new()
-        };
-        if !token.is_empty() {
-            obj.insert("primaryApiKey".into(), serde_json::Value::String(token));
-        }
+        // Remove primaryApiKey and oauthAccount from ~/.claude.json so Claude Code uses
+        // ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL configured in settings.json without
+        // triggering "/login managed key" conflicts.
+        obj.remove("primaryApiKey");
+        obj.remove("oauthAccount");
     }
     if let Ok(serialized) = serde_json::to_string_pretty(&claude_json) {
         let _ = crate::storage::atomic_replace(&claude_json_path, serialized.as_bytes());
@@ -949,6 +1092,15 @@ mod tests {
     use super::*;
     use crate::profile::ProfileUpdate;
 
+    /// `AI_DECK_HOME_OVERRIDE` is process-global, so tests that repoint HOME
+    /// must not run concurrently or they will read each other's temp dirs.
+    static HOME_ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Acquire the HOME guard, ignoring poisoning from an unrelated failed test.
+    fn lock_home_env() -> std::sync::MutexGuard<'static, ()> {
+        HOME_ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn test_build_codex_catalog_structure() {
         let models = vec![
@@ -993,6 +1145,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_switch_profile_active_isolation() {
+        let _home_guard = lock_home_env();
         let temp_home = tempfile::tempdir().unwrap();
         std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
         let state_path = temp_home.path().join(".ai-deck").join("state.json");
@@ -1052,5 +1205,344 @@ mod tests {
         let hermes_yaml2 = std::fs::read_to_string(home.join(".hermes").join("config.yaml")).unwrap();
         assert!(hermes_yaml2.contains("model: beta-model"), "Hermes 配置应更新为 Beta 方案模型");
         assert!(!hermes_yaml2.contains("alpha-model"), "Hermes 配置中不应残留 Alpha 方案模型");
+    }
+
+    #[tokio::test]
+    async fn test_claude_config_aliases_and_invariant() {
+        let _home_guard = lock_home_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
+        let claude_dir = temp_home.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+
+        let provider = crate::profile::ProviderConfig {
+            id: "test-provider".into(),
+            name: "Test Provider".into(),
+            base_url: "http://127.0.0.1:18888/v1".into(),
+            protocol: crate::types::ProtocolKind::Anthropic,
+            is_primary: true,
+            codex_compat: crate::types::CodexToolCompat::ResponsesFunction,
+            reasoning_confidence: crate::types::ReasoningConfidence::Unknown,
+            models: vec![
+                "model-S".into(),
+                "model-O".into(),
+                "claude-opus-5".into(),
+            ],
+            default_model: "opus".into(),
+            accept_invalid_certs: false,
+            max_price_per_request: None,
+            rate_limit: crate::profile::RateLimitSettings::default(),
+            supports_1m_context: Some(false),
+            default_effort_level: Some("high".into()),
+            opus_model: None,
+            sonnet_model: None,
+            haiku_model: None,
+            opus_display_name: None,
+            sonnet_display_name: None,
+            haiku_display_name: None,
+        };
+
+        let res = write_claude_config(&provider, "test-profile", true).await;
+        assert!(res.is_ok());
+
+        let settings_path = claude_dir.join("settings.json");
+        let content = std::fs::read_to_string(&settings_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        // 1. Check auth: only ANTHROPIC_AUTH_TOKEN, no ANTHROPIC_API_KEY
+        let env = parsed.get("env").and_then(|v| v.as_object()).unwrap();
+        assert!(env.contains_key("ANTHROPIC_AUTH_TOKEN"), "env 应包含 ANTHROPIC_AUTH_TOKEN");
+        assert!(!env.contains_key("ANTHROPIC_API_KEY"), "env 不应包含 ANTHROPIC_API_KEY 以免互斥告警");
+
+        // 2. Every alias resolves to its tier's display name. With the gateway on
+        //    the wire carries display names, not provider models — the gateway is
+        //    what turns them back into provider models.
+        let overrides = parsed.get("modelOverrides").and_then(|v| v.as_object()).unwrap();
+        for alias in CLAUDE_CODE_OPUS_ALIASES {
+            assert_eq!(overrides.get(*alias).and_then(|v| v.as_str()), Some(DEFAULT_OPUS_DISPLAY_NAME));
+        }
+        for alias in CLAUDE_CODE_SONNET_ALIASES {
+            assert_eq!(overrides.get(*alias).and_then(|v| v.as_str()), Some(DEFAULT_SONNET_DISPLAY_NAME));
+        }
+        for alias in CLAUDE_CODE_HAIKU_ALIASES {
+            assert_eq!(overrides.get(*alias).and_then(|v| v.as_str()), Some(DEFAULT_HAIKU_DISPLAY_NAME));
+        }
+
+        // 3. Invariant: every availableModels entry resolves to something the
+        //    gateway can route — a provider model or a tier display name.
+        let available_models = parsed.get("availableModels").and_then(|v| v.as_array()).unwrap();
+        let mut routable: HashSet<String> = provider.models.iter().cloned().collect();
+        routable.extend(
+            [DEFAULT_OPUS_DISPLAY_NAME, DEFAULT_SONNET_DISPLAY_NAME, DEFAULT_HAIKU_DISPLAY_NAME]
+                .map(str::to_string),
+        );
+
+        for m_val in available_models {
+            let m_str = m_val.as_str().unwrap();
+            let resolved = overrides.get(m_str).and_then(|v| v.as_str()).unwrap_or(m_str);
+            assert!(
+                routable.contains(resolved),
+                "availableModels 项 '{m_str}' 经 modelOverrides 解析为 '{resolved}'，既不在 provider.models {:?} 中，也不是显示名",
+                provider.models
+            );
+        }
+
+        // 4. Test custom candidate overrides (opus -> claude-opus-5-max, sonnet -> claude-opus-5-xhigh, haiku -> model-S)
+        let custom_provider = crate::profile::ProviderConfig {
+            id: "custom-provider".into(),
+            name: "Custom Provider".into(),
+            base_url: "http://127.0.0.1:18888/v1".into(),
+            protocol: crate::types::ProtocolKind::Anthropic,
+            is_primary: true,
+            codex_compat: crate::types::CodexToolCompat::ResponsesFunction,
+            reasoning_confidence: crate::types::ReasoningConfidence::Unknown,
+            models: vec![
+                "model-S".into(),
+                "model-O".into(),
+                "claude-opus-5".into(),
+                "claude-opus-5-max".into(),
+                "claude-opus-5-xhigh".into(),
+            ],
+            default_model: "opus".into(),
+            accept_invalid_certs: false,
+            max_price_per_request: None,
+            rate_limit: crate::profile::RateLimitSettings::default(),
+            supports_1m_context: Some(false),
+            default_effort_level: Some("high".into()),
+            opus_model: Some("claude-opus-5-max".into()),
+            sonnet_model: Some("claude-opus-5-xhigh".into()),
+            haiku_model: Some("model-S".into()),
+            opus_display_name: None,
+            sonnet_display_name: None,
+            haiku_display_name: None,
+        };
+
+        let res2 = write_claude_config(&custom_provider, "custom-profile", true).await;
+        assert!(res2.is_ok());
+        let content2 = std::fs::read_to_string(&settings_path).unwrap();
+        let parsed2: serde_json::Value = serde_json::from_str(&content2).unwrap();
+        let overrides2 = parsed2.get("modelOverrides").and_then(|v| v.as_object()).unwrap();
+        // Custom *upstream* models do not change what Claude Code is shown; they
+        // change what the gateway forwards, which this config never mentions.
+        assert_eq!(overrides2.get("opus").and_then(|v| v.as_str()), Some(DEFAULT_OPUS_DISPLAY_NAME));
+        assert_eq!(overrides2.get("sonnet").and_then(|v| v.as_str()), Some(DEFAULT_SONNET_DISPLAY_NAME));
+        assert_eq!(overrides2.get("haiku").and_then(|v| v.as_str()), Some(DEFAULT_HAIKU_DISPLAY_NAME));
+        let env2 = parsed2.get("env").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            env2.get("ANTHROPIC_DEFAULT_OPUS_MODEL").and_then(|v| v.as_str()),
+            Some(DEFAULT_OPUS_DISPLAY_NAME)
+        );
+        // The description is the only place the real upstream model surfaces.
+        assert_eq!(
+            env2.get("ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION").and_then(|v| v.as_str()),
+            Some("claude-opus-5 -> claude-opus-5-max via Custom Provider")
+        );
+
+        // 5. Retired model IDs must never be emitted: Claude Code renders a
+        //    "was retired on ..." banner for any such key present here.
+        for retired in [
+            "claude-3-opus",
+            "claude-3-opus-20240229",
+            "claude-3-opus-latest",
+            "claude-3-7-sonnet",
+            "claude-3-7-sonnet-20250219",
+            "claude-3-7-sonnet-latest",
+            "claude-3-5-haiku",
+            "claude-3-5-haiku-20241022",
+            "claude-3-5-haiku-latest",
+        ] {
+            assert!(
+                !overrides2.contains_key(retired),
+                "modelOverrides 不应包含已退役模型 {retired}，否则 Claude Code 会显示退役警告"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_claude_config_display_names() {
+        let _home_guard = lock_home_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
+        let claude_dir = temp_home.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+
+        let base = crate::profile::ProviderConfig {
+            id: "p".into(),
+            name: "Zhipu".into(),
+            base_url: "https://open.bigmodel.cn/api/anthropic".into(),
+            protocol: crate::types::ProtocolKind::Anthropic,
+            is_primary: true,
+            codex_compat: crate::types::CodexToolCompat::ResponsesFunction,
+            reasoning_confidence: crate::types::ReasoningConfidence::Unknown,
+            models: vec!["glm-4.6".into(), "glm-4.5-air".into()],
+            default_model: "glm-4.6".into(),
+            accept_invalid_certs: false,
+            max_price_per_request: None,
+            rate_limit: crate::profile::RateLimitSettings::default(),
+            supports_1m_context: Some(true),
+            default_effort_level: None,
+            opus_model: None,
+            sonnet_model: None,
+            haiku_model: None,
+            opus_display_name: Some("claude-opus-4-8".into()),
+            sonnet_display_name: None,
+            haiku_display_name: Some("   ".into()),
+        };
+
+        let settings_path = claude_dir.join("settings.json");
+        let read_config = || -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap()
+        };
+
+        write_claude_config(&base, "p", true).await.unwrap();
+        let parsed = read_config();
+        let overrides = parsed.get("modelOverrides").and_then(|v| v.as_object()).unwrap();
+        let available: Vec<&str> =
+            parsed["availableModels"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+
+        // A custom name is honoured; a blank one falls back to the default.
+        assert_eq!(overrides.get("opus").and_then(|v| v.as_str()), Some("claude-opus-4-8"));
+        assert_eq!(overrides.get("haiku").and_then(|v| v.as_str()), Some(DEFAULT_HAIKU_DISPLAY_NAME));
+        assert_eq!(overrides.get("sonnet").and_then(|v| v.as_str()), Some(DEFAULT_SONNET_DISPLAY_NAME));
+        // A custom display name self-maps, so Claude Code leaves it alone.
+        assert_eq!(overrides.get("claude-opus-4-8").and_then(|v| v.as_str()), Some("claude-opus-4-8"));
+
+        // Display names lead the picker and the bare aliases survive alongside.
+        assert_eq!(available[0], "claude-opus-4-8");
+        for alias in ["opus", "sonnet", "haiku"] {
+            assert!(available.contains(&alias), "别名 {alias} 应保留在 availableModels 中");
+        }
+
+        // 1M-capable tiers offer a `[1m]` entry that keeps its suffix; Haiku,
+        // capped at 200K, never does.
+        assert!(available.contains(&"claude-opus-4-8[1m]"));
+        assert!(available.contains(&"claude-sonnet-5[1m]"));
+        assert!(!available.iter().any(|m| m.starts_with(DEFAULT_HAIKU_DISPLAY_NAME) && m.ends_with("[1m]")));
+        assert_eq!(overrides.get("claude-opus-5[1m]").and_then(|v| v.as_str()), Some("claude-opus-4-8[1m]"));
+        assert_eq!(
+            overrides.get("claude-haiku-4-5[1m]").and_then(|v| v.as_str()),
+            Some(DEFAULT_HAIKU_DISPLAY_NAME)
+        );
+
+        // Without the gateway nothing can translate a display name, so the wire
+        // has to carry the provider's own models.
+        let no_1m = crate::profile::ProviderConfig { supports_1m_context: Some(false), ..base.clone() };
+        write_claude_config(&no_1m, "p", false).await.unwrap();
+        let parsed = read_config();
+        let overrides = parsed.get("modelOverrides").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(overrides.get("opus").and_then(|v| v.as_str()), Some("glm-4.6"));
+        assert_eq!(overrides.get("sonnet").and_then(|v| v.as_str()), Some("glm-4.6"));
+        assert!(!parsed["availableModels"].as_array().unwrap().iter().any(|m| m == "claude-opus-4-8"));
+        // A `[1m]` request must not survive to an upstream that cannot serve it.
+        assert_eq!(overrides.get("claude-opus-5[1m]").and_then(|v| v.as_str()), Some("glm-4.6"));
+    }
+
+    #[test]
+    fn test_strip_anthropic_version_suffix() {
+        // A trailing /v1 must be removed: the Anthropic SDK appends it itself.
+        assert_eq!(
+            strip_anthropic_version_suffix("http://127.0.0.1:18888/v1"),
+            "http://127.0.0.1:18888"
+        );
+        // Trailing slashes must not defeat the check.
+        assert_eq!(
+            strip_anthropic_version_suffix("http://127.0.0.1:18888/v1/"),
+            "http://127.0.0.1:18888"
+        );
+        // Already bare URLs stay untouched (minus trailing slashes).
+        assert_eq!(
+            strip_anthropic_version_suffix("https://api.example.com/"),
+            "https://api.example.com"
+        );
+        // "/v1" must only be stripped as a whole path segment.
+        assert_eq!(
+            strip_anthropic_version_suffix("https://api.example.com/openai/v1"),
+            "https://api.example.com/openai"
+        );
+        // A host ending in something like "apiv1" is not a /v1 suffix.
+        assert_eq!(
+            strip_anthropic_version_suffix("https://apiv1.example.com"),
+            "https://apiv1.example.com"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_claude_config_base_url_has_no_v1_suffix() {
+        let _home_guard = lock_home_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
+        let claude_dir = temp_home.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+
+        // Seed ~/.claude.json with a leftover managed key to prove it gets cleaned.
+        let claude_json_path = temp_home.path().join(".claude.json");
+        std::fs::write(
+            &claude_json_path,
+            r#"{"primaryApiKey":"sk-ant-leftover","oauthAccount":{"emailAddress":"a@b.c"}}"#,
+        )
+        .unwrap();
+
+        let mut provider = crate::profile::ProviderConfig {
+            id: "p".into(),
+            name: "P".into(),
+            // Deliberately configured WITH a /v1 suffix.
+            base_url: "https://relay.example.com/v1".into(),
+            protocol: crate::types::ProtocolKind::Anthropic,
+            is_primary: true,
+            codex_compat: crate::types::CodexToolCompat::ResponsesFunction,
+            reasoning_confidence: crate::types::ReasoningConfidence::Unknown,
+            models: vec!["claude-opus-5".into()],
+            default_model: "claude-opus-5".into(),
+            accept_invalid_certs: false,
+            max_price_per_request: None,
+            rate_limit: crate::profile::RateLimitSettings::default(),
+            supports_1m_context: Some(false),
+            default_effort_level: Some("high".into()),
+            opus_model: None,
+            sonnet_model: None,
+            haiku_model: None,
+            opus_display_name: None,
+            sonnet_display_name: None,
+            haiku_display_name: None,
+        };
+
+        let read_base_url = |dir: &std::path::Path| -> String {
+            let content = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+            parsed["env"]["ANTHROPIC_BASE_URL"].as_str().unwrap().to_string()
+        };
+
+        // Gateway mode: must point at the bare loopback origin.
+        write_claude_config(&provider, "prof", true).await.unwrap();
+        let gw_url = read_base_url(&claude_dir);
+        assert_eq!(gw_url, format!("http://127.0.0.1:{GATEWAY_PORT}"));
+        assert!(
+            !gw_url.ends_with("/v1"),
+            "ANTHROPIC_BASE_URL 不能以 /v1 结尾，否则 Claude Code 会请求 /v1/v1/messages 而 404"
+        );
+
+        // Direct mode: the provider /v1 suffix must be stripped, not appended to.
+        write_claude_config(&provider, "prof", false).await.unwrap();
+        let direct_url = read_base_url(&claude_dir);
+        assert_eq!(direct_url, "https://relay.example.com");
+        assert!(!direct_url.ends_with("/v1"), "直连模式同样不能保留 /v1 后缀");
+
+        // Direct mode without a /v1 suffix must stay unchanged.
+        provider.base_url = "https://relay.example.com".into();
+        write_claude_config(&provider, "prof", false).await.unwrap();
+        assert_eq!(read_base_url(&claude_dir), "https://relay.example.com");
+
+        // The stale /login managed key must be gone, otherwise Claude Code warns
+        // "Both ANTHROPIC_AUTH_TOKEN and /login managed key set".
+        let claude_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&claude_json_path).unwrap()).unwrap();
+        assert!(
+            claude_json.get("primaryApiKey").is_none(),
+            "~/.claude.json 不应残留 primaryApiKey"
+        );
+        assert!(
+            claude_json.get("oauthAccount").is_none(),
+            "~/.claude.json 不应残留 oauthAccount"
+        );
     }
 }

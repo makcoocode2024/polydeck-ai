@@ -21,6 +21,8 @@ pub fn build_gateway_config(
         }
         _ => polydeck_gateway::ResponsesMode::Auto,
     };
+    let (opus_display, sonnet_display, haiku_display) =
+        polydeck_core::profile_switch::claude_display_names(primary);
 
     polydeck_gateway::GatewayConfig {
         listen_addr: Some(std::net::SocketAddr::from(([127, 0, 0, 1], 18888))),
@@ -33,8 +35,22 @@ pub fn build_gateway_config(
             max_price_per_request: primary.max_price_per_request,
             responses_mode,
             rate_limit: primary.rate_limit.clone(),
+            default_effort_level: primary.default_effort_level.clone(),
         },
-        model_rewrites: vec![],
+        model_rewrites: polydeck_gateway::model_rewrite::generate_provider_model_rewrites_with_overrides(
+            &primary.models,
+            primary.supports_1m_context.unwrap_or(false),
+            polydeck_gateway::model_rewrite::TierOverrides {
+                sonnet_model: primary.sonnet_model.as_deref(),
+                opus_model: primary.opus_model.as_deref(),
+                haiku_model: primary.haiku_model.as_deref(),
+                // Claude Code sends the display names the profile writer gave it,
+                // so the gateway resolves the effective ones, not the raw fields.
+                sonnet_display_name: Some(sonnet_display),
+                opus_display_name: Some(opus_display),
+                haiku_display_name: Some(haiku_display),
+            },
+        ),
         timeout: std::time::Duration::from_secs(120),
         max_retries: 3,
     }
@@ -57,7 +73,7 @@ pub async fn ad_gateway_start(
         let active_profile = pm_guard
             .active_profile()
             .or_else(|| pm_guard.list_profiles().into_iter().next())
-            .ok_or_else(|| "û�п��õ����÷�������������".to_string())?;
+            .ok_or_else(|| "没有可用的配置方案，请先创建".to_string())?;
 
         let primary = active_profile
             .providers
@@ -65,7 +81,7 @@ pub async fn ad_gateway_start(
             .find(|p| p.is_primary)
             .or_else(|| active_profile.providers.first())
             .cloned()
-            .ok_or_else(|| "���÷�����δ���� Provider �ڵ�".to_string())?;
+.ok_or_else(|| "配置方案中未配置 Provider 节点".to_string())?;
 
         (active_profile, primary)
     };

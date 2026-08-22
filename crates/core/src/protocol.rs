@@ -20,6 +20,8 @@ pub struct ProbeResult {
     pub codex_compat: CodexToolCompat,
     pub base_url: String,
     pub supports_streaming: bool,
+    #[serde(default)]
+    pub supports_1m_context: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -58,6 +60,52 @@ pub fn normalize_url(url: &str) -> String {
 }
 
 /// Probe a provider endpoint to detect protocol, models, and capabilities.
+
+pub async fn probe_1m_context(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    protocol: ProtocolKind,
+    model_name: &str,
+) -> bool {
+    let probe_model = format!("{model_name}[1m]");
+    let url = normalize_url(base_url);
+
+    if protocol == ProtocolKind::Anthropic {
+        let body = serde_json::json!({
+            "model": probe_model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ping"}],
+        });
+        if let Ok(resp) = client
+            .post(format!("{url}/v1/messages"))
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&body)
+            .send()
+            .await
+        {
+            return resp.status().is_success();
+        }
+    } else {
+        let body = serde_json::json!({
+            "model": probe_model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ping"}],
+        });
+        if let Ok(resp) = client
+            .post(format!("{url}/v1/chat/completions"))
+            .bearer_auth(api_key)
+            .json(&body)
+            .send()
+            .await
+        {
+            return resp.status().is_success();
+        }
+    }
+    false
+}
+
 pub async fn probe(
     base_url: &str,
     api_key: &str,
@@ -174,6 +222,16 @@ pub async fn probe(
         evidence.push("上游终端原生支持 OpenAI Responses API 协议".into());
     }
 
+   let supports_1m_context = if let Some(first_model) = models.first() {
+        let ok = probe_1m_context(&client, &url, api_key, protocol, &first_model.id).await;
+        if ok {
+            evidence.push("供应商端点支持 [1m] 原生长上下文".into());
+        }
+        Some(ok)
+    } else {
+        None
+    };
+
     Ok(ProbeResult {
         protocol,
         confidence,
@@ -182,6 +240,7 @@ pub async fn probe(
         codex_compat,
         base_url: url,
         supports_streaming: true,
+        supports_1m_context,
     })
 }
 
