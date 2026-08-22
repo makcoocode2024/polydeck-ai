@@ -66,6 +66,212 @@ pub fn claude_display_names(provider: &crate::profile::ProviderConfig) -> (&str,
     )
 }
 
+/// The model a client should default to for this provider.
+///
+/// Shared so the tier resolution below and `write_claude_config` cannot drift
+/// apart on which model counts as the default.
+fn claude_default_model(provider: &crate::profile::ProviderConfig) -> &str {
+    if !provider.default_model.trim().is_empty() {
+        provider.default_model.trim()
+    } else if let Some(first) = provider.models.first().filter(|s| !s.trim().is_empty()) {
+        first.trim()
+    } else {
+        // Last-resort fallback: use the generic "sonnet" alias rather than a
+        // pinned retired ID like claude-3-7-sonnet-latest, which would make
+        // Claude Code show a retirement banner.
+        "sonnet"
+    }
+}
+
+/// Pick the model that best serves a tier among those matching it.
+///
+/// Relays decorate names freely (`claude-opus-5-A`, `Claude-5-opus-preview`,
+/// `Claude-Opus-5-thinking`), so a catalog often matches one tier several times.
+/// Taking the first match made the answer depend on catalog order, which then
+/// decided whether the tier could keep its canonical display name — the same two
+/// models in the other order produced a different picker label.
+///
+/// So prefer, in order: the tier's canonical name exactly, then the least
+/// decorated match (shortest, ties by catalog order). The plain `claude-opus-5`
+/// wins over `claude-opus-5-A` however the relay lists them, and a decorated
+/// name is still picked when it is all there is.
+fn pick_tier_model<'a>(
+    models: &'a [String],
+    canonical: &str,
+    matches_tier: impl Fn(&str) -> bool,
+) -> Option<&'a str> {
+    let candidates: Vec<&'a str> = models
+        .iter()
+        .map(|m| m.trim())
+        .filter(|m| !m.is_empty() && matches_tier(&m.to_ascii_lowercase()))
+        .collect();
+
+    candidates
+        .iter()
+        .find(|m| m.eq_ignore_ascii_case(canonical))
+        .or_else(|| candidates.iter().min_by_key(|m| m.len()))
+        .copied()
+}
+
+/// The `(opus, sonnet, haiku)` provider models that actually serve each Claude
+/// Code tier: the explicit `*_model` override when set, else a name-based guess.
+///
+/// The guess is keyword-based and case-insensitive, so irregular relay spellings
+/// (`Claude-5-opus`, `claude-opus-5-A`, `anthropic/claude-opus-5`) still land on
+/// the right tier. A catalog whose names carry no tier word at all cannot be
+/// guessed — every tier then falls back to one model, and the `*_model` fields
+/// are the only way to spread the tiers out.
+pub fn claude_tier_candidates(provider: &crate::profile::ProviderConfig) -> (&str, &str, &str) {
+    let model_to_use = claude_default_model(provider);
+
+    let sonnet = provider
+        .sonnet_model
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            pick_tier_model(&provider.models, DEFAULT_SONNET_DISPLAY_NAME, |lower| {
+                lower.contains("sonnet") || lower.contains("claude-3-7") || lower.contains("claude-3.7")
+            })
+            .unwrap_or_else(|| {
+                if model_to_use.to_ascii_lowercase().contains("sonnet") {
+                    model_to_use
+                } else {
+                    provider.models.first().map(|s| s.as_str()).unwrap_or(model_to_use)
+                }
+            })
+        });
+
+    let opus = provider
+        .opus_model
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            pick_tier_model(&provider.models, DEFAULT_OPUS_DISPLAY_NAME, |lower| {
+                lower.contains("opus")
+            })
+            .unwrap_or(sonnet)
+        });
+
+    let haiku = provider
+        .haiku_model
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            pick_tier_model(&provider.models, DEFAULT_HAIKU_DISPLAY_NAME, |lower| {
+                lower.contains("haiku") || lower.contains("flash") || lower.contains("mini")
+            })
+            .unwrap_or(sonnet)
+        });
+
+    (opus, sonnet, haiku)
+}
+
+/// The `(opus, sonnet, haiku)` names that travel on the wire when the gateway is
+/// in front, which are also the names Claude Code shows.
+///
+/// Normally this is the display name: it has to be a built-in Anthropic ID or
+/// Claude Code cannot size or price the model, and the gateway maps it back to
+/// the provider's real model.
+///
+/// A display name that collides with a *different* provider model is the one
+/// case where that breaks down. Redirecting it would make the collided-with
+/// model unreachable — nobody could address the real `claude-opus-5` once it
+/// resolves to `claude-opus-5-max` — so this tier carries its upstream name
+/// instead. That name is one the provider serves, so the gateway's own
+/// passthrough rule routes it, the picker label matches what runs, and every
+/// provider model stays independently addressable.
+///
+/// The rule is structural, not tied to any naming convention: it asks only
+/// whether the shown name would shadow a different model, so `-max`, `-ultra`,
+/// `:max` and names with no tier word behave the same way.
+///
+/// Note this also overrides an *explicitly configured* display name when that
+/// name collides. Keeping it would strand the model it shadows, and a display
+/// name pointing at another of the provider's own models is a misconfiguration
+/// either way — but it does mean the setting is silently not honored.
+///
+/// The gateway has to resolve the same names this module writes, so both sides
+/// read them from here.
+pub fn claude_wire_names<'a>(provider: &'a crate::profile::ProviderConfig) -> (&'a str, &'a str, &'a str) {
+    let (opus_display, sonnet_display, haiku_display) = claude_display_names(provider);
+    let (opus_candidate, sonnet_candidate, haiku_candidate) = claude_tier_candidates(provider);
+    let served: HashSet<&str> = provider.models.iter().map(|m| m.trim()).collect();
+
+    let resolve = |display: &'a str, candidate: &'a str| -> &'a str {
+        if display != candidate && served.contains(display) { candidate } else { display }
+    };
+
+    (
+        resolve(opus_display, opus_candidate),
+        resolve(sonnet_display, sonnet_candidate),
+        resolve(haiku_display, haiku_candidate),
+    )
+}
+
+/// Warnings worth surfacing when a profile is activated, about how its tier
+/// wiring actually resolves.
+///
+/// Two silent failure modes get a message here:
+/// - Two tiers landing on one provider model, at least one of them guessed.
+///   A catalog with no tier words in its names hands every tier the same
+///   fallback, and nothing in the UI says the tiers are not actually spread
+///   out. Both explicitly pinned to one model is the user's own choice and
+///   stays quiet.
+/// - An explicit `*_display_name` that `claude_wire_names` had to override
+///   because it collided with a different provider model. The setting is
+///   silently not honored otherwise.
+pub fn claude_tier_warnings(provider: &crate::profile::ProviderConfig) -> Vec<String> {
+    let (opus, sonnet, haiku) = claude_tier_candidates(provider);
+    let explicitly_set = |v: &Option<String>| {
+        v.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_some()
+    };
+
+    let mut warnings = Vec::new();
+
+    // Collapsed tiers, one message per model they share.
+    let mut by_model: Vec<(&str, Vec<(&str, bool)>)> = Vec::new();
+    for (label, model, is_explicit) in [
+        ("Opus", opus, explicitly_set(&provider.opus_model)),
+        ("Sonnet", sonnet, explicitly_set(&provider.sonnet_model)),
+        ("Haiku", haiku, explicitly_set(&provider.haiku_model)),
+    ] {
+        match by_model.iter_mut().find(|(m, _)| *m == model) {
+            Some((_, labels)) => labels.push((label, is_explicit)),
+            None => by_model.push((model, vec![(label, is_explicit)])),
+        }
+    }
+    for (model, labels) in by_model {
+        if labels.len() > 1 && labels.iter().any(|(_, is_explicit)| !is_explicit) {
+            let names = labels
+                .iter()
+                .map(|(label, _)| *label)
+                .collect::<Vec<_>>()
+                .join("、");
+            warnings.push(format!(
+                "档位 {names} 都解析到模型 {model}，分档未生效；若目录里没有能区分档位的模型名，请在配置中分别指定 opus_model / sonnet_model / haiku_model"
+            ));
+        }
+    }
+
+    // Explicit display names the wire path had to give up because they collided
+    // with another provider model.
+    let (opus_display, sonnet_display, haiku_display) = claude_display_names(provider);
+    let (opus_wire, sonnet_wire, haiku_wire) = claude_wire_names(provider);
+    for (label, display, wire, is_explicit) in [
+        ("Opus", opus_display, opus_wire, explicitly_set(&provider.opus_display_name)),
+        ("Sonnet", sonnet_display, sonnet_wire, explicitly_set(&provider.sonnet_display_name)),
+        ("Haiku", haiku_display, haiku_wire, explicitly_set(&provider.haiku_display_name)),
+    ] {
+        if is_explicit && display != wire {
+            warnings.push(format!(
+                "{label} 档位的显示名 {display} 与提供方另一个模型重名，为避免它不可寻址，已改用上游名 {wire} 展示"
+            ));
+        }
+    }
+
+    warnings
+}
+
 /// Strip a trailing `/v1` (and any trailing slashes) from an Anthropic base URL.
 ///
 /// Claude Code talks to Anthropic-shaped endpoints through the official SDK,
@@ -116,11 +322,19 @@ pub async fn switch_profile(
 
     // If profile has providers, write client configs
     if !profile.providers.is_empty() {
-        let mut target_set = HashSet::new();
-        // Always ensure standard core clients receive the updated configuration on activation
-        for core_client in &["codex-cli", "claude-code", "claude-desktop", "hermes"] {
-            target_set.insert(core_client.to_string());
+        // Tier wiring is decided per-provider before any config lands on disk;
+        // surface collapses and overridden display names early so a profile that
+        // looks set up is not silently not set up.
+        if let Some(primary) = profile
+            .providers
+            .iter()
+            .find(|p| p.is_primary)
+            .or_else(|| profile.providers.first())
+        {
+            warnings.extend(claude_tier_warnings(primary));
         }
+
+        let mut target_set = HashSet::new();
         for client in &profile.clients {
             let clean = client.trim().to_ascii_lowercase();
             if !clean.is_empty() {
@@ -588,68 +802,10 @@ async fn write_claude_config(
         strip_anthropic_version_suffix(&provider.base_url)
     };
 
-    let model_to_use = if !provider.default_model.trim().is_empty() {
-        provider.default_model.trim()
-    } else if let Some(first) = provider.models.first().filter(|s| !s.trim().is_empty()) {
-        first.trim()
-    } else {
-        // Last-resort fallback: use the generic "sonnet" alias rather than a
-        // pinned retired ID like claude-3-7-sonnet-latest, which would make
-        // Claude Code show a retirement banner.
-        "sonnet"
-    };
+    let model_to_use = claude_default_model(provider);
 
-    // Find best candidates for Sonnet, Opus, Haiku (custom overrides prioritized)
-    let sonnet_candidate = provider
-        .sonnet_model
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| {
-            provider
-                .models
-                .iter()
-                .find(|m| {
-                    let lower = m.to_ascii_lowercase();
-                    lower.contains("sonnet") || lower.contains("claude-3-7") || lower.contains("claude-3.7")
-                })
-                .map(|s| s.as_str())
-                .unwrap_or_else(|| {
-                    if model_to_use.to_ascii_lowercase().contains("sonnet") {
-                        model_to_use
-                    } else {
-                        provider.models.first().map(|s| s.as_str()).unwrap_or(model_to_use)
-                    }
-                })
-        });
-
-    let opus_candidate = provider
-        .opus_model
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| {
-            provider
-                .models
-                .iter()
-                .find(|m| m.to_ascii_lowercase().contains("opus"))
-                .map(|s| s.as_str())
-                .unwrap_or(sonnet_candidate)
-        });
-
-    let haiku_candidate = provider
-        .haiku_model
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| {
-            provider
-                .models
-                .iter()
-                .find(|m| {
-                    let lower = m.to_ascii_lowercase();
-                    lower.contains("haiku") || lower.contains("flash") || lower.contains("mini")
-                })
-                .map(|s| s.as_str())
-                .unwrap_or(sonnet_candidate)
-        });
+    // Which provider model serves each tier (explicit override, else guessed).
+    let (opus_candidate, sonnet_candidate, haiku_candidate) = claude_tier_candidates(provider);
 
     let supports_1m = provider.supports_1m_context.unwrap_or(false);
 
@@ -658,7 +814,7 @@ async fn write_claude_config(
     // the provider's real model, so without it the wire has to carry the
     // upstream names and no display name is possible.
     let (sonnet_wire, opus_wire, haiku_wire) = if gateway_enabled {
-        let (opus, sonnet, haiku) = claude_display_names(provider);
+        let (opus, sonnet, haiku) = claude_wire_names(provider);
         (sonnet, opus, haiku)
     } else {
         (sonnet_candidate, opus_candidate, haiku_candidate)
@@ -869,6 +1025,27 @@ async fn write_claude_config(
         env_obj.insert(
             "CLAUDE_CODE_SUBAGENT_MODEL".into(),
             serde_json::Value::String("inherit".into()),
+        );
+
+        // Without this the `/model` picker only ever offers the three tier slots
+        // written above, no matter how many models the provider serves. The
+        // gateway answers `/v1/models` with the capability metadata the picker
+        // needs (see gateway::router::synthesize_models_response), so turn the
+        // discovery call on to let every provider model reach the picker — each
+        // with its own effort control, which a bare tier slot never gets.
+        //
+        // Only meaningful behind the gateway: pointed straight at a provider,
+        // the discovery call would hit an upstream that owes us nothing.
+        //
+        // Written on both branches rather than only when enabled. This file is
+        // merged, not replaced, so skipping the write leaves whatever the last
+        // profile put here — a gateway-less profile inheriting "1" sends the
+        // picker at an upstream that never answers it, and a gateway profile
+        // inheriting "0" silently falls back to Claude Code's built-in model
+        // list, which is what made the picker label tiers with stale names.
+        env_obj.insert(
+            "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY".into(),
+            serde_json::Value::String(if gateway_enabled { "1" } else { "0" }.into()),
         );
         let effort_level = if let Some(eff) = &provider.default_effort_level {
             if !eff.trim().is_empty() {
@@ -1245,7 +1422,7 @@ mod tests {
         let p1 = pm.update_profile(&p1.id, ProfileUpdate {
             name: Some("方案Alpha".into()),
             providers: Some(p1.providers),
-            clients: None,
+            clients: Some(vec!["codex-cli".into(), "claude-code".into(), "hermes".into(), "claude-desktop".into()]),
             gateway_enabled: Some(true),
             failover_enabled: None,
         }).unwrap();
@@ -1257,7 +1434,7 @@ mod tests {
         let p2 = pm.update_profile(&p2.id, ProfileUpdate {
             name: Some("方案Beta".into()),
             providers: Some(p2.providers),
-            clients: None,
+            clients: Some(vec!["codex-cli".into(), "claude-code".into(), "hermes".into(), "claude-desktop".into()]),
             gateway_enabled: Some(true),
             failover_enabled: None,
         }).unwrap();
@@ -1409,20 +1586,34 @@ mod tests {
         let content2 = std::fs::read_to_string(&settings_path).unwrap();
         let parsed2: serde_json::Value = serde_json::from_str(&content2).unwrap();
         let overrides2 = parsed2.get("modelOverrides").and_then(|v| v.as_object()).unwrap();
-        // Custom *upstream* models do not change what Claude Code is shown; they
-        // change what the gateway forwards, which this config never mentions.
-        assert_eq!(overrides2.get("opus").and_then(|v| v.as_str()), Some(DEFAULT_OPUS_DISPLAY_NAME));
+        // A custom upstream model normally leaves the shown name alone — except
+        // where the tier's display name is another model this provider serves.
+        // `claude-opus-5` is such a name here, so the Opus tier carries its
+        // upstream name instead and the literal `claude-opus-5` stays reachable.
+        assert_eq!(overrides2.get("opus").and_then(|v| v.as_str()), Some("claude-opus-5-max"));
         assert_eq!(overrides2.get("sonnet").and_then(|v| v.as_str()), Some(DEFAULT_SONNET_DISPLAY_NAME));
         assert_eq!(overrides2.get("haiku").and_then(|v| v.as_str()), Some(DEFAULT_HAIKU_DISPLAY_NAME));
+        // `claude-opus-5` must still address the provider's own model, not the tier.
+        assert_eq!(overrides2.get("claude-opus-5").and_then(|v| v.as_str()), Some("claude-opus-5"));
         let env2 = parsed2.get("env").and_then(|v| v.as_object()).unwrap();
         assert_eq!(
             env2.get("ANTHROPIC_DEFAULT_OPUS_MODEL").and_then(|v| v.as_str()),
-            Some(DEFAULT_OPUS_DISPLAY_NAME)
+            Some("claude-opus-5-max")
         );
-        // The description is the only place the real upstream model surfaces.
+        // Wire name and upstream now agree, so the label states one model.
         assert_eq!(
             env2.get("ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION").and_then(|v| v.as_str()),
-            Some("claude-opus-5 -> claude-opus-5-max via Custom Provider")
+            Some("claude-opus-5-max via Custom Provider")
+        );
+        // Sonnet did not collide, so it keeps the display-name indirection.
+        assert_eq!(
+            env2.get("ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION").and_then(|v| v.as_str()),
+            Some("claude-sonnet-5 -> claude-opus-5-xhigh via Custom Provider")
+        );
+        // Discovery has to be on, or the picker only ever offers the three slots.
+        assert_eq!(
+            env2.get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY").and_then(|v| v.as_str()),
+            Some("1")
         );
 
         // 5. Retired model IDs must never be emitted: Claude Code renders a
@@ -1443,6 +1634,211 @@ mod tests {
                 "modelOverrides 不应包含已退役模型 {retired}，否则 Claude Code 会显示退役警告"
             );
         }
+    }
+
+    /// Build a provider carrying just the fields tier resolution reads.
+    fn tier_provider(
+        models: &[&str],
+        opus: Option<&str>,
+        sonnet: Option<&str>,
+        haiku: Option<&str>,
+    ) -> crate::profile::ProviderConfig {
+        crate::profile::ProviderConfig {
+            id: "p".into(),
+            name: "P".into(),
+            base_url: "http://127.0.0.1:18888".into(),
+            protocol: crate::types::ProtocolKind::Anthropic,
+            is_primary: true,
+            codex_compat: crate::types::CodexToolCompat::ResponsesFunction,
+            reasoning_confidence: crate::types::ReasoningConfidence::Unknown,
+            models: models.iter().map(|s| s.to_string()).collect(),
+            default_model: models.first().unwrap_or(&"sonnet").to_string(),
+            accept_invalid_certs: false,
+            max_price_per_request: None,
+            rate_limit: crate::profile::RateLimitSettings::default(),
+            supports_1m_context: Some(false),
+            default_effort_level: None,
+            opus_model: opus.map(str::to_string),
+            sonnet_model: sonnet.map(str::to_string),
+            haiku_model: haiku.map(str::to_string),
+            opus_display_name: None,
+            sonnet_display_name: None,
+            haiku_display_name: None,
+        }
+    }
+
+    #[test]
+    fn tier_guess_reads_irregular_relay_spellings() {
+        // Relays rename freely. The guess is keyword-based and case-insensitive,
+        // so a reordered, decorated or vendor-prefixed name still lands.
+        for (catalog, expected_opus) in [
+            (vec!["Claude-5-opus", "Claude-5-sonnet"], "Claude-5-opus"),
+            (vec!["claude-opus-5-A", "claude-sonnet-5-A"], "claude-opus-5-A"),
+            (vec!["Claude.Opus.5", "Claude.Sonnet.4.5"], "Claude.Opus.5"),
+            (vec!["Claude-Opus-5-thinking"], "Claude-Opus-5-thinking"),
+            (vec!["anthropic/claude-opus-5"], "anthropic/claude-opus-5"),
+            (vec!["CLAUDE-5-OPUS"], "CLAUDE-5-OPUS"),
+        ] {
+            let provider = tier_provider(&catalog, None, None, None);
+            let (opus, _, _) = claude_tier_candidates(&provider);
+            assert_eq!(opus, expected_opus, "catalog {catalog:?}");
+        }
+    }
+
+    #[test]
+    fn tier_guess_prefers_the_canonical_name_over_catalog_order() {
+        // Both orders must agree, or the same two models would produce different
+        // picker labels depending on how the relay happened to list them.
+        for catalog in [
+            vec!["claude-opus-5", "claude-opus-5-A"],
+            vec!["claude-opus-5-A", "claude-opus-5"],
+        ] {
+            let provider = tier_provider(&catalog, None, None, None);
+            let (opus, _, _) = claude_tier_candidates(&provider);
+            assert_eq!(opus, "claude-opus-5", "catalog {catalog:?}");
+            // And the tier keeps its canonical label, which is what lets Claude
+            // Code size and price it.
+            let (opus_wire, _, _) = claude_wire_names(&provider);
+            assert_eq!(opus_wire, DEFAULT_OPUS_DISPLAY_NAME);
+        }
+    }
+
+    #[test]
+    fn tier_guess_falls_back_to_least_decorated_match() {
+        // No canonical name present, so the plainest match wins either order.
+        for catalog in [
+            vec!["Claude-5-opus-preview", "Claude-5-opus"],
+            vec!["Claude-5-opus", "Claude-5-opus-preview"],
+        ] {
+            let provider = tier_provider(&catalog, None, None, None);
+            let (opus, _, _) = claude_tier_candidates(&provider);
+            assert_eq!(opus, "Claude-5-opus", "catalog {catalog:?}");
+        }
+    }
+
+    #[test]
+    fn wire_name_falls_back_to_upstream_only_on_collision() {
+        // `claude-opus-5` is both the default Opus display name and a model this
+        // provider serves, while the tier is pinned to `-max`. Redirecting the
+        // display name would strand the literal model, so the tier takes the
+        // upstream name. Sonnet's display name collides with nothing and keeps
+        // the indirection that lets Claude Code size and price it.
+        let provider = tier_provider(
+            &["model-S", "claude-opus-5", "claude-opus-5-max", "claude-opus-5-xhigh", "model-T"],
+            Some("claude-opus-5-max"),
+            Some("claude-opus-5-xhigh"),
+            Some("model-T"),
+        );
+        let (opus, sonnet, haiku) = claude_wire_names(&provider);
+        assert_eq!(opus, "claude-opus-5-max");
+        assert_eq!(sonnet, DEFAULT_SONNET_DISPLAY_NAME);
+        assert_eq!(haiku, DEFAULT_HAIKU_DISPLAY_NAME);
+    }
+
+    #[test]
+    fn wire_names_keep_display_names_for_unrelated_providers() {
+        // The ordinary case: a GLM provider serves no Claude names, so all three
+        // tiers keep their display names and the gateway maps them back.
+        let provider = tier_provider(&["glm-4.6", "glm-4.5-air"], None, None, Some("glm-4.5-air"));
+        let (opus, sonnet, haiku) = claude_wire_names(&provider);
+        assert_eq!(opus, DEFAULT_OPUS_DISPLAY_NAME);
+        assert_eq!(sonnet, DEFAULT_SONNET_DISPLAY_NAME);
+        assert_eq!(haiku, DEFAULT_HAIKU_DISPLAY_NAME);
+    }
+
+    #[test]
+    fn wire_name_keeps_display_name_when_it_is_the_tier_model() {
+        // Serving `claude-opus-5` *as* the Opus tier is not a collision; the name
+        // means the same thing on both sides.
+        let provider = tier_provider(&["claude-opus-5", "model-S"], None, None, None);
+        let (opus, _, _) = claude_wire_names(&provider);
+        assert_eq!(opus, "claude-opus-5");
+    }
+
+    #[tokio::test]
+    async fn discovery_flag_tracks_the_gateway_and_never_inherits() {
+        // settings.json is merged, not replaced. A gateway profile that wrote "1"
+        // must not leave it behind for a gateway-less profile, and vice versa —
+        // an inherited "0" is what made the picker fall back to Claude Code's
+        // built-in model list and label tiers with stale names.
+        let _home_guard = lock_home_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
+        let claude_dir = temp_home.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        let settings_path = claude_dir.join("settings.json");
+
+        let provider = tier_provider(&["claude-opus-5-max", "claude-sonnet-5"], None, None, None);
+        let read_flag = |path: &std::path::Path| -> Option<String> {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            parsed
+                .pointer("/env/CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        };
+
+        write_claude_config(&provider, "p", true).await.unwrap();
+        assert_eq!(read_flag(&settings_path).as_deref(), Some("1"));
+
+        // Same file, gateway now off: the flag has to flip, not linger.
+        write_claude_config(&provider, "p", false).await.unwrap();
+        assert_eq!(read_flag(&settings_path).as_deref(), Some("0"));
+
+        // And back on again.
+        write_claude_config(&provider, "p", true).await.unwrap();
+        assert_eq!(read_flag(&settings_path).as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn tier_warnings_flag_collapsed_tiers() {
+        // A catalog with no tier words hands every tier the same fallback; the
+        // switch must say so instead of letting the collapse pass silently.
+        let provider = tier_provider(&["model-S", "model-O", "model-A", "model-T"], None, None, None);
+        let warnings = claude_tier_warnings(&provider);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("model-S"), "{warnings:?}");
+        assert!(warnings[0].contains("Opus"), "{warnings:?}");
+        assert!(warnings[0].contains("Haiku"), "{warnings:?}");
+    }
+
+    #[test]
+    fn tier_warnings_stay_quiet_when_every_tier_is_pinned() {
+        // All three pinned to one model is deliberate and must not warn.
+        let provider = tier_provider(&["big", "mid", "small"], Some("big"), Some("big"), Some("big"));
+        assert!(claude_tier_warnings(&provider).is_empty());
+    }
+
+    #[test]
+    fn tier_warnings_flag_overridden_explicit_display_names() {
+        // The display name collides with a different provider model, so the wire
+        // name overrides it; the user set it explicitly and needs to know.
+        let mut provider = tier_provider(
+            &["claude-opus-5", "claude-opus-5-max", "model-S"],
+            Some("claude-opus-5-max"),
+            None,
+            None,
+        );
+        provider.opus_display_name = Some("claude-opus-5".into());
+        let warnings = claude_tier_warnings(&provider);
+        let hit = warnings
+            .iter()
+            .find(|w| w.contains("claude-opus-5-max") && w.contains("claude-opus-5"))
+            .expect("override warning missing: {warnings:?}");
+        assert!(hit.contains("显示名"), "{hit}");
+    }
+
+    #[test]
+    fn tier_warnings_quiet_when_the_display_name_is_its_own_model() {
+        // Each tier serves a distinct model and the display names equal them, so
+        // neither collapse nor override warnings apply.
+        let provider = tier_provider(
+            &["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
+            None,
+            None,
+            None,
+        );
+        assert!(claude_tier_warnings(&provider).is_empty());
     }
 
     #[tokio::test]

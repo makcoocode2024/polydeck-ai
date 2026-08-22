@@ -363,13 +363,46 @@ fn is_claude_code_client(headers: &HeaderMap) -> bool {
         .is_some_and(|ua| ua.starts_with("claude-code/"))
 }
 
+/// Separators relays put between a model name and an effort suffix.
+const EFFORT_SUFFIX_SEPARATORS: [char; 3] = ['-', '_', ':'];
+
+/// Whether this upstream deals in `max` effort at all.
+///
+/// Relays that serve the level expose it as its own model id, so the signal is a
+/// `…-max` id **whose base model is also advertised** — `claude-opus-5` next to
+/// `claude-opus-5-max` means the suffix selects an effort level. Requiring the
+/// pair is what separates that from a product name: `qwen-max` and `glm-4-max`
+/// end the same way but are model tiers, and offering `max` there would only
+/// produce requests the upstream rejects.
+///
+/// Asked per response rather than assumed, because most upstreams have no `max`.
+fn upstream_serves_max_effort(data: &[Value]) -> bool {
+    let ids: Vec<String> = data
+        .iter()
+        .filter_map(|m| m.get("id").and_then(Value::as_str))
+        .map(|id| id.trim().to_ascii_lowercase())
+        .collect();
+
+    // A context marker such as `[1m]` sits outside the effort suffix, so compare
+    // on the part before it: a relay may advertise only `claude-opus-5-max[1m]`.
+    let core = |id: &str| id.split('[').next().unwrap_or(id).to_string();
+
+    ids.iter().any(|id| {
+        EFFORT_SUFFIX_SEPARATORS.iter().any(|sep| {
+            core(id)
+                .strip_suffix(&format!("{sep}max"))
+                .is_some_and(|base| !base.is_empty() && ids.iter().any(|other| core(other) == base))
+        })
+    })
+}
+
 /// Default capability blob for models that carry no capability metadata.
 ///
 /// Claude Code decides whether a model gets an effort picker from
 /// `capabilities.effort.supported`, not from the model name, so third-party
 /// names (gpt-5.6-luna, deepseek-v4-pro-0813) need this synthesized or the
-/// picker never appears. `max` stays unsupported because few upstreams serve it.
-fn synthesize_capabilities() -> Value {
+/// picker never appears.
+fn synthesize_capabilities(serves_max: bool) -> Value {
     serde_json::json!({
         "effort": {
             "supported": true,
@@ -377,7 +410,7 @@ fn synthesize_capabilities() -> Value {
             "medium": {"supported": true},
             "high": {"supported": true},
             "xhigh": {"supported": true},
-            "max": {"supported": false}
+            "max": {"supported": serves_max}
         },
         "thinking": {
             "supported": true,
@@ -403,9 +436,10 @@ fn synthesize_capabilities() -> Value {
 /// model picker filters on that prefix), and always emit an Anthropic page.
 fn synthesize_models_response(raw: Value, is_claude_code: bool) -> Value {
     let data = raw.get("data").and_then(Value::as_array).cloned().unwrap_or_default();
+    let serves_max = upstream_serves_max_effort(&data);
     let models: Vec<Value> = data.into_iter().map(|mut m| {
         if m.get("capabilities").is_none() {
-            m["capabilities"] = synthesize_capabilities();
+            m["capabilities"] = synthesize_capabilities(serves_max);
         }
         if !m.get("max_input_tokens").and_then(Value::as_u64).is_some() {
             m["max_input_tokens"] = serde_json::json!(200000);
@@ -1232,6 +1266,7 @@ mod tests {
         assert_eq!(resp["first_id"], "claude-code/gpt-5.6-luna");
         for m in resp["data"].as_array().unwrap() {
             assert_eq!(m["capabilities"]["effort"]["supported"], true);
+            // No `-max` id in this catalog, so the level stays off.
             assert_eq!(m["capabilities"]["effort"]["max"]["supported"], false);
         }
 
@@ -1240,6 +1275,68 @@ mod tests {
         let ids_plain: Vec<&str> = resp_plain["data"].as_array().unwrap().iter()
             .map(|m| m["id"].as_str().unwrap()).collect();
         assert_eq!(ids_plain, vec!["gpt-5.6-luna", "claude-opus-5", "deepseek-v4-pro-0813"]);
+    }
+
+    /// A relay that exposes `max` as its own model id does serve the level, so
+    /// the picker must offer it. Hard-coding it off hid the level from exactly
+    /// the upstreams that have it.
+    #[test]
+    fn max_effort_offered_when_upstream_advertises_a_max_model() {
+        let raw = serde_json::json!({
+            "data": [
+                { "id": "claude-opus-5" },
+                { "id": "claude-opus-5-max" },
+                { "id": "model-T" }
+            ]
+        });
+        let resp = synthesize_models_response(raw, true);
+        for m in resp["data"].as_array().unwrap() {
+            assert_eq!(m["capabilities"]["effort"]["max"]["supported"], true);
+            assert_eq!(m["capabilities"]["effort"]["xhigh"]["supported"], true);
+        }
+    }
+
+    fn ids_to_data(ids: &[&str]) -> Vec<Value> {
+        ids.iter().map(|id| serde_json::json!({ "id": id })).collect()
+    }
+
+    #[test]
+    fn max_effort_detection_spans_suffix_spellings() {
+        // The separator and any trailing context marker must not hide the pair.
+        for ids in [
+            ["claude-opus-5", "claude-opus-5-max"],
+            ["claude-opus-5", "claude-opus-5_max"],
+            ["claude-opus-5", "claude-opus-5:max"],
+            ["claude-opus-5", "claude-opus-5-max[1m]"],
+            ["claude-opus-5[1m]", "claude-opus-5-max"],
+            ["CLAUDE-OPUS-5", "Claude-Opus-5-MAX"],
+        ] {
+            assert!(
+                upstream_serves_max_effort(&ids_to_data(&ids)),
+                "{ids:?} advertises a max variant of an advertised base"
+            );
+        }
+    }
+
+    #[test]
+    fn max_effort_not_inferred_from_product_names() {
+        // `max` as part of a model tier's own name is not an effort level, and
+        // offering it would only produce requests the upstream rejects.
+        for ids in [
+            vec!["qwen-max", "qwen-plus"],
+            vec!["kimi-max", "kimi-k2"],
+            vec!["glm-4-max", "glm-4-air"],
+            vec!["gpt-maxi", "gpt"],
+            // No base model advertised alongside it.
+            vec!["claude-opus-5-max"],
+            // Nothing resembling max at all.
+            vec!["claude-opus-5", "claude-opus-5-xhigh"],
+        ] {
+            assert!(
+                !upstream_serves_max_effort(&ids_to_data(&ids)),
+                "{ids:?} carries no evidence of a max effort level"
+            );
+        }
     }
 
     #[test]

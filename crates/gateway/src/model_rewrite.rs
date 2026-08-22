@@ -65,6 +65,12 @@ impl ModelRewriter {
 /// (see `polydeck_core::profile_switch`); they arrive on the wire and have to be
 /// mapped back, which is the whole reason a display name can differ from the
 /// provider's own model name.
+///
+/// Callers that resolve the tiers themselves — the live gateway does, via
+/// `profile_switch::claude_tier_candidates` — should pass `*_model` for every
+/// tier. The guess below is a fallback, and it is deliberately cruder than that
+/// function; letting both run on the same provider is how the picker label and
+/// the routing end up on different models.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TierOverrides<'a> {
     pub sonnet_model: Option<&'a str>,
@@ -219,8 +225,12 @@ pub fn generate_provider_model_rewrites_with_overrides(
         ("Haiku", tiers.haiku_display_name, haiku_candidate),
     ] {
         let Some(display) = display.map(str::trim).filter(|d| !d.is_empty()) else { continue };
-        if provider_model_set.contains(display) {
-            // The provider serves this name itself; its self-map already stands.
+        if display == candidate {
+            // Already the tier's own model; the step-1 self-map says the same
+            // thing. Testing that rather than mere membership in the provider's
+            // list matters: a display name that is *some other* provider model
+            // still has to be redirected here, or step 1's self-map wins and the
+            // tier silently serves the wrong model.
             continue;
         }
         rules.push(
@@ -409,12 +419,32 @@ mod tests {
     }
 
     #[test]
-    fn display_name_the_provider_serves_itself_is_left_alone() {
+    fn display_name_that_is_its_own_tier_model_passes_through() {
         let models = vec!["claude-opus-5".to_string()];
         let tiers = TierOverrides { opus_display_name: Some("claude-opus-5"), ..Default::default() };
         let rules = generate_provider_model_rewrites_with_overrides(&models, false, tiers);
         let rewriter = ModelRewriter::new(&rules).unwrap();
         assert_eq!(rewriter.rewrite_request("claude-opus-5"), "claude-opus-5");
+    }
+
+    /// A display name that is *another* provider model must still be redirected.
+    ///
+    /// Skipping on mere membership in the provider's list left step 1's self-map
+    /// in charge, so an Opus tier explicitly pinned to `-max` quietly served the
+    /// base model while the picker label promised `-max`.
+    #[test]
+    fn display_name_colliding_with_another_model_still_redirects() {
+        let models = vec!["claude-opus-5".to_string(), "claude-opus-5-max".to_string()];
+        let tiers = TierOverrides {
+            opus_model: Some("claude-opus-5-max"),
+            opus_display_name: Some("claude-opus-5"),
+            ..Default::default()
+        };
+        let rules = generate_provider_model_rewrites_with_overrides(&models, false, tiers);
+        let rewriter = ModelRewriter::new(&rules).unwrap();
+        assert_eq!(rewriter.rewrite_request("claude-opus-5"), "claude-opus-5-max");
+        // The pinned model still addresses itself.
+        assert_eq!(rewriter.rewrite_request("claude-opus-5-max"), "claude-opus-5-max");
     }
 
     #[test]
