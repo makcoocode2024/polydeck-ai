@@ -1,4 +1,4 @@
-﻿//! Encrypted backup/restore for chat history using XChaCha20-Poly1305.
+//! Encrypted backup/restore for chat history using XChaCha20-Poly1305.
 //!
 //! Encryption keys are stored in the OS keyring. Backup files are JSON
 //! with hex-encoded nonce and ciphertext. Tampering is detected and rejected.
@@ -93,19 +93,20 @@ pub fn decrypt_data(encrypted_json: &[u8]) -> AppResult<Vec<u8>> {
     }
 
     let key = credentials::chat_backup_key()?;
-    let nonce = hex::decode(&file.nonce)
-        .map_err(|_| AppError::Encryption("随机数无效".into()))?;
-    let ciphertext = hex::decode(&file.ciphertext)
-        .map_err(|_| AppError::Encryption("密文无效".into()))?;
+    let nonce = hex::decode(&file.nonce).map_err(|_| AppError::Encryption("随机数无效".into()))?;
+    let ciphertext =
+        hex::decode(&file.ciphertext).map_err(|_| AppError::Encryption("密文无效".into()))?;
 
     let cipher = XChaCha20Poly1305::new_from_slice(&key)
         .map_err(|_| AppError::Encryption("无法初始化解密器".into()))?;
 
     cipher
         .decrypt(XNonce::from_slice(&nonce), ciphertext.as_ref())
-        .map_err(|_| AppError::Encryption(
-            "解密失败：文件已损坏、被修改，或不是由当前系统用户创建的备份".into(),
-        ))
+        .map_err(|_| {
+            AppError::Encryption(
+                "解密失败：文件已损坏、被修改，或不是由当前系统用户创建的备份".into(),
+            )
+        })
 }
 
 #[cfg(test)]
@@ -115,7 +116,9 @@ mod tests {
     #[test]
     fn encrypt_decrypt_roundtrip() {
         // This test requires keyring access, skip in CI or headless environments
-        if std::env::var("CI").is_ok() { return; }
+        if std::env::var("CI").is_ok() {
+            return;
+        }
         let data = b"hello world test data";
         let encrypted = match encrypt_data(data) {
             Ok(enc) => enc,

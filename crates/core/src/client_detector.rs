@@ -1,4 +1,4 @@
-﻿//! AI client installation detection.
+//! AI client installation detection.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -17,7 +17,7 @@ pub struct DetectedClient {
 
 pub fn detect_all() -> Vec<DetectedClient> {
     let home = crate::user_home_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default());
-    
+
     #[cfg(windows)]
     let app_data = std::env::var_os("APPDATA").map(std::path::PathBuf::from);
     #[cfg(windows)]
@@ -25,9 +25,12 @@ pub fn detect_all() -> Vec<DetectedClient> {
 
     // 1. Claude Desktop config path
     #[cfg(windows)]
-    let claude_desktop_config = app_data.as_ref().map(|p| p.join(r"Claude\claude_desktop_config.json"));
+    let claude_desktop_config = app_data
+        .as_ref()
+        .map(|p| p.join(r"Claude\claude_desktop_config.json"));
     #[cfg(target_os = "macos")]
-    let claude_desktop_config = Some(home.join("Library/Application Support/Claude/claude_desktop_config.json"));
+    let claude_desktop_config =
+        Some(home.join("Library/Application Support/Claude/claude_desktop_config.json"));
     #[cfg(all(not(windows), not(target_os = "macos")))]
     let claude_desktop_config = Some(home.join(".config/Claude/claude_desktop_config.json"));
 
@@ -35,17 +38,24 @@ pub fn detect_all() -> Vec<DetectedClient> {
     let claude_desktop_installed = {
         #[cfg(windows)]
         {
-            let in_local = local_app_data.as_ref().map(|p| {
-                p.join(r"AnthropicClaude\Claude.exe").exists()
-                    || p.join(r"Programs\Claude\Claude.exe").exists()
-                    || p.join(r"Claude\Claude.exe").exists()
-            }).unwrap_or(false);
-            let in_roaming = app_data.as_ref().map(|p| p.join("Claude").exists()).unwrap_or(false);
+            let in_local = local_app_data
+                .as_ref()
+                .map(|p| {
+                    p.join(r"AnthropicClaude\Claude.exe").exists()
+                        || p.join(r"Programs\Claude\Claude.exe").exists()
+                        || p.join(r"Claude\Claude.exe").exists()
+                })
+                .unwrap_or(false);
+            let in_roaming = app_data
+                .as_ref()
+                .map(|p| p.join("Claude").exists())
+                .unwrap_or(false);
             in_local || in_roaming || which_exists("claude-desktop") || which_exists("Claude")
         }
         #[cfg(target_os = "macos")]
         {
-            std::path::Path::new("/Applications/Claude.app").exists() || which_exists("claude-desktop")
+            std::path::Path::new("/Applications/Claude.app").exists()
+                || which_exists("claude-desktop")
         }
         #[cfg(all(not(windows), not(target_os = "macos")))]
         {
@@ -56,18 +66,19 @@ pub fn detect_all() -> Vec<DetectedClient> {
     // 2. Hermes installed check & config path
     let hermes_config = home.join(".hermes").join("config.yaml");
     let hermes_config_json = home.join(".hermes").join("config.json");
-    let hermes_installed = which_exists("hermes")
-        || home.join(".hermes").exists()
-        || {
-            #[cfg(windows)]
-            {
-                local_app_data.as_ref().map(|p| p.join("hermes").exists()).unwrap_or(false)
-            }
-            #[cfg(not(windows))]
-            {
-                false
-            }
-        };
+    let hermes_installed = which_exists("hermes") || home.join(".hermes").exists() || {
+        #[cfg(windows)]
+        {
+            local_app_data
+                .as_ref()
+                .map(|p| p.join("hermes").exists())
+                .unwrap_or(false)
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    };
 
     vec![
         DetectedClient {
@@ -76,7 +87,12 @@ pub fn detect_all() -> Vec<DetectedClient> {
             installed: which_exists("codex") || home.join(".codex").join("config.toml").exists(),
             version: None,
             config_path: if home.join(".codex").join("config.toml").exists() {
-                Some(home.join(".codex").join("config.toml").to_string_lossy().into())
+                Some(
+                    home.join(".codex")
+                        .join("config.toml")
+                        .to_string_lossy()
+                        .into(),
+                )
             } else {
                 None
             },
@@ -85,10 +101,16 @@ pub fn detect_all() -> Vec<DetectedClient> {
         DetectedClient {
             id: "claude-code".into(),
             name: "Claude Code".into(),
-            installed: which_exists("claude") || home.join(".claude").join("settings.json").exists(),
+            installed: which_exists("claude")
+                || home.join(".claude").join("settings.json").exists(),
             version: None,
             config_path: if home.join(".claude").join("settings.json").exists() {
-                Some(home.join(".claude").join("settings.json").to_string_lossy().into())
+                Some(
+                    home.join(".claude")
+                        .join("settings.json")
+                        .to_string_lossy()
+                        .into(),
+                )
             } else {
                 None
             },
@@ -112,7 +134,12 @@ pub fn detect_all() -> Vec<DetectedClient> {
             } else if hermes_config_json.exists() {
                 Some(hermes_config_json.to_string_lossy().into())
             } else if home.join(".hermes").exists() {
-                Some(home.join(".hermes").join("config.yaml").to_string_lossy().into())
+                Some(
+                    home.join(".hermes")
+                        .join("config.yaml")
+                        .to_string_lossy()
+                        .into(),
+                )
             } else {
                 None
             },
@@ -124,10 +151,13 @@ pub fn detect_all() -> Vec<DetectedClient> {
             installed: which_exists("cursor") || {
                 #[cfg(windows)]
                 {
-                    local_app_data.as_ref().map(|p| {
-                        p.join(r"Programs\cursor\Cursor.exe").exists()
-                            || p.join(r"Programs\Cursor\Cursor.exe").exists()
-                    }).unwrap_or(false)
+                    local_app_data
+                        .as_ref()
+                        .map(|p| {
+                            p.join(r"Programs\cursor\Cursor.exe").exists()
+                                || p.join(r"Programs\Cursor\Cursor.exe").exists()
+                        })
+                        .unwrap_or(false)
                 }
                 #[cfg(not(windows))]
                 {
@@ -144,7 +174,10 @@ pub fn detect_all() -> Vec<DetectedClient> {
             installed: which_exists("windsurf") || {
                 #[cfg(windows)]
                 {
-                    local_app_data.as_ref().map(|p| p.join(r"Programs\Windsurf\Windsurf.exe").exists()).unwrap_or(false)
+                    local_app_data
+                        .as_ref()
+                        .map(|p| p.join(r"Programs\Windsurf\Windsurf.exe").exists())
+                        .unwrap_or(false)
                 }
                 #[cfg(not(windows))]
                 {
@@ -161,10 +194,13 @@ pub fn detect_all() -> Vec<DetectedClient> {
             installed: which_exists("code") || {
                 #[cfg(windows)]
                 {
-                    local_app_data.as_ref().map(|p| {
-                        p.join(r"Programs\Microsoft VS Code\bin\code.cmd").exists()
-                            || p.join(r"Programs\Microsoft VS Code\Code.exe").exists()
-                    }).unwrap_or(false)
+                    local_app_data
+                        .as_ref()
+                        .map(|p| {
+                            p.join(r"Programs\Microsoft VS Code\bin\code.cmd").exists()
+                                || p.join(r"Programs\Microsoft VS Code\Code.exe").exists()
+                        })
+                        .unwrap_or(false)
                 }
                 #[cfg(not(windows))]
                 {
@@ -173,7 +209,12 @@ pub fn detect_all() -> Vec<DetectedClient> {
             },
             version: None,
             config_path: if home.join(".continue").join("config.json").exists() {
-                Some(home.join(".continue").join("config.json").to_string_lossy().into())
+                Some(
+                    home.join(".continue")
+                        .join("config.json")
+                        .to_string_lossy()
+                        .into(),
+                )
             } else {
                 None
             },
@@ -185,8 +226,14 @@ pub fn detect_all() -> Vec<DetectedClient> {
             installed: which_exists("cherry-studio") || {
                 #[cfg(windows)]
                 {
-                    local_app_data.as_ref().map(|p| p.join(r"Programs\cherry-studio\Cherry Studio.exe").exists()).unwrap_or(false)
-                        || app_data.as_ref().map(|p| p.join("cherry-studio").exists()).unwrap_or(false)
+                    local_app_data
+                        .as_ref()
+                        .map(|p| p.join(r"Programs\cherry-studio\Cherry Studio.exe").exists())
+                        .unwrap_or(false)
+                        || app_data
+                            .as_ref()
+                            .map(|p| p.join("cherry-studio").exists())
+                            .unwrap_or(false)
                 }
                 #[cfg(not(windows))]
                 {
@@ -203,8 +250,14 @@ pub fn detect_all() -> Vec<DetectedClient> {
             installed: which_exists("chatbox") || {
                 #[cfg(windows)]
                 {
-                    local_app_data.as_ref().map(|p| p.join(r"Programs\chatbox\Chatbox.exe").exists()).unwrap_or(false)
-                        || app_data.as_ref().map(|p| p.join("xyz.chatbox.app").exists()).unwrap_or(false)
+                    local_app_data
+                        .as_ref()
+                        .map(|p| p.join(r"Programs\chatbox\Chatbox.exe").exists())
+                        .unwrap_or(false)
+                        || app_data
+                            .as_ref()
+                            .map(|p| p.join("xyz.chatbox.app").exists())
+                            .unwrap_or(false)
                 }
                 #[cfg(not(windows))]
                 {
@@ -221,7 +274,10 @@ pub fn detect_all() -> Vec<DetectedClient> {
             installed: which_exists("opencode") || {
                 #[cfg(windows)]
                 {
-                    local_app_data.as_ref().map(|p| p.join(r"Programs\OpenCode\OpenCode.exe").exists()).unwrap_or(false)
+                    local_app_data
+                        .as_ref()
+                        .map(|p| p.join(r"Programs\OpenCode\OpenCode.exe").exists())
+                        .unwrap_or(false)
                 }
                 #[cfg(not(windows))]
                 {
@@ -260,7 +316,9 @@ fn which_exists(name: &str) -> bool {
             let local = std::path::PathBuf::from(local_app_data);
             match name {
                 "code" => {
-                    if local.join(r"Programs\Microsoft VS Code\bin\code.cmd").exists()
+                    if local
+                        .join(r"Programs\Microsoft VS Code\bin\code.cmd")
+                        .exists()
                         || local.join(r"Programs\Microsoft VS Code\Code.exe").exists()
                     {
                         return true;

@@ -1,5 +1,5 @@
-use tauri::command;
 use polydeck_core::client_detector::DetectedClient;
+use tauri::command;
 
 #[command]
 pub fn ad_get_version() -> String {

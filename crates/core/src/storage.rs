@@ -1,4 +1,4 @@
-﻿//! Atomic file storage with backup and rollback.
+//! Atomic file storage with backup and rollback.
 //!
 //! Combines MoveFileExW approach with tempfile+fsync and retry fallbacks for robust Windows operation.
 
@@ -66,9 +66,8 @@ pub fn read_with_fallback(path: &Path) -> AppResult<Vec<u8>> {
             let backup = backup_path(path);
             if backup.exists() {
                 tracing::warn!("主文件不可读，使用备份：{}", backup.display());
-                fs::read(&backup).map_err(|e| {
-                    AppError::Storage(format!("主文件和备份均不可读：{e}"))
-                })
+                fs::read(&backup)
+                    .map_err(|e| AppError::Storage(format!("主文件和备份均不可读：{e}")))
             } else {
                 Err(AppError::Storage(format!(
                     "文件不存在且无备份：{}",
@@ -101,8 +100,16 @@ fn backup_path(path: &Path) -> PathBuf {
 #[cfg(windows)]
 fn windows_atomic_rename(from: &Path, to: &Path) -> AppResult<()> {
     use std::os::windows::ffi::OsStrExt;
-    let wide_from: Vec<u16> = from.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
-    let wide_to: Vec<u16> = to.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let wide_from: Vec<u16> = from
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let wide_to: Vec<u16> = to
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
 
     for attempt in 0..5 {
         if attempt > 0 {

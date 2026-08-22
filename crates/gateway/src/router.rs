@@ -1,4 +1,4 @@
-﻿//! Request routing and handlers
+//! Request routing and handlers
 
 use crate::{
     client::{Endpoint, UpstreamClient},
@@ -10,7 +10,6 @@ use crate::{
     replay::{classify, ReplayDecision},
     stream_adapter::StreamAdapter,
 };
-use polydeck_core::responses_chat::{chat_to_response, responses_to_chat, ToolMap};
 use axum::{
     body::Body,
     extract::State,
@@ -22,6 +21,7 @@ use axum::{
 use bytes::Bytes;
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
+use polydeck_core::responses_chat::{chat_to_response, responses_to_chat, ToolMap};
 use serde_json::Value;
 use std::{
     convert::Infallible,
@@ -73,7 +73,11 @@ struct UpstreamAttempt {
 
 enum SendError {
     Unavailable(String),
-    NotReplayable { provider_id: String, reason: String, error: String },
+    NotReplayable {
+        provider_id: String,
+        reason: String,
+        error: String,
+    },
 }
 
 impl SendError {
@@ -81,10 +85,20 @@ impl SendError {
         match self {
             SendError::Unavailable(error) => {
                 error!("Upstream request failed: {}", error);
-                json_error(StatusCode::BAD_GATEWAY, format!("Upstream error: {}", error))
+                json_error(
+                    StatusCode::BAD_GATEWAY,
+                    format!("Upstream error: {}", error),
+                )
             }
-            SendError::NotReplayable { provider_id, reason, error } => {
-                warn!("Provider '{}' failed and the request was not replayed ({}): {}", provider_id, reason, error);
+            SendError::NotReplayable {
+                provider_id,
+                reason,
+                error,
+            } => {
+                warn!(
+                    "Provider '{}' failed and the request was not replayed ({}): {}",
+                    provider_id, reason, error
+                );
                 json_error(StatusCode::BAD_GATEWAY, format!(
                     "Provider '{}' failed ({}). AI Deck switched to a backup provider but did not retry this request because it is not safe to replay: {}. Resend the request to use the new provider.",
                     provider_id, error, reason
@@ -95,7 +109,10 @@ impl SendError {
 }
 
 async fn send_upstream(
-    state: &AppState, endpoint: Endpoint, headers: &HeaderMap, body: Value,
+    state: &AppState,
+    endpoint: Endpoint,
+    headers: &HeaderMap,
+    body: Value,
 ) -> Result<UpstreamAttempt, SendError> {
     let estimated_tokens = crate::rate_limiter::estimate_tokens(&body);
     let failover = match state.failover.as_ref() {
@@ -105,12 +122,18 @@ async fn send_upstream(
 
     let Some(failover) = failover else {
         let provider_id = &state.primary_provider_id;
-        let limiter = state.rate_limiter_registry.get_or_create(provider_id, &state.rate_limit_settings).await;
+        let limiter = state
+            .rate_limiter_registry
+            .get_or_create(provider_id, &state.rate_limit_settings)
+            .await;
 
         // 1. Acquire token from token bucket (queues asynchronously if limit reached)
         {
             let mut guard = limiter.lock().await;
-            if let Err(err) = guard.acquire(estimated_tokens, std::time::Duration::from_secs(90)).await {
+            if let Err(err) = guard
+                .acquire(estimated_tokens, std::time::Duration::from_secs(90))
+                .await
+            {
                 return Err(SendError::Unavailable(err));
             }
         }
@@ -123,7 +146,8 @@ async fn send_upstream(
                 Ok(response) => {
                     let status = response.status();
                     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                        let retry_after = response.headers()
+                        let retry_after = response
+                            .headers()
                             .get("retry-after")
                             .and_then(|v| v.to_str().ok())
                             .and_then(|s| s.parse::<u64>().ok())
@@ -136,7 +160,9 @@ async fn send_upstream(
 
                         if attempt < state.max_retries {
                             let backoff = retry_after.unwrap_or_else(|| {
-                                std::time::Duration::from_secs(2u64.saturating_pow(attempt + 1).clamp(2, 20))
+                                std::time::Duration::from_secs(
+                                    2u64.saturating_pow(attempt + 1).clamp(2, 20),
+                                )
                             });
                             warn!(
                                 "Upstream returned 429 (attempt {}/{}); gateway queueing retry in {:.1}s...",
@@ -144,17 +170,25 @@ async fn send_upstream(
                             );
                             tokio::time::sleep(backoff).await;
                             let mut guard = limiter.lock().await;
-                            let _ = guard.acquire(estimated_tokens, std::time::Duration::from_secs(60)).await;
+                            let _ = guard
+                                .acquire(estimated_tokens, std::time::Duration::from_secs(60))
+                                .await;
                             continue;
                         }
-                        return Ok(UpstreamAttempt { response, switched_to: None });
+                        return Ok(UpstreamAttempt {
+                            response,
+                            switched_to: None,
+                        });
                     }
 
                     if !status.is_server_error() {
                         let mut guard = limiter.lock().await;
                         guard.on_success();
                     }
-                    return Ok(UpstreamAttempt { response, switched_to: None });
+                    return Ok(UpstreamAttempt {
+                        response,
+                        switched_to: None,
+                    });
                 }
                 Err(e) => {
                     last_error = e.message;
@@ -167,38 +201,67 @@ async fn send_upstream(
                 }
             }
         }
-        return Err(SendError::Unavailable(format!("Request failed after {} attempts: {}", state.max_retries + 1, last_error)));
+        return Err(SendError::Unavailable(format!(
+            "Request failed after {} attempts: {}",
+            state.max_retries + 1,
+            last_error
+        )));
     };
 
-    let (provider_id, response, never_sent, error_text) = match failover.send(endpoint, body.clone()).await {
-        Ok((_pid, response)) if !is_failure_status(response.status()) => {
-            return Ok(UpstreamAttempt { response, switched_to: None });
-        }
-        Ok((pid, response)) => {
-            let status = response.status();
-            (pid, Some(response), false, format!("upstream returned {}", status))
-        }
-        Err(error) => {
-            warn!("Upstream request failed on failover chain: {}", error.message);
-            (String::new(), None, error.never_sent, error.message)
-        }
-    };
+    let (provider_id, response, never_sent, error_text) =
+        match failover.send(endpoint, body.clone()).await {
+            Ok((_pid, response)) if !is_failure_status(response.status()) => {
+                return Ok(UpstreamAttempt {
+                    response,
+                    switched_to: None,
+                });
+            }
+            Ok((pid, response)) => {
+                let status = response.status();
+                (
+                    pid,
+                    Some(response),
+                    false,
+                    format!("upstream returned {}", status),
+                )
+            }
+            Err(error) => {
+                warn!(
+                    "Upstream request failed on failover chain: {}",
+                    error.message
+                );
+                (String::new(), None, error.never_sent, error.message)
+            }
+        };
     let current = failover.status().await.current_provider_id;
     if current != provider_id {
         let decision = classify(headers, &body, never_sent);
         if let ReplayDecision::Unsafe(reason) = decision {
             return Err(SendError::NotReplayable {
-                provider_id, reason: reason.to_string(), error: error_text,
+                provider_id,
+                reason: reason.to_string(),
+                error: error_text,
             });
         }
         match failover.send(endpoint, body).await {
-            Ok((_, retried)) => return Ok(UpstreamAttempt { response: retried, switched_to: Some(current) }),
+            Ok((_, retried)) => {
+                return Ok(UpstreamAttempt {
+                    response: retried,
+                    switched_to: Some(current),
+                })
+            }
             Err(error) => return Err(SendError::Unavailable(error.message)),
         }
     }
     match response {
-        Some(response) => Ok(UpstreamAttempt { response, switched_to: None }),
-        None => Err(SendError::Unavailable(format!("All providers unavailable: {}", error_text))),
+        Some(response) => Ok(UpstreamAttempt {
+            response,
+            switched_to: None,
+        }),
+        None => Err(SendError::Unavailable(format!(
+            "All providers unavailable: {}",
+            error_text
+        ))),
     }
 }
 
@@ -221,13 +284,16 @@ pub fn build_router(app_state: Arc<AppState>, middleware_state: Arc<MiddlewareSt
         .route("/messages/count_tokens", post(handle_count_tokens))
         .route("/v1/models", get(handle_models))
         .route("/models", get(handle_models))
-        .layer(middleware::from_fn_with_state(middleware_state, auth_middleware))
+        .layer(middleware::from_fn_with_state(
+            middleware_state,
+            auth_middleware,
+        ))
         .with_state(app_state);
-    health_router.merge(api_router)
+    health_router
+        .merge(api_router)
         .layer(middleware::from_fn(logging_middleware))
         .layer(middleware::from_fn(loopback_only_middleware))
 }
-
 
 pub fn effort_to_budget_tokens(effort: &str) -> Option<u64> {
     match effort.trim().to_ascii_lowercase().as_str() {
@@ -257,9 +323,7 @@ pub fn inject_thinking_if_needed(body: &mut Value, default_effort_level: Option<
         Some(max) if max <= 1024 => {
             return;
         }
-        Some(max) if budget_tokens >= max => {
-            max.saturating_sub(1).max(1024)
-        }
+        Some(max) if budget_tokens >= max => max.saturating_sub(1).max(1024),
         _ => budget_tokens,
     };
 
@@ -276,7 +340,8 @@ pub fn inject_thinking_if_needed(body: &mut Value, default_effort_level: Option<
 fn inject_max_price(body: &mut Value, max_price: Option<f64>) {
     if let Some(price) = max_price {
         if let Some(obj) = body.as_object_mut() {
-            obj.entry("max_price_per_request").or_insert_with(|| Value::from(price));
+            obj.entry("max_price_per_request")
+                .or_insert_with(|| Value::from(price));
         }
     }
 }
@@ -295,7 +360,8 @@ fn normalize_effort(effort: &str, model: &str) -> Option<String> {
     // Auto-thinking models (DeepSeek reasoner/R1, QwQ) ignore effort and error
     // if forced; drop it before the whitelist so even a valid level is stripped.
     let model_lower = model.to_ascii_lowercase();
-    if model_lower.contains("reasoner") || model_lower.contains("r1") || model_lower.contains("qwq") {
+    if model_lower.contains("reasoner") || model_lower.contains("r1") || model_lower.contains("qwq")
+    {
         warn!("Model {model} runs its own thinking; dropping reasoning_effort={effort}");
         return None;
     }
@@ -319,8 +385,14 @@ fn normalize_effort(effort: &str, model: &str) -> Option<String> {
 fn sanitize_messages_effort(body: &mut Value, model: &str) -> Option<String> {
     let effort = body.get("reasoning_effort").and_then(Value::as_str)?;
     match normalize_effort(effort, model) {
-        Some(clean) => { body["reasoning_effort"] = Value::String(clean.clone()); Some(clean) }
-        None => { body.as_object_mut().map(|o| o.remove("reasoning_effort")); None }
+        Some(clean) => {
+            body["reasoning_effort"] = Value::String(clean.clone());
+            Some(clean)
+        }
+        None => {
+            body.as_object_mut().map(|o| o.remove("reasoning_effort"));
+            None
+        }
     }
 }
 
@@ -330,7 +402,12 @@ async fn handle_models(State(state): State<Arc<AppState>>) -> Response<Body> {
     debug!("Processing GET /models request");
     let upstream_resp = match state.upstream.get_models().await {
         Ok(resp) => resp,
-        Err(e) => return json_error(StatusCode::BAD_GATEWAY, format!("Failed to fetch models: {}", e)),
+        Err(e) => {
+            return json_error(
+                StatusCode::BAD_GATEWAY,
+                format!("Failed to fetch models: {}", e),
+            )
+        }
     };
     if !upstream_resp.status().is_success() {
         return passthrough_verbatim(upstream_resp).await;
@@ -427,20 +504,27 @@ fn synthesize_capabilities(serves_max: bool) -> Value {
 /// Requests still accept the prefix (see `strip_claude_code_prefix`) so a name
 /// persisted by an older build keeps resolving.
 fn synthesize_models_response(raw: Value) -> Value {
-    let data = raw.get("data").and_then(Value::as_array).cloned().unwrap_or_default();
+    let data = raw
+        .get("data")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let serves_max = upstream_serves_max_effort(&data);
-    let models: Vec<Value> = data.into_iter().map(|mut m| {
-        if m.get("capabilities").is_none() {
-            m["capabilities"] = synthesize_capabilities(serves_max);
-        }
-        if !m.get("max_input_tokens").and_then(Value::as_u64).is_some() {
-            m["max_input_tokens"] = serde_json::json!(200000);
-        }
-        if !m.get("max_tokens").and_then(Value::as_u64).is_some() {
-            m["max_tokens"] = serde_json::json!(32000);
-        }
-        m
-    }).collect();
+    let models: Vec<Value> = data
+        .into_iter()
+        .map(|mut m| {
+            if m.get("capabilities").is_none() {
+                m["capabilities"] = synthesize_capabilities(serves_max);
+            }
+            if !m.get("max_input_tokens").and_then(Value::as_u64).is_some() {
+                m["max_input_tokens"] = serde_json::json!(200000);
+            }
+            if !m.get("max_tokens").and_then(Value::as_u64).is_some() {
+                m["max_tokens"] = serde_json::json!(32000);
+            }
+            m
+        })
+        .collect();
 
     let mut resp = serde_json::json!({
         "data": models,
@@ -490,31 +574,51 @@ fn rewrite_model_in_place(body: &mut Value, rewriter: &ModelRewriter) -> Option<
 }
 
 async fn handle_messages(
-    State(state): State<Arc<AppState>>, headers: HeaderMap, Json(mut body): Json<Value>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(mut body): Json<Value>,
 ) -> Response<Body> {
     state.health.increment_connections();
     let _guard = ConnectionGuard(&state.health);
     debug!("Processing /messages request");
     let client_model = rewrite_model_in_place(&mut body, &state.rewriter);
     inject_thinking_if_needed(&mut body, state.default_effort_level.as_deref());
-    let upstream_model = body.get("model").and_then(Value::as_str).map(str::to_string).unwrap_or_default();
+    let upstream_model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_default();
     sanitize_messages_effort(&mut body, &upstream_model);
-    let is_stream = body.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+    let is_stream = body
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
     let start = std::time::Instant::now();
     let attempt = match send_upstream(&state, Endpoint::Messages, &headers, body).await {
         Ok(a) => a,
         Err(e) => return e.into_response(),
     };
-    if let Some(p) = &attempt.switched_to { info!("Request retried on failover provider '{}'", p); }
+    if let Some(p) = &attempt.switched_to {
+        info!("Request retried on failover provider '{}'", p);
+    }
     let upstream_response = attempt.response;
-    state.health.record_request(start.elapsed().as_millis() as u64);
-    if !upstream_response.status().is_success() { return passthrough_verbatim(upstream_response).await; }
-    if is_stream { passthrough_raw_stream(upstream_response) }
-    else { passthrough_nonstream(upstream_response, client_model).await }
+    state
+        .health
+        .record_request(start.elapsed().as_millis() as u64);
+    if !upstream_response.status().is_success() {
+        return passthrough_verbatim(upstream_response).await;
+    }
+    if is_stream {
+        passthrough_raw_stream(upstream_response)
+    } else {
+        passthrough_nonstream(upstream_response, client_model).await
+    }
 }
 
 async fn handle_count_tokens(
-    State(state): State<Arc<AppState>>, headers: HeaderMap, Json(mut body): Json<Value>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(mut body): Json<Value>,
 ) -> Response<Body> {
     state.health.increment_connections();
     let _guard = ConnectionGuard(&state.health);
@@ -529,7 +633,9 @@ async fn handle_count_tokens(
                 Response::builder()
                     .status(StatusCode::OK)
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::json!({ "input_tokens": tokens }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "input_tokens": tokens }).to_string(),
+                    ))
                     .unwrap()
             }
         }
@@ -538,14 +644,18 @@ async fn handle_count_tokens(
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::json!({ "input_tokens": tokens }).to_string()))
+                .body(Body::from(
+                    serde_json::json!({ "input_tokens": tokens }).to_string(),
+                ))
                 .unwrap()
         }
     }
 }
 
 async fn handle_responses(
-    State(state): State<Arc<AppState>>, headers: HeaderMap, Json(mut body): Json<Value>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(mut body): Json<Value>,
 ) -> Response<Body> {
     state.health.increment_connections();
     let _guard = ConnectionGuard(&state.health);
@@ -579,7 +689,9 @@ const NATIVE_RESPONSES_TOOL_TYPES: [&str; 4] =
 
 /// True when `tools[]` holds a type native passthrough cannot safely carry.
 fn requires_tool_bridge(body: &Value) -> bool {
-    let Some(tools) = body.get("tools").and_then(Value::as_array) else { return false };
+    let Some(tools) = body.get("tools").and_then(Value::as_array) else {
+        return false;
+    };
     tools.iter().any(|tool| {
         // A tool with no `type` is malformed; leave the verdict to the upstream
         // rather than forcing a bridge on it.
@@ -593,7 +705,9 @@ fn requires_tool_bridge(body: &Value) -> bool {
 /// The model lives at `/model`; missing it means no upstream name to judge the
 /// effort against, so pass through untouched.
 fn sanitize_responses_effort(body: &mut Value) {
-    let Some(effort) = body.pointer("/reasoning/effort").and_then(Value::as_str) else { return };
+    let Some(effort) = body.pointer("/reasoning/effort").and_then(Value::as_str) else {
+        return;
+    };
     let model = body.get("model").and_then(Value::as_str).unwrap_or("");
     match normalize_effort(effort, model) {
         Some(clean) => {
@@ -617,16 +731,27 @@ fn sanitize_responses_effort(body: &mut Value) {
     }
 }
 
-async fn handle_native_responses(state: &AppState, headers: &HeaderMap, body: Value) -> Response<Body> {
-    let is_stream = body.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+async fn handle_native_responses(
+    state: &AppState,
+    headers: &HeaderMap,
+    body: Value,
+) -> Response<Body> {
+    let is_stream = body
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
     let start = std::time::Instant::now();
     let attempt = match send_upstream(state, Endpoint::Responses, headers, body.clone()).await {
         Ok(a) => a,
         Err(e) => return e.into_response(),
     };
-    if let Some(p) = &attempt.switched_to { info!("Request retried on failover provider '{}'", p); }
+    if let Some(p) = &attempt.switched_to {
+        info!("Request retried on failover provider '{}'", p);
+    }
     let upstream_response = attempt.response;
-    state.health.record_request(start.elapsed().as_millis() as u64);
+    state
+        .health
+        .record_request(start.elapsed().as_millis() as u64);
     // Bridge-on-rejection applies in Native too, not just Auto: a provider
     // pinned to Native still gets 400'd by an upstream that only implements
     // part of the Responses shape, and passing that through just fails the
@@ -636,7 +761,10 @@ async fn handle_native_responses(state: &AppState, headers: &HeaderMap, body: Va
         let resp_headers = upstream_response.headers().clone();
         let resp_body = upstream_response.bytes().await.unwrap_or_default();
         if is_missing_responses_error(status, &resp_body) {
-            info!("Upstream rejected /v1/responses with {}; falling back to bridge", status);
+            info!(
+                "Upstream rejected /v1/responses with {}; falling back to bridge",
+                status
+            );
             state.remember_responses_support(false);
             return handle_bridged_responses(state, headers, body).await;
         }
@@ -646,36 +774,61 @@ async fn handle_native_responses(state: &AppState, headers: &HeaderMap, body: Va
         return response_with_body(status, &resp_headers, resp_body);
     }
     state.remember_responses_support(true);
-    if is_stream { passthrough_raw_stream(upstream_response) }
-    else { passthrough_verbatim(upstream_response).await }
+    if is_stream {
+        passthrough_raw_stream(upstream_response)
+    } else {
+        passthrough_verbatim(upstream_response).await
+    }
 }
 
-async fn handle_bridged_responses(state: &AppState, headers: &HeaderMap, body: Value) -> Response<Body> {
+async fn handle_bridged_responses(
+    state: &AppState,
+    headers: &HeaderMap,
+    body: Value,
+) -> Response<Body> {
     let converted = match responses_to_chat(&body, None) {
         Ok(c) => c,
-        Err(e) => { error!("Failed to convert request: {}", e); return json_error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()); }
+        Err(e) => {
+            error!("Failed to convert request: {}", e);
+            return json_error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string());
+        }
     };
     let mut chat_body = converted.body;
     let tools = converted.tools;
     let client_model = rewrite_model_in_place(&mut chat_body, &state.rewriter);
-    let is_stream = chat_body.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+    let is_stream = chat_body
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
     let start = std::time::Instant::now();
     let attempt = match send_upstream(state, Endpoint::ChatCompletions, headers, chat_body).await {
         Ok(a) => a,
         Err(e) => return e.into_response(),
     };
-    if let Some(p) = &attempt.switched_to { info!("Request retried on failover provider '{}'", p); }
+    if let Some(p) = &attempt.switched_to {
+        info!("Request retried on failover provider '{}'", p);
+    }
     let upstream_response = attempt.response;
-    state.health.record_request(start.elapsed().as_millis() as u64);
-    if !upstream_response.status().is_success() { return passthrough_verbatim(upstream_response).await; }
-    if is_stream { handle_responses_stream(upstream_response, client_model.unwrap_or_default()).await }
-    else { handle_responses_nonstream(upstream_response, client_model, &tools).await }
+    state
+        .health
+        .record_request(start.elapsed().as_millis() as u64);
+    if !upstream_response.status().is_success() {
+        return passthrough_verbatim(upstream_response).await;
+    }
+    if is_stream {
+        handle_responses_stream(upstream_response, client_model.unwrap_or_default()).await
+    } else {
+        handle_responses_nonstream(upstream_response, client_model, &tools).await
+    }
 }
 
 const POOL_REJECTION_MARKERS: [&str; 6] = [
-    "no safe maximum price", "per-request maximum price",
+    "no safe maximum price",
+    "per-request maximum price",
     "continuation or media usage",
-    "invalid url", "unsupported endpoint", "unknown endpoint",
+    "invalid url",
+    "unsupported endpoint",
+    "unknown endpoint",
 ];
 
 /// Markers for an upstream that speaks Responses but rejects part of the request
@@ -693,10 +846,18 @@ const SHAPE_REJECTION_MARKERS: [&str; 4] = [
 ];
 
 fn is_missing_responses_error(status: reqwest::StatusCode, body: &[u8]) -> bool {
-    if matches!(status, reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::NOT_IMPLEMENTED) {
+    if matches!(
+        status,
+        reqwest::StatusCode::NOT_FOUND
+            | reqwest::StatusCode::METHOD_NOT_ALLOWED
+            | reqwest::StatusCode::NOT_IMPLEMENTED
+    ) {
         return true;
     }
-    if !matches!(status, reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::UNPROCESSABLE_ENTITY) {
+    if !matches!(
+        status,
+        reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    ) {
         return false;
     }
     let detail = String::from_utf8_lossy(body).to_ascii_lowercase();
@@ -708,8 +869,12 @@ fn is_missing_responses_error(status: reqwest::StatusCode, body: &[u8]) -> bool 
 pub const SSE_STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
 
 fn passthrough_raw_stream(upstream_response: reqwest::Response) -> Response<Body> {
-    let status = StatusCode::from_u16(upstream_response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    let content_type = upstream_response.headers().get(header::CONTENT_TYPE).cloned();
+    let status = StatusCode::from_u16(upstream_response.status().as_u16())
+        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let content_type = upstream_response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .cloned();
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(100);
     tokio::spawn(async move {
         let mut byte_stream = upstream_response.bytes_stream();
@@ -717,16 +882,23 @@ fn passthrough_raw_stream(upstream_response: reqwest::Response) -> Response<Body
             let next_item = tokio::time::timeout(SSE_STREAM_IDLE_TIMEOUT, byte_stream.next()).await;
             match next_item {
                 Ok(Some(Ok(bytes))) => {
-                    if tx.send(Ok(bytes)).await.is_err() { return; }
+                    if tx.send(Ok(bytes)).await.is_err() {
+                        return;
+                    }
                 }
                 Ok(Some(Err(e))) => {
-                    let err_msg = serde_json::json!({"error": format!("Stream read error: {e}")}).to_string();
-                    let _ = tx.send(Ok(Bytes::from(format!("data: {err_msg}\n\n")))).await;
+                    let err_msg =
+                        serde_json::json!({"error": format!("Stream read error: {e}")}).to_string();
+                    let _ = tx
+                        .send(Ok(Bytes::from(format!("data: {err_msg}\n\n"))))
+                        .await;
                     return;
                 }
                 Ok(None) => break,
                 Err(_elapsed) => {
-                    warn!("Upstream raw stream idle timeout (25s without data); closing connection");
+                    warn!(
+                        "Upstream raw stream idle timeout (25s without data); closing connection"
+                    );
                     let err_msg = serde_json::json!({
                         "error": {
                             "message": "Upstream stream idle timeout: no data chunk received for 25s",
@@ -734,80 +906,132 @@ fn passthrough_raw_stream(upstream_response: reqwest::Response) -> Response<Body
                             "code": 504
                         }
                     }).to_string();
-                    let _ = tx.send(Ok(Bytes::from(format!("data: {err_msg}\n\n")))).await;
+                    let _ = tx
+                        .send(Ok(Bytes::from(format!("data: {err_msg}\n\n"))))
+                        .await;
                     return;
                 }
             }
         }
     });
-    let builder = Response::builder().status(status)
-        .header(header::CONTENT_TYPE, content_type.unwrap_or(header::HeaderValue::from_static("text/event-stream")))
+    let builder = Response::builder()
+        .status(status)
+        .header(
+            header::CONTENT_TYPE,
+            content_type.unwrap_or(header::HeaderValue::from_static("text/event-stream")),
+        )
         .header(header::CACHE_CONTROL, "no-cache")
         .header(header::CONNECTION, "keep-alive");
-    builder.body(Body::from_stream(ReceiverStream::new(rx))).unwrap()
+    builder
+        .body(Body::from_stream(ReceiverStream::new(rx)))
+        .unwrap()
 }
 
 async fn handle_chat_completions(
-    State(state): State<Arc<AppState>>, headers: HeaderMap, Json(mut body): Json<Value>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(mut body): Json<Value>,
 ) -> Response<Body> {
     state.health.increment_connections();
     let _guard = ConnectionGuard(&state.health);
     debug!("Processing /v1/chat/completions request");
     let client_model = rewrite_model_in_place(&mut body, &state.rewriter);
-    let is_stream = body.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+    let is_stream = body
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
     let start = std::time::Instant::now();
     let attempt = match send_upstream(&state, Endpoint::ChatCompletions, &headers, body).await {
         Ok(a) => a,
         Err(e) => return e.into_response(),
     };
-    if let Some(p) = &attempt.switched_to { info!("Request retried on failover provider '{}'", p); }
+    if let Some(p) = &attempt.switched_to {
+        info!("Request retried on failover provider '{}'", p);
+    }
     let upstream_response = attempt.response;
-    state.health.record_request(start.elapsed().as_millis() as u64);
-    if !upstream_response.status().is_success() { return passthrough_verbatim(upstream_response).await; }
-    if is_stream { passthrough_stream(upstream_response, client_model).await }
-    else { passthrough_nonstream(upstream_response, client_model).await }
+    state
+        .health
+        .record_request(start.elapsed().as_millis() as u64);
+    if !upstream_response.status().is_success() {
+        return passthrough_verbatim(upstream_response).await;
+    }
+    if is_stream {
+        passthrough_stream(upstream_response, client_model).await
+    } else {
+        passthrough_nonstream(upstream_response, client_model).await
+    }
 }
 
-async fn handle_responses_nonstream(upstream_response: reqwest::Response, client_model: Option<String>, tools: &ToolMap) -> Response<Body> {
+async fn handle_responses_nonstream(
+    upstream_response: reqwest::Response,
+    client_model: Option<String>,
+    tools: &ToolMap,
+) -> Response<Body> {
     let chat_response: Value = match upstream_response.json().await {
         Ok(v) => v,
-        Err(e) => { error!("Failed to parse upstream JSON: {}", e); return json_error(StatusCode::BAD_GATEWAY, "Invalid upstream response"); }
+        Err(e) => {
+            error!("Failed to parse upstream JSON: {}", e);
+            return json_error(StatusCode::BAD_GATEWAY, "Invalid upstream response");
+        }
     };
     let mut resp = match chat_to_response(&chat_response, tools) {
         Ok(r) => r,
-        Err(e) => { error!("Failed to convert response: {}", e); return json_error(StatusCode::BAD_GATEWAY, e.to_string()); }
+        Err(e) => {
+            error!("Failed to convert response: {}", e);
+            return json_error(StatusCode::BAD_GATEWAY, e.to_string());
+        }
     };
     restore_client_model(&mut resp, client_model.as_deref());
-    Response::builder().status(StatusCode::OK)
+    Response::builder()
+        .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(resp.to_string())).unwrap()
+        .body(Body::from(resp.to_string()))
+        .unwrap()
 }
 
-async fn handle_responses_stream(upstream_response: reqwest::Response, client_model: String) -> Response<Body> {
+async fn handle_responses_stream(
+    upstream_response: reqwest::Response,
+    client_model: String,
+) -> Response<Body> {
     let mut adapter = StreamAdapter::new(client_model);
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(100);
-    for event in adapter.start() { let _ = tx.send(Ok(Bytes::from(event))).await; }
+    for event in adapter.start() {
+        let _ = tx.send(Ok(Bytes::from(event))).await;
+    }
     tokio::spawn(async move {
         let mut upstream_events = upstream_response.bytes_stream().eventsource();
         loop {
-            let next_item = tokio::time::timeout(SSE_STREAM_IDLE_TIMEOUT, upstream_events.next()).await;
+            let next_item =
+                tokio::time::timeout(SSE_STREAM_IDLE_TIMEOUT, upstream_events.next()).await;
             match next_item {
                 Ok(Some(Ok(event))) if event.data == "[DONE]" => break,
                 Ok(Some(Ok(event))) => match serde_json::from_str::<Value>(&event.data) {
                     Ok(chunk) => {
                         for converted in adapter.push_chat_chunk(&chunk) {
-                            if tx.send(Ok(Bytes::from(converted))).await.is_err() { return; }
+                            if tx.send(Ok(Bytes::from(converted))).await.is_err() {
+                                return;
+                            }
                         }
                     }
                     Err(e) => {
-                        let err_msg = serde_json::json!({"error": format!("Parse error: {e}")}).to_string();
-                        let _ = tx.send(Ok(Bytes::from(format!("event: error\ndata: {err_msg}\n\n")))).await;
+                        let err_msg =
+                            serde_json::json!({"error": format!("Parse error: {e}")}).to_string();
+                        let _ = tx
+                            .send(Ok(Bytes::from(format!(
+                                "event: error\ndata: {err_msg}\n\n"
+                            ))))
+                            .await;
                         return;
                     }
                 },
                 Ok(Some(Err(e))) => {
-                    let err_msg = serde_json::json!({"error": format!("Stream error: {e}")}).to_string();
-                    let _ = tx.send(Ok(Bytes::from(format!("event: error\ndata: {err_msg}\n\n")))).await;
+                    let err_msg =
+                        serde_json::json!({"error": format!("Stream error: {e}")}).to_string();
+                    let _ = tx
+                        .send(Ok(Bytes::from(format!(
+                            "event: error\ndata: {err_msg}\n\n"
+                        ))))
+                        .await;
                     return;
                 }
                 Ok(None) => break,
@@ -820,18 +1044,26 @@ async fn handle_responses_stream(upstream_response: reqwest::Response, client_mo
                             "code": 504
                         }
                     }).to_string();
-                    let _ = tx.send(Ok(Bytes::from(format!("event: error\ndata: {err_msg}\n\n")))).await;
+                    let _ = tx
+                        .send(Ok(Bytes::from(format!(
+                            "event: error\ndata: {err_msg}\n\n"
+                        ))))
+                        .await;
                     return;
                 }
             }
         }
-        for event in adapter.finish() { let _ = tx.send(Ok(Bytes::from(event))).await; }
+        for event in adapter.finish() {
+            let _ = tx.send(Ok(Bytes::from(event))).await;
+        }
     });
-    Response::builder().status(StatusCode::OK)
+    Response::builder()
+        .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
         .header(header::CONNECTION, "keep-alive")
-        .body(Body::from_stream(ReceiverStream::new(rx))).unwrap()
+        .body(Body::from_stream(ReceiverStream::new(rx)))
+        .unwrap()
 }
 
 /// Put the client's own model name back on a response body.
@@ -839,24 +1071,41 @@ async fn handle_responses_stream(upstream_response: reqwest::Response, client_mo
 /// No-op when the client sent no model or the response carries none, so an
 /// upstream that omits the field keeps omitting it.
 fn restore_client_model(json: &mut Value, client_model: Option<&str>) {
-    let Some(client_model) = client_model else { return };
-    if json.get("model").and_then(|m| m.as_str()).is_some_and(|m| m != client_model) {
+    let Some(client_model) = client_model else {
+        return;
+    };
+    if json
+        .get("model")
+        .and_then(|m| m.as_str())
+        .is_some_and(|m| m != client_model)
+    {
         json["model"] = Value::String(client_model.to_string());
     }
 }
 
-async fn passthrough_nonstream(upstream_response: reqwest::Response, client_model: Option<String>) -> Response<Body> {
+async fn passthrough_nonstream(
+    upstream_response: reqwest::Response,
+    client_model: Option<String>,
+) -> Response<Body> {
     let mut json: Value = match upstream_response.json().await {
         Ok(v) => v,
-        Err(e) => { error!("Failed to parse upstream JSON: {}", e); return json_error(StatusCode::BAD_GATEWAY, "Invalid upstream response"); }
+        Err(e) => {
+            error!("Failed to parse upstream JSON: {}", e);
+            return json_error(StatusCode::BAD_GATEWAY, "Invalid upstream response");
+        }
     };
     restore_client_model(&mut json, client_model.as_deref());
-    Response::builder().status(StatusCode::OK)
+    Response::builder()
+        .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(json.to_string())).unwrap()
+        .body(Body::from(json.to_string()))
+        .unwrap()
 }
 
-async fn passthrough_stream(upstream_response: reqwest::Response, client_model: Option<String>) -> Response<Body> {
+async fn passthrough_stream(
+    upstream_response: reqwest::Response,
+    client_model: Option<String>,
+) -> Response<Body> {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(100);
     tokio::spawn(async move {
         let mut events = upstream_response.bytes_stream().eventsource();
@@ -869,8 +1118,11 @@ async fn passthrough_stream(upstream_response: reqwest::Response, client_model: 
                 }
                 Ok(Some(Ok(event))) => event.data,
                 Ok(Some(Err(e))) => {
-                    let err_msg = serde_json::json!({"error": format!("Stream error: {e}")}).to_string();
-                    let _ = tx.send(Ok(Bytes::from(format!("data: {err_msg}\n\n")))).await;
+                    let err_msg =
+                        serde_json::json!({"error": format!("Stream error: {e}")}).to_string();
+                    let _ = tx
+                        .send(Ok(Bytes::from(format!("data: {err_msg}\n\n"))))
+                        .await;
                     return;
                 }
                 Ok(None) => return,
@@ -883,7 +1135,9 @@ async fn passthrough_stream(upstream_response: reqwest::Response, client_model: 
                             "code": 504
                         }
                     }).to_string();
-                    let _ = tx.send(Ok(Bytes::from(format!("data: {err_msg}\n\n")))).await;
+                    let _ = tx
+                        .send(Ok(Bytes::from(format!("data: {err_msg}\n\n"))))
+                        .await;
                     return;
                 }
             };
@@ -894,29 +1148,45 @@ async fn passthrough_stream(upstream_response: reqwest::Response, client_model: 
                 }
                 Err(_) => format!("data: {}\n\n", chunk),
             };
-            if tx.send(Ok(Bytes::from(payload))).await.is_err() { return; }
+            if tx.send(Ok(Bytes::from(payload))).await.is_err() {
+                return;
+            }
         }
     });
-    Response::builder().status(StatusCode::OK)
+    Response::builder()
+        .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
         .header(header::CONNECTION, "keep-alive")
-        .body(Body::from_stream(ReceiverStream::new(rx))).unwrap()
+        .body(Body::from_stream(ReceiverStream::new(rx)))
+        .unwrap()
 }
 
 async fn passthrough_verbatim(upstream_response: reqwest::Response) -> Response<Body> {
-    let status = StatusCode::from_u16(upstream_response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    let content_type = upstream_response.headers().get(header::CONTENT_TYPE).cloned();
+    let status = StatusCode::from_u16(upstream_response.status().as_u16())
+        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let content_type = upstream_response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .cloned();
     let body_bytes = upstream_response.bytes().await.unwrap_or_default();
     let mut builder = Response::builder().status(status);
-    if let Some(ct) = content_type { builder = builder.header(header::CONTENT_TYPE, ct); }
+    if let Some(ct) = content_type {
+        builder = builder.header(header::CONTENT_TYPE, ct);
+    }
     builder.body(Body::from(body_bytes)).unwrap()
 }
 
-fn response_with_body(status: reqwest::StatusCode, headers: &HeaderMap, body: Bytes) -> Response<Body> {
+fn response_with_body(
+    status: reqwest::StatusCode,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> Response<Body> {
     let status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let mut builder = Response::builder().status(status);
-    if let Some(ct) = headers.get(header::CONTENT_TYPE) { builder = builder.header(header::CONTENT_TYPE, ct); }
+    if let Some(ct) = headers.get(header::CONTENT_TYPE) {
+        builder = builder.header(header::CONTENT_TYPE, ct);
+    }
     builder.body(Body::from(body)).unwrap()
 }
 
@@ -924,14 +1194,18 @@ fn json_error(status: StatusCode, message: impl Into<String>) -> Response<Body> 
     let body = serde_json::json!({
         "error": { "message": message.into(), "type": "gateway_error", "code": status.as_u16() }
     });
-    Response::builder().status(status)
+    Response::builder()
+        .status(status)
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body.to_string())).unwrap()
+        .body(Body::from(body.to_string()))
+        .unwrap()
 }
 
 struct ConnectionGuard<'a>(&'a HealthState);
 impl Drop for ConnectionGuard<'_> {
-    fn drop(&mut self) { self.0.decrement_connections(); }
+    fn drop(&mut self) {
+        self.0.decrement_connections();
+    }
 }
 
 #[cfg(test)]
@@ -941,7 +1215,13 @@ mod tests {
 
     fn state(responses_mode: ResponsesMode) -> AppState {
         AppState {
-            upstream: UpstreamClient::new("https://api.example.com".into(), "key".into(), Duration::from_secs(5), 0).unwrap(),
+            upstream: UpstreamClient::new(
+                "https://api.example.com".into(),
+                "key".into(),
+                Duration::from_secs(5),
+                0,
+            )
+            .unwrap(),
             rewriter: ModelRewriter::new(&[]).unwrap(),
             health: HealthState::new(),
             failover: None,
@@ -958,10 +1238,8 @@ mod tests {
 
     #[test]
     fn response_echoes_the_name_the_client_sent() {
-        let rules = crate::model_rewrite::generate_provider_model_rewrites(
-            &["glm-4.6".to_string()],
-            false,
-        );
+        let rules =
+            crate::model_rewrite::generate_provider_model_rewrites(&["glm-4.6".to_string()], false);
         let rewriter = ModelRewriter::new(&rules).unwrap();
 
         let mut request = serde_json::json!({ "model": "claude-opus-5" });
@@ -1003,9 +1281,17 @@ mod tests {
     #[test]
     fn spec_tool_types_outside_the_native_set_force_a_bridge() {
         for t in [
-            "custom", "namespace", "apply_patch", "file_search", "local_shell",
-            "shell", "computer", "computer_use_preview", "image_generation",
-            "tool_search", "web_search",
+            "custom",
+            "namespace",
+            "apply_patch",
+            "file_search",
+            "local_shell",
+            "shell",
+            "computer",
+            "computer_use_preview",
+            "image_generation",
+            "tool_search",
+            "web_search",
         ] {
             let body = serde_json::json!({ "model": "m", "tools": [{ "type": t }] });
             assert!(requires_tool_bridge(&body), "{t} should bridge");
@@ -1027,9 +1313,13 @@ mod tests {
     #[test]
     fn absent_or_empty_tools_stay_native() {
         assert!(!requires_tool_bridge(&serde_json::json!({ "model": "m" })));
-        assert!(!requires_tool_bridge(&serde_json::json!({ "model": "m", "tools": [] })));
+        assert!(!requires_tool_bridge(
+            &serde_json::json!({ "model": "m", "tools": [] })
+        ));
         // Not an array — nothing to inspect, leave the verdict upstream.
-        assert!(!requires_tool_bridge(&serde_json::json!({ "model": "m", "tools": "x" })));
+        assert!(!requires_tool_bridge(
+            &serde_json::json!({ "model": "m", "tools": "x" })
+        ));
     }
 
     #[test]
@@ -1042,7 +1332,10 @@ mod tests {
     #[test]
     fn agnes_tool_type_rejection_triggers_bridge_fallback() {
         let agnes = br#"{"error":{"message":"***.BadRequestError: OpenAIException - {\"error\":{\"message\":\"Invalid JSON data: Failed to deserialize the JSON body into the target type: tools[7].type: unknown variant `custom`, expected one of `function`, `web_search_preview`, `code_interpreter`, `mcp` at line 1 column 46194\",\"type\":\"invalid_request_error\",\"code\":\"json_parse_error\"}}","type":"upstream_error","param":"","code":"400"}}"#;
-        assert!(is_missing_responses_error(reqwest::StatusCode::BAD_REQUEST, agnes));
+        assert!(is_missing_responses_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            agnes
+        ));
     }
 
     #[test]
@@ -1055,7 +1348,8 @@ mod tests {
         ] {
             assert!(
                 is_missing_responses_error(reqwest::StatusCode::BAD_REQUEST, marker),
-                "{}", String::from_utf8_lossy(marker)
+                "{}",
+                String::from_utf8_lossy(marker)
             );
         }
     }
@@ -1068,7 +1362,10 @@ mod tests {
             b"{\"error\":{\"message\":\"model not found\"}}".as_slice(),
             b"{\"error\":{\"message\":\"context length exceeded\"}}".as_slice(),
         ] {
-            assert!(!is_missing_responses_error(reqwest::StatusCode::BAD_REQUEST, body));
+            assert!(!is_missing_responses_error(
+                reqwest::StatusCode::BAD_REQUEST,
+                body
+            ));
         }
         // 401/403/429/500 are never a shape problem regardless of body text.
         for status in [
@@ -1076,7 +1373,10 @@ mod tests {
             reqwest::StatusCode::TOO_MANY_REQUESTS,
             reqwest::StatusCode::INTERNAL_SERVER_ERROR,
         ] {
-            assert!(!is_missing_responses_error(status, b"unknown variant `custom`"));
+            assert!(!is_missing_responses_error(
+                status,
+                b"unknown variant `custom`"
+            ));
         }
     }
 
@@ -1104,7 +1404,11 @@ mod tests {
 
     #[test]
     fn endpoint_absence_triggers_bridge() {
-        for status in [reqwest::StatusCode::NOT_FOUND, reqwest::StatusCode::METHOD_NOT_ALLOWED, reqwest::StatusCode::NOT_IMPLEMENTED] {
+        for status in [
+            reqwest::StatusCode::NOT_FOUND,
+            reqwest::StatusCode::METHOD_NOT_ALLOWED,
+            reqwest::StatusCode::NOT_IMPLEMENTED,
+        ] {
             assert!(is_missing_responses_error(status, b""), "{status}");
         }
     }
@@ -1158,14 +1462,25 @@ mod tests {
     #[test]
     fn normalize_effort_keeps_whitelisted_levels() {
         for level in ["low", "medium", "high", "xhigh", "max"] {
-            assert_eq!(normalize_effort(level, "gpt-5.6-luna"), Some(level.to_string()), "{level}");
-            assert_eq!(normalize_effort(&level.to_uppercase(), "gpt-5.6-luna"), Some(level.to_string()), "{level} upper");
+            assert_eq!(
+                normalize_effort(level, "gpt-5.6-luna"),
+                Some(level.to_string()),
+                "{level}"
+            );
+            assert_eq!(
+                normalize_effort(&level.to_uppercase(), "gpt-5.6-luna"),
+                Some(level.to_string()),
+                "{level} upper"
+            );
         }
     }
 
     #[test]
     fn normalize_effort_maps_minimal_to_low() {
-        assert_eq!(normalize_effort("minimal", "gpt-5.6-luna"), Some("low".to_string()));
+        assert_eq!(
+            normalize_effort("minimal", "gpt-5.6-luna"),
+            Some("low".to_string())
+        );
     }
 
     #[test]
@@ -1182,16 +1497,21 @@ mod tests {
         assert_eq!(normalize_effort("high", "deepseek-reasoner"), None);
         assert_eq!(normalize_effort("high", "qwen-qwq-32b"), None);
         // A plain DeepSeek model keeps a valid effort.
-        assert_eq!(normalize_effort("high", "deepseek-v4-pro-0813"), Some("high".to_string()));
+        assert_eq!(
+            normalize_effort("high", "deepseek-v4-pro-0813"),
+            Some("high".to_string())
+        );
     }
 
     #[test]
     fn sanitize_messages_effort_removes_bad_field() {
-        let mut body = serde_json::json!({ "model": "deepseek-v4-pro-0813", "reasoning_effort": "bogus" });
+        let mut body =
+            serde_json::json!({ "model": "deepseek-v4-pro-0813", "reasoning_effort": "bogus" });
         sanitize_messages_effort(&mut body, "deepseek-v4-pro-0813");
         assert!(body.get("reasoning_effort").is_none());
 
-        let mut body2 = serde_json::json!({ "model": "deepseek-v4-pro-0813", "reasoning_effort": "max" });
+        let mut body2 =
+            serde_json::json!({ "model": "deepseek-v4-pro-0813", "reasoning_effort": "max" });
         sanitize_messages_effort(&mut body2, "deepseek-v4-pro-0813");
         assert_eq!(body2["reasoning_effort"], "max");
     }
@@ -1244,9 +1564,16 @@ mod tests {
             ]
         });
         let resp = synthesize_models_response(raw);
-        let ids: Vec<&str> = resp["data"].as_array().unwrap().iter()
-            .map(|m| m["id"].as_str().unwrap()).collect();
-        assert_eq!(ids, vec!["gpt-5.6-luna", "claude-opus-5", "deepseek-v4-pro-0813"]);
+        let ids: Vec<&str> = resp["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["gpt-5.6-luna", "claude-opus-5", "deepseek-v4-pro-0813"]
+        );
 
         // Every model gets capabilities with effort enabled and Anthropic page fields.
         assert_eq!(resp["has_more"], false);
@@ -1279,7 +1606,9 @@ mod tests {
     }
 
     fn ids_to_data(ids: &[&str]) -> Vec<Value> {
-        ids.iter().map(|id| serde_json::json!({ "id": id })).collect()
+        ids.iter()
+            .map(|id| serde_json::json!({ "id": id }))
+            .collect()
     }
 
     #[test]
@@ -1329,7 +1658,10 @@ mod tests {
             ]
         });
         let resp = synthesize_models_response(raw);
-        assert_eq!(resp["data"][0]["capabilities"]["effort"]["supported"], false);
+        assert_eq!(
+            resp["data"][0]["capabilities"]["effort"]["supported"],
+            false
+        );
     }
 
     #[test]
@@ -1350,11 +1682,13 @@ mod tests {
 
     #[test]
     fn strip_claude_code_prefix_edge_cases() {
-        assert_eq!(strip_claude_code_prefix("claude-code/gpt-5.6-luna").0, "gpt-5.6-luna");
+        assert_eq!(
+            strip_claude_code_prefix("claude-code/gpt-5.6-luna").0,
+            "gpt-5.6-luna"
+        );
         assert_eq!(strip_claude_code_prefix("claude-code/gpt-5.6-luna").1, true);
         assert_eq!(strip_claude_code_prefix("gpt-5.6-luna").0, "gpt-5.6-luna");
         assert_eq!(strip_claude_code_prefix("gpt-5.6-luna").1, false);
         assert_eq!(strip_claude_code_prefix("claude-code/").0, "claude-code/");
     }
-
 }

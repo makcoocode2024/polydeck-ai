@@ -1,4 +1,4 @@
-﻿//! Profile management — multi-provider configuration sets.
+//! Profile management — multi-provider configuration sets.
 //!
 //! A Profile groups one or more provider configurations, client targets,
 //! MCP servers, skills, and prompts into a switchable unit. Switching a
@@ -47,9 +47,15 @@ pub struct RateLimitSettings {
     pub adaptive: bool,
 }
 
-fn default_rpm() -> u32 { 60 }
-fn default_tpm() -> u32 { 100_000 }
-fn default_adaptive() -> bool { true }
+fn default_rpm() -> u32 {
+    60
+}
+fn default_tpm() -> u32 {
+    100_000
+}
+fn default_adaptive() -> bool {
+    true
+}
 
 impl Default for RateLimitSettings {
     fn default() -> Self {
@@ -409,8 +415,8 @@ impl ProfileManager {
             .get_profile(id)
             .ok_or_else(|| AppError::InvalidInput(format!("Profile {id} 不存在")))?;
         // Strip sensitive fields
-        let mut value = serde_json::to_value(&profile)
-            .map_err(|e| AppError::Storage(e.to_string()))?;
+        let mut value =
+            serde_json::to_value(&profile).map_err(|e| AppError::Storage(e.to_string()))?;
         if let Some(obj) = value.as_object_mut() {
             obj.remove("isActive");
         }
@@ -463,8 +469,8 @@ impl ProfileManager {
 
 /// Get the application data directory (~/.ai-deck/).
 pub fn data_directory() -> AppResult<PathBuf> {
-    let home = crate::user_home_dir()
-        .ok_or_else(|| AppError::Config("无法确定用户主目录".into()))?;
+    let home =
+        crate::user_home_dir().ok_or_else(|| AppError::Config("无法确定用户主目录".into()))?;
     Ok(home.join(".ai-deck"))
 }
 
@@ -496,7 +502,7 @@ mod tests {
     #[test]
     fn test_only_active_profile_takes_effect_and_no_interference() {
         let (mut pm, _dir) = test_pm();
-        
+
         // 1. Create Profile A and Profile B
         let p_a = pm.create_profile_simple("方案A").unwrap();
         let p_b = pm.create_profile_simple("方案B").unwrap();
@@ -505,7 +511,7 @@ mod tests {
         // 2. Activate Profile A
         pm.set_active(&p_a.id).unwrap();
         assert_eq!(pm.active_profile().unwrap().id, p_a.id);
-        
+
         let list1 = pm.list_profiles();
         let a_active = list1.iter().find(|p| p.id == p_a.id).unwrap();
         let b_inactive = list1.iter().find(|p| p.id == p_b.id).unwrap();
@@ -515,48 +521,68 @@ mod tests {
         assert!(!c_inactive.is_active, "方案C 必须处于未激活状态");
 
         // 3. Modifying inactive Profile B should NOT affect active Profile A
-        let updated_b = pm.update_profile(&p_b.id, ProfileUpdate {
-            name: Some("方案B修改版".into()),
-            providers: Some(vec![ProviderConfig {
-                id: "prov_b_mod".into(),
-                name: "自定义节点B".into(),
-                base_url: "https://api.example-b.com/v1".into(),
-                protocol: ProtocolKind::OpenAI,
-                default_model: "custom-model-b".into(),
-                models: vec!["custom-model-b".into()],
-                is_primary: true,
-                codex_compat: CodexToolCompat::ResponsesCustom,
-                reasoning_confidence: ReasoningConfidence::Validated,
-                accept_invalid_certs: false,
-                max_price_per_request: None,
-                rate_limit: RateLimitSettings::default(),
-                supports_1m_context: None,
-                default_effort_level: None,
-                opus_model: None,
-                sonnet_model: None,
-                haiku_model: None,
-                opus_display_name: None,
-                sonnet_display_name: None,
-                haiku_display_name: None,
-            }]),
-            clients: None,
-            gateway_enabled: Some(false),
-            failover_enabled: None,
-        }).unwrap();
+        let updated_b = pm
+            .update_profile(
+                &p_b.id,
+                ProfileUpdate {
+                    name: Some("方案B修改版".into()),
+                    providers: Some(vec![ProviderConfig {
+                        id: "prov_b_mod".into(),
+                        name: "自定义节点B".into(),
+                        base_url: "https://api.example-b.com/v1".into(),
+                        protocol: ProtocolKind::OpenAI,
+                        default_model: "custom-model-b".into(),
+                        models: vec!["custom-model-b".into()],
+                        is_primary: true,
+                        codex_compat: CodexToolCompat::ResponsesCustom,
+                        reasoning_confidence: ReasoningConfidence::Validated,
+                        accept_invalid_certs: false,
+                        max_price_per_request: None,
+                        rate_limit: RateLimitSettings::default(),
+                        supports_1m_context: None,
+                        default_effort_level: None,
+                        opus_model: None,
+                        sonnet_model: None,
+                        haiku_model: None,
+                        opus_display_name: None,
+                        sonnet_display_name: None,
+                        haiku_display_name: None,
+                    }]),
+                    clients: None,
+                    gateway_enabled: Some(false),
+                    failover_enabled: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(updated_b.name, "方案B修改版");
-        assert!(!updated_b.is_active, "修改未激活方案B后，其状态仍应保持未激活");
-        assert_eq!(pm.active_profile().unwrap().id, p_a.id, "当前生效激活方案依然是方案A");
+        assert!(
+            !updated_b.is_active,
+            "修改未激活方案B后，其状态仍应保持未激活"
+        );
+        assert_eq!(
+            pm.active_profile().unwrap().id,
+            p_a.id,
+            "当前生效激活方案依然是方案A"
+        );
 
         // 4. Duplicate inactive Profile B should create an inactive Profile D
         let p_d = pm.duplicate_profile(&p_b.id).unwrap();
         assert!(!p_d.is_active, "复制生成的方案副本必须处于未激活状态");
-        assert_eq!(pm.active_profile().unwrap().id, p_a.id, "激活方案仍保持方案A");
+        assert_eq!(
+            pm.active_profile().unwrap().id,
+            p_a.id,
+            "激活方案仍保持方案A"
+        );
 
         // 5. Deleting inactive Profile C should succeed without disturbing active Profile A
         let del_res = pm.delete_profile(&p_c.id);
         assert!(del_res.is_ok(), "删除未激活方案C应当成功");
-        assert_eq!(pm.active_profile().unwrap().id, p_a.id, "激活方案仍保持方案A");
+        assert_eq!(
+            pm.active_profile().unwrap().id,
+            p_a.id,
+            "激活方案仍保持方案A"
+        );
 
         // 6. Attempting to delete active Profile A should be safely rejected
         let del_active_res = pm.delete_profile(&p_a.id);
@@ -564,7 +590,11 @@ mod tests {
 
         // 7. Switch active from Profile A to Profile B
         pm.set_active(&p_b.id).unwrap();
-        assert_eq!(pm.active_profile().unwrap().id, p_b.id, "激活方案应切换为方案B");
+        assert_eq!(
+            pm.active_profile().unwrap().id,
+            p_b.id,
+            "激活方案应切换为方案B"
+        );
 
         let list2 = pm.list_profiles();
         let a_now_inactive = list2.iter().find(|p| p.id == p_a.id).unwrap();

@@ -1,4 +1,4 @@
-﻿//! System tray implementation for AI Deck
+//! System tray implementation for AI Deck
 
 use crate::state::{GatewayState, ProfileState};
 use tauri::{
@@ -98,11 +98,13 @@ pub fn build_tray_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, tauri::Error
         }
 
         if sub_items.is_empty() {
-            let empty_item = MenuItem::with_id(app, "no_profiles", "暂无配置方案", false, None::<&str>)?;
+            let empty_item =
+                MenuItem::with_id(app, "no_profiles", "暂无配置方案", false, None::<&str>)?;
             sub_items.push(Box::new(empty_item));
         }
 
-        let slice: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = sub_items.iter().map(|b| b.as_ref()).collect();
+        let slice: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
+            sub_items.iter().map(|b| b.as_ref()).collect();
         Submenu::with_items(app, "切换配置方案", true, &slice)?
     } else {
         Submenu::new(app, "切换配置方案", false)?
@@ -146,23 +148,30 @@ pub fn handle_menu_event(app: &AppHandle, menu_id: &str) {
                     app_handle.try_state::<GatewayState>(),
                 ) {
                     let mut pm_guard = pm.lock().await;
-                    if let Ok(result) = polydeck_core::profile_switch::switch_profile(&mut pm_guard, &profile_id).await {
+                    if let Ok(result) =
+                        polydeck_core::profile_switch::switch_profile(&mut pm_guard, &profile_id)
+                            .await
+                    {
                         if result.success {
                             if let Some(active) = pm_guard.get_profile(&profile_id) {
                                 let mut gw_guard = gw.lock().await;
-                                      if let Some(server) = gw_guard.as_mut() {
-                                          server.stop().await;
-                                          *gw_guard = None;
-                                      }
-                                      if active.gateway_enabled {
+                                if let Some(server) = gw_guard.as_mut() {
+                                    server.stop().await;
+                                    *gw_guard = None;
+                                }
+                                if active.gateway_enabled {
                                     if let Some(primary) = active
                                         .providers
                                         .iter()
                                         .find(|p| p.is_primary)
                                         .or_else(|| active.providers.first())
                                     {
-                                        let gw_config = crate::commands::gateway::build_gateway_config(&active.id, primary);
-                                        let mut server = polydeck_gateway::GatewayServer::new(gw_config);
+                                        let gw_config =
+                                            crate::commands::gateway::build_gateway_config(
+                                                &active.id, primary,
+                                            );
+                                        let mut server =
+                                            polydeck_gateway::GatewayServer::new(gw_config);
                                         let _ = server.start().await;
                                         *gw_guard = Some(server);
                                     }

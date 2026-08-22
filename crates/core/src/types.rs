@@ -116,7 +116,10 @@ mod tests {
         assert_eq!(p_resp, ProtocolKind::Responses);
         let p_resp2: ProtocolKind = serde_json::from_str(r#""openai_responses""#).unwrap();
         assert_eq!(p_resp2, ProtocolKind::Responses);
-        assert_eq!(serde_json::to_string(&ProtocolKind::Responses).unwrap(), r#""responses""#);
+        assert_eq!(
+            serde_json::to_string(&ProtocolKind::Responses).unwrap(),
+            r#""responses""#
+        );
 
         // Test serialize produces "openai"
         let s = serde_json::to_string(&ProtocolKind::OpenAI).unwrap();
@@ -125,6 +128,9 @@ mod tests {
         // Test other variants
         let p_ant: ProtocolKind = serde_json::from_str(r#""anthropic""#).unwrap();
         assert_eq!(p_ant, ProtocolKind::Anthropic);
-        assert_eq!(serde_json::to_string(&ProtocolKind::Anthropic).unwrap(), r#""anthropic""#);
+        assert_eq!(
+            serde_json::to_string(&ProtocolKind::Anthropic).unwrap(),
+            r#""anthropic""#
+        );
     }
 }

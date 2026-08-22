@@ -11,20 +11,21 @@ pub struct HistoryWatcher {
 
 impl HistoryWatcher {
     pub fn new() -> Self {
-        Self { watched_dirs: vec![] }
+        Self {
+            watched_dirs: vec![],
+        }
     }
 
     pub fn start(&mut self) -> AppResult<()> {
-        let home = dirs::home_dir()
-            .ok_or_else(|| AppError::Config("无法确定用户主目录".into()))?;
-        
+        let home = dirs::home_dir().ok_or_else(|| AppError::Config("无法确定用户主目录".into()))?;
+
         // Watch Claude Code sessions
         let claude_dir = home.join(".claude").join("projects");
         if claude_dir.exists() {
             self.watched_dirs.push(claude_dir);
         }
 
-        // Watch Codex sessions  
+        // Watch Codex sessions
         let codex_dir = home.join(".codex").join("sessions");
         if codex_dir.exists() {
             self.watched_dirs.push(codex_dir);

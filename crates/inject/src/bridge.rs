@@ -30,8 +30,16 @@ const ALLOWED_ORIGIN: &str = "app://openai-codex";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BridgeCommand {
-    Hello, Status, Configure, Clear, ExportSession, DeleteSession,
-    GetStepwiseSuggestions, OpenInEditor, Ping, Ack,
+    Hello,
+    Status,
+    Configure,
+    Clear,
+    ExportSession,
+    DeleteSession,
+    GetStepwiseSuggestions,
+    OpenInEditor,
+    Ping,
+    Ack,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -54,10 +62,20 @@ pub struct BridgeResponse {
 
 impl BridgeResponse {
     pub fn ok(id: String, payload: serde_json::Value) -> Self {
-        Self { id, ok: true, payload, error: None }
+        Self {
+            id,
+            ok: true,
+            payload,
+            error: None,
+        }
     }
     pub fn error(id: String, error: impl Into<String>) -> Self {
-        Self { id, ok: false, payload: serde_json::Value::Null, error: Some(error.into()) }
+        Self {
+            id,
+            ok: false,
+            payload: serde_json::Value::Null,
+            error: Some(error.into()),
+        }
     }
 }
 
@@ -90,7 +108,8 @@ impl BridgeServer {
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
         let address = listener.local_addr()?;
         let state = Arc::new(BridgeState {
-            token: bridge_token(), handler,
+            token: bridge_token(),
+            handler,
             notifications: Mutex::new(VecDeque::new()),
             request_times: Mutex::new(HashMap::new()),
         });
@@ -100,25 +119,45 @@ impl BridgeServer {
             .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BYTES));
         let (shutdown, shutdown_rx) = oneshot::channel();
         let task = tokio::spawn(async move {
-            let _ = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-                .with_graceful_shutdown(async { let _ = shutdown_rx.await; }).await;
+            let _ = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await;
         });
-        Ok(Self { address, state, shutdown: Some(shutdown), task })
+        Ok(Self {
+            address,
+            state,
+            shutdown: Some(shutdown),
+            task,
+        })
     }
 
-    pub fn address(&self) -> SocketAddr { self.address }
+    pub fn address(&self) -> SocketAddr {
+        self.address
+    }
 
     #[cfg(test)]
-    pub fn test_token(&self) -> &str { &self.state.token }
+    pub fn test_token(&self) -> &str {
+        &self.state.token
+    }
 
     pub(crate) fn bootstrap_source(&self) -> String {
         let url = format!("http://{}", self.address);
-        format!("window.__AI_DECK_BRIDGE__={};", serde_json::json!({"url": url, "token": self.state.token}))
+        format!(
+            "window.__AI_DECK_BRIDGE__={};",
+            serde_json::json!({"url": url, "token": self.state.token})
+        )
     }
 
     pub async fn notify(&self, notification: serde_json::Value) {
         let mut queue = self.state.notifications.lock().await;
-        if queue.len() >= 100 { queue.pop_front(); }
+        if queue.len() >= 100 {
+            queue.pop_front();
+        }
         queue.push_back(notification);
     }
 
@@ -131,7 +170,9 @@ impl BridgeServer {
     }
 
     pub async fn stop(mut self) {
-        if let Some(shutdown) = self.shutdown.take() { let _ = shutdown.send(()); }
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
         let _ = self.task.await;
     }
 }
@@ -143,29 +184,64 @@ async fn handle_request(
     Json(request): Json<BridgeRequest>,
 ) -> impl IntoResponse {
     if !peer.ip().is_loopback() {
-        return (StatusCode::FORBIDDEN, Json(BridgeResponse::error(request.id, "loopback peer required")));
+        return (
+            StatusCode::FORBIDDEN,
+            Json(BridgeResponse::error(request.id, "loopback peer required")),
+        );
     }
     if !valid_origin(&headers) {
-        return (StatusCode::FORBIDDEN, Json(BridgeResponse::error(request.id, "origin rejected")));
+        return (
+            StatusCode::FORBIDDEN,
+            Json(BridgeResponse::error(request.id, "origin rejected")),
+        );
     }
     if !valid_token(&headers, &state.token) {
-        return (StatusCode::UNAUTHORIZED, Json(BridgeResponse::error(request.id, "authentication required")));
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(BridgeResponse::error(request.id, "authentication required")),
+        );
     }
     if !within_rate_limit(&state, peer.ip()).await {
-        return (StatusCode::TOO_MANY_REQUESTS, Json(BridgeResponse::error(request.id, "rate limit exceeded")));
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(BridgeResponse::error(request.id, "rate limit exceeded")),
+        );
     }
     if request.id.is_empty() || request.id.len() > 128 {
-        return (StatusCode::BAD_REQUEST, Json(BridgeResponse::error(request.id, "invalid request id")));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(BridgeResponse::error(request.id, "invalid request id")),
+        );
     }
     if !valid_payload(&request) {
-        return (StatusCode::BAD_REQUEST, Json(BridgeResponse::error(request.id, "invalid command payload")));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(BridgeResponse::error(request.id, "invalid command payload")),
+        );
     }
     if request.command == BridgeCommand::Ping {
-        return (StatusCode::OK, Json(BridgeResponse::ok(request.id, serde_json::json!({"pong": true}))));
+        return (
+            StatusCode::OK,
+            Json(BridgeResponse::ok(
+                request.id,
+                serde_json::json!({"pong": true}),
+            )),
+        );
     }
     if request.command == BridgeCommand::Hello {
-        let notifications = state.notifications.lock().await.drain(..).collect::<Vec<_>>();
-        return (StatusCode::OK, Json(BridgeResponse::ok(request.id, serde_json::json!({"notifications": notifications}))));
+        let notifications = state
+            .notifications
+            .lock()
+            .await
+            .drain(..)
+            .collect::<Vec<_>>();
+        return (
+            StatusCode::OK,
+            Json(BridgeResponse::ok(
+                request.id,
+                serde_json::json!({"notifications": notifications}),
+            )),
+        );
     }
     let response = (state.handler)(request).await;
     (StatusCode::OK, Json(response))
@@ -179,7 +255,9 @@ fn valid_origin(headers: &HeaderMap) -> bool {
 }
 
 fn valid_token(headers: &HeaderMap, token: &str) -> bool {
-    headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok())
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(|provided| constant_time_eq(provided.as_bytes(), token.as_bytes()))
         .unwrap_or(false)
@@ -189,25 +267,46 @@ async fn within_rate_limit(state: &BridgeState, ip: IpAddr) -> bool {
     let now = Instant::now();
     let mut requests = state.request_times.lock().await;
     let times = requests.entry(ip).or_default();
-    while times.front().is_some_and(|t| now.duration_since(*t) > Duration::from_secs(60)) { times.pop_front(); }
-    if times.len() >= MAX_REQUESTS_PER_MINUTE { return false; }
+    while times
+        .front()
+        .is_some_and(|t| now.duration_since(*t) > Duration::from_secs(60))
+    {
+        times.pop_front();
+    }
+    if times.len() >= MAX_REQUESTS_PER_MINUTE {
+        return false;
+    }
     times.push_back(now);
     true
 }
 
 fn valid_payload(request: &BridgeRequest) -> bool {
-    if request.payload.to_string().len() > MAX_REQUEST_BYTES { return false; }
+    if request.payload.to_string().len() > MAX_REQUEST_BYTES {
+        return false;
+    }
     match request.command {
         BridgeCommand::Configure => request.payload.is_object(),
-        BridgeCommand::ExportSession | BridgeCommand::DeleteSession => {
-            request.payload.get("sessionId").and_then(|v| v.as_str()).is_some()
-        }
-        BridgeCommand::GetStepwiseSuggestions => {
-            request.payload.get("context").and_then(|v| v.as_str()).is_some_and(|v| v.len() <= 16_000)
-        }
+        BridgeCommand::ExportSession | BridgeCommand::DeleteSession => request
+            .payload
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        BridgeCommand::GetStepwiseSuggestions => request
+            .payload
+            .get("context")
+            .and_then(|v| v.as_str())
+            .is_some_and(|v| v.len() <= 16_000),
         BridgeCommand::OpenInEditor => {
-            request.payload.get("editor").and_then(|v| v.as_str()).is_some_and(|v| matches!(v, "vscode" | "zed"))
-            && request.payload.get("path").and_then(|v| v.as_str()).is_some()
+            request
+                .payload
+                .get("editor")
+                .and_then(|v| v.as_str())
+                .is_some_and(|v| matches!(v, "vscode" | "zed"))
+                && request
+                    .payload
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .is_some()
         }
         _ => request.payload.is_null() || request.payload.is_object(),
     }
@@ -220,7 +319,9 @@ fn bridge_token() -> String {
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() { return false; }
+    if left.len() != right.len() {
+        return false;
+    }
     left.iter().zip(right).fold(0_u8, |r, (a, b)| r | (a ^ b)) == 0
 }
 

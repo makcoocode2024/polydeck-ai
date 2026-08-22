@@ -2,7 +2,9 @@ use tauri::command;
 
 #[command]
 pub async fn ad_run_diagnostics() -> Result<serde_json::Value, String> {
-    let report = polydeck_core::diagnostics::run_diagnostics().await.map_err(|e| e.to_string())?;
+    let report = polydeck_core::diagnostics::run_diagnostics()
+        .await
+        .map_err(|e| e.to_string())?;
     serde_json::to_value(report).map_err(|e| e.to_string())
 }
 

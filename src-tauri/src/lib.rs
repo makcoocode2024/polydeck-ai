@@ -1,4 +1,4 @@
-﻿//! AI Deck Tauri application entry point
+//! AI Deck Tauri application entry point
 //!
 //! Modular IPC command layer replaces the monolithic God File pattern.
 
@@ -10,8 +10,8 @@ use polydeck_core::profile::ProfileManager;
 use polydeck_inject::InjectionManager;
 use state::{GatewayState, InjectState, ProfileState};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tauri::Manager;
+use tokio::sync::Mutex;
 
 const INJECT_SCRIPT_SOURCE: &str = "// AI Deck bridge placeholder";
 
@@ -19,9 +19,8 @@ pub fn run() {
     let pm = ProfileManager::load().unwrap_or_default();
     let profile_state: ProfileState = Arc::new(Mutex::new(pm));
     let gateway_state: GatewayState = Arc::new(Mutex::new(None));
-    let inject_state: InjectState = Arc::new(Mutex::new(
-        InjectionManager::new(INJECT_SCRIPT_SOURCE),
-    ));
+    let inject_state: InjectState =
+        Arc::new(Mutex::new(InjectionManager::new(INJECT_SCRIPT_SOURCE)));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -48,7 +47,9 @@ pub fn run() {
                                 .find(|p| p.is_primary)
                                 .or_else(|| active.providers.first())
                             {
-                                let gw_config = crate::commands::gateway::build_gateway_config(&active.id, primary);
+                                let gw_config = crate::commands::gateway::build_gateway_config(
+                                    &active.id, primary,
+                                );
                                 let mut server = polydeck_gateway::GatewayServer::new(gw_config);
                                 if let Ok(_) = server.start().await {
                                     let mut gw_guard = gw.lock().await;
