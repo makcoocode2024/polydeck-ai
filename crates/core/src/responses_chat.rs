@@ -257,7 +257,9 @@ pub fn responses_to_chat(request: &Value, previous_messages: Option<&[Value]>) -
     if let Some(effort) = request.pointer("/reasoning/effort").and_then(Value::as_str) {
         let model_lower = model.to_ascii_lowercase();
         let effort_clean = effort.trim().to_ascii_lowercase();
-        if model_lower.contains("deepseek") || model_lower.contains("r1") || model_lower.contains("qwq") {
+        // Auto-thinking DeepSeek reasoner variants and QwQ drop the field; the
+        // plain DeepSeek chat models accept low/medium/high/xhigh/max.
+        if model_lower.contains("reasoner") || model_lower.contains("r1") || model_lower.contains("qwq") {
             warnings.push(format!("模型 {model} 自动执行思考推理，已安全忽略 reasoning_effort 参数以避免上游报错"));
         } else if model_lower.contains("gemini") {
             if effort_clean == "minimal" {
@@ -272,14 +274,19 @@ pub fn responses_to_chat(request: &Value, previous_messages: Option<&[Value]>) -
                 warnings.push(format!("Gemini 忽略未知/关闭推理档位 effort={effort}"));
             }
         } else {
+            // DeepSeek non-reasoner models accept the full low..max range, so
+            // pass every whitelisted level through instead of clamping to high.
+            let is_deepseek = model_lower.contains("deepseek");
             if effort_clean == "minimal" {
                 body.insert("reasoning_effort".into(), Value::String("low".into()));
                 warnings.push("Chat 后端不支持 minimal 推理档位，已自动平滑映射为 low".into());
+            } else if matches!(effort_clean.as_str(), "low" | "medium" | "high") {
+                body.insert("reasoning_effort".into(), Value::String(effort_clean));
+            } else if is_deepseek && matches!(effort_clean.as_str(), "xhigh" | "max") {
+                body.insert("reasoning_effort".into(), Value::String(effort_clean));
             } else if matches!(effort_clean.as_str(), "xhigh" | "max") {
                 body.insert("reasoning_effort".into(), Value::String("high".into()));
                 warnings.push(format!("Chat 后端不支持 Responses reasoning effort={effort}，已降级为 high"));
-            } else if matches!(effort_clean.as_str(), "low" | "medium" | "high") {
-                body.insert("reasoning_effort".into(), Value::String(effort_clean));
             } else if effort_clean == "none" {
                 // none: do not inject
             } else {
@@ -667,5 +674,12 @@ mod tests {
         });
         let c_gen = responses_to_chat(&req_gen, None).unwrap();
         assert_eq!(c_gen.body["reasoning_effort"], "high");
+
+        // Plain DeepSeek chat model keeps xhigh (upstream accepts the full range)
+        let req_dsv4 = json!({
+            "model": "deepseek-v4-pro-0813", "input": "x", "reasoning": { "effort": "xhigh" }
+        });
+        let c_dsv4 = responses_to_chat(&req_dsv4, None).unwrap();
+        assert_eq!(c_dsv4.body["reasoning_effort"], "xhigh");
     }
 }
