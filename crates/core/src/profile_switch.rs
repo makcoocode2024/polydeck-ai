@@ -45,13 +45,19 @@ fn insert_tier(
         } else {
             wire
         };
-        overrides.insert((*key).to_string(), serde_json::Value::String(value.to_string()));
+        overrides.insert(
+            (*key).to_string(),
+            serde_json::Value::String(value.to_string()),
+        );
     }
 }
 
 /// Trimmed `value`, or `fallback` when it is absent or blank.
 fn trimmed_or<'a>(value: Option<&'a str>, fallback: &'a str) -> &'a str {
-    value.map(str::trim).filter(|s| !s.is_empty()).unwrap_or(fallback)
+    value
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(fallback)
 }
 
 /// The `(opus, sonnet, haiku)` names Claude Code is shown for this provider.
@@ -60,9 +66,18 @@ fn trimmed_or<'a>(value: Option<&'a str>, fallback: &'a str) -> &'a str {
 /// `~/.claude.json`, so both sides read them from here.
 pub fn claude_display_names(provider: &crate::profile::ProviderConfig) -> (&str, &str, &str) {
     (
-        trimmed_or(provider.opus_display_name.as_deref(), DEFAULT_OPUS_DISPLAY_NAME),
-        trimmed_or(provider.sonnet_display_name.as_deref(), DEFAULT_SONNET_DISPLAY_NAME),
-        trimmed_or(provider.haiku_display_name.as_deref(), DEFAULT_HAIKU_DISPLAY_NAME),
+        trimmed_or(
+            provider.opus_display_name.as_deref(),
+            DEFAULT_OPUS_DISPLAY_NAME,
+        ),
+        trimmed_or(
+            provider.sonnet_display_name.as_deref(),
+            DEFAULT_SONNET_DISPLAY_NAME,
+        ),
+        trimmed_or(
+            provider.haiku_display_name.as_deref(),
+            DEFAULT_HAIKU_DISPLAY_NAME,
+        ),
     )
 }
 
@@ -130,13 +145,19 @@ pub fn claude_tier_candidates(provider: &crate::profile::ProviderConfig) -> (&st
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| {
             pick_tier_model(&provider.models, DEFAULT_SONNET_DISPLAY_NAME, |lower| {
-                lower.contains("sonnet") || lower.contains("claude-3-7") || lower.contains("claude-3.7")
+                lower.contains("sonnet")
+                    || lower.contains("claude-3-7")
+                    || lower.contains("claude-3.7")
             })
             .unwrap_or_else(|| {
                 if model_to_use.to_ascii_lowercase().contains("sonnet") {
                     model_to_use
                 } else {
-                    provider.models.first().map(|s| s.as_str()).unwrap_or(model_to_use)
+                    provider
+                        .models
+                        .first()
+                        .map(|s| s.as_str())
+                        .unwrap_or(model_to_use)
                 }
             })
         });
@@ -192,13 +213,19 @@ pub fn claude_tier_candidates(provider: &crate::profile::ProviderConfig) -> (&st
 ///
 /// The gateway has to resolve the same names this module writes, so both sides
 /// read them from here.
-pub fn claude_wire_names<'a>(provider: &'a crate::profile::ProviderConfig) -> (&'a str, &'a str, &'a str) {
+pub fn claude_wire_names<'a>(
+    provider: &'a crate::profile::ProviderConfig,
+) -> (&'a str, &'a str, &'a str) {
     let (opus_display, sonnet_display, haiku_display) = claude_display_names(provider);
     let (opus_candidate, sonnet_candidate, haiku_candidate) = claude_tier_candidates(provider);
     let served: HashSet<&str> = provider.models.iter().map(|m| m.trim()).collect();
 
     let resolve = |display: &'a str, candidate: &'a str| -> &'a str {
-        if display != candidate && served.contains(display) { candidate } else { display }
+        if display != candidate && served.contains(display) {
+            candidate
+        } else {
+            display
+        }
     };
 
     (
@@ -223,7 +250,10 @@ pub fn claude_wire_names<'a>(provider: &'a crate::profile::ProviderConfig) -> (&
 pub fn claude_tier_warnings(provider: &crate::profile::ProviderConfig) -> Vec<String> {
     let (opus, sonnet, haiku) = claude_tier_candidates(provider);
     let explicitly_set = |v: &Option<String>| {
-        v.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_some()
+        v.as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_some()
     };
 
     let mut warnings = Vec::new();
@@ -258,9 +288,24 @@ pub fn claude_tier_warnings(provider: &crate::profile::ProviderConfig) -> Vec<St
     let (opus_display, sonnet_display, haiku_display) = claude_display_names(provider);
     let (opus_wire, sonnet_wire, haiku_wire) = claude_wire_names(provider);
     for (label, display, wire, is_explicit) in [
-        ("Opus", opus_display, opus_wire, explicitly_set(&provider.opus_display_name)),
-        ("Sonnet", sonnet_display, sonnet_wire, explicitly_set(&provider.sonnet_display_name)),
-        ("Haiku", haiku_display, haiku_wire, explicitly_set(&provider.haiku_display_name)),
+        (
+            "Opus",
+            opus_display,
+            opus_wire,
+            explicitly_set(&provider.opus_display_name),
+        ),
+        (
+            "Sonnet",
+            sonnet_display,
+            sonnet_wire,
+            explicitly_set(&provider.sonnet_display_name),
+        ),
+        (
+            "Haiku",
+            haiku_display,
+            haiku_wire,
+            explicitly_set(&provider.haiku_display_name),
+        ),
     ] {
         if is_explicit && display != wire {
             warnings.push(format!(
@@ -541,7 +586,11 @@ fn get_model_reasoning_config(slug: &str) -> (serde_json::Value, serde_json::Val
     } else {
         // Unrecognised name: assume a reasoning model with the safe three-level
         // ladder rather than declaring no levels, which hangs Codex's menu.
-        (serde_json::json!("medium"), fallback_reasoning_levels(), true)
+        (
+            serde_json::json!("medium"),
+            fallback_reasoning_levels(),
+            true,
+        )
     }
 }
 
@@ -654,8 +703,8 @@ async fn write_codex_config(
     profile_id: &str,
     gateway_enabled: bool,
 ) -> AppResult<()> {
-    let home = crate::user_home_dir()
-        .ok_or_else(|| AppError::Config("无法确定用户主目录".into()))?;
+    let home =
+        crate::user_home_dir().ok_or_else(|| AppError::Config("无法确定用户主目录".into()))?;
     let codex_dir = home.join(".codex");
     std::fs::create_dir_all(&codex_dir)?;
     let config_path = codex_dir.join("config.toml");
@@ -663,14 +712,22 @@ async fn write_codex_config(
     // Read existing config or create new
     let mut doc = if config_path.exists() {
         let content = std::fs::read_to_string(&config_path)?;
-        content.parse::<toml_edit::DocumentMut>().unwrap_or_default()
+        content
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap_or_default()
     } else {
         toml_edit::DocumentMut::new()
     };
 
-    let model_to_use = if !provider.default_model.trim().is_empty() && provider.default_model.trim() != "codex-auto-review" {
+    let model_to_use = if !provider.default_model.trim().is_empty()
+        && provider.default_model.trim() != "codex-auto-review"
+    {
         provider.default_model.trim()
-    } else if let Some(first) = provider.models.iter().find(|s| !s.trim().is_empty() && s.trim() != "codex-auto-review") {
+    } else if let Some(first) = provider
+        .models
+        .iter()
+        .find(|s| !s.trim().is_empty() && s.trim() != "codex-auto-review")
+    {
         first.trim()
     } else {
         "gpt-4o"
@@ -684,12 +741,19 @@ async fn write_codex_config(
     };
     let provider_key = raw_key
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect::<String>();
 
     // Write dynamic model catalog JSON for Codex /model command
     let supports_1m = provider.supports_1m_context.unwrap_or(false);
-    let catalog_doc = build_codex_catalog_with_1m(&provider.name, model_to_use, &provider.models, supports_1m);
+    let catalog_doc =
+        build_codex_catalog_with_1m(&provider.name, model_to_use, &provider.models, supports_1m);
     let catalog_path = codex_dir.join("ai-deck-model-catalog.json");
     let catalog_content = serde_json::to_string_pretty(&catalog_doc)?;
     crate::storage::atomic_replace(&catalog_path, catalog_content.as_bytes())?;
@@ -755,7 +819,10 @@ async fn write_codex_config(
         };
 
         if !token_to_write.is_empty() {
-            provider_table.insert("experimental_bearer_token", toml_edit::value(token_to_write));
+            provider_table.insert(
+                "experimental_bearer_token",
+                toml_edit::value(token_to_write),
+            );
         }
 
         table.insert(&provider_key, toml_edit::Item::Table(provider_table));
@@ -774,8 +841,8 @@ async fn write_claude_config(
     profile_id: &str,
     gateway_enabled: bool,
 ) -> AppResult<()> {
-    let home = crate::user_home_dir()
-        .ok_or_else(|| AppError::Config("无法确定用户主目录".into()))?;
+    let home =
+        crate::user_home_dir().ok_or_else(|| AppError::Config("无法确定用户主目录".into()))?;
     let claude_dir = home.join(".claude");
     std::fs::create_dir_all(&claude_dir)?;
     let config_path = claude_dir.join("settings.json");
@@ -928,27 +995,41 @@ async fn write_claude_config(
     for m in &provider.models {
         let trimmed = m.trim();
         if !trimmed.is_empty() {
-            overrides.insert(trimmed.to_string(), serde_json::Value::String(trimmed.to_string()));
+            overrides.insert(
+                trimmed.to_string(),
+                serde_json::Value::String(trimmed.to_string()),
+            );
         }
     }
 
     // Short aliases mapping MUST be added after self-mapping loop to ensure
     // aliases like "opus", "sonnet", "haiku", "default", "opusplan" correctly
     // route to the target wire name.
-    insert_tier(&mut overrides, CLAUDE_CODE_SONNET_ALIASES, sonnet_wire, false);
+    insert_tier(
+        &mut overrides,
+        CLAUDE_CODE_SONNET_ALIASES,
+        sonnet_wire,
+        false,
+    );
     insert_tier(&mut overrides, CLAUDE_CODE_OPUS_ALIASES, opus_wire, false);
     insert_tier(&mut overrides, CLAUDE_CODE_HAIKU_ALIASES, haiku_wire, false);
     // A custom display name needs a self-map, or Claude Code would leave it
     // untouched only by luck of not being listed here.
     for wire in [opus_wire, sonnet_wire, haiku_wire] {
-        overrides.insert(wire.to_string(), serde_json::Value::String(wire.to_string()));
+        overrides.insert(
+            wire.to_string(),
+            serde_json::Value::String(wire.to_string()),
+        );
         if supports_1m && !wire.ends_with("[1m]") && wire != haiku_wire {
             let wire_1m = format!("{wire}[1m]");
             overrides.insert(wire_1m.clone(), serde_json::Value::String(wire_1m));
         }
     }
     if !model_to_use.is_empty() && !overrides.contains_key(model_to_use) {
-        overrides.insert(model_to_use.to_string(), serde_json::Value::String(model_to_use.to_string()));
+        overrides.insert(
+            model_to_use.to_string(),
+            serde_json::Value::String(model_to_use.to_string()),
+        );
     }
 
     config["modelOverrides"] = serde_json::Value::Object(overrides);
@@ -1083,7 +1164,10 @@ async fn write_claude_config(
         claude_json = serde_json::json!({});
     }
     if let Some(obj) = claude_json.as_object_mut() {
-        obj.insert("hasCompletedOnboarding".into(), serde_json::Value::Bool(true));
+        obj.insert(
+            "hasCompletedOnboarding".into(),
+            serde_json::Value::Bool(true),
+        );
         // Remove primaryApiKey and oauthAccount from ~/.claude.json so Claude Code uses
         // ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL configured in settings.json without
         // triggering "/login managed key" conflicts.
@@ -1102,8 +1186,8 @@ async fn write_claude_desktop_config(
     _profile_id: &str,
     _gateway_enabled: bool,
 ) -> AppResult<()> {
-    let home = crate::user_home_dir()
-        .ok_or_else(|| AppError::Config("无法确定用户主目录".into()))?;
+    let home =
+        crate::user_home_dir().ok_or_else(|| AppError::Config("无法确定用户主目录".into()))?;
 
     #[cfg(windows)]
     let config_path = std::env::var_os("APPDATA")
@@ -1129,7 +1213,10 @@ async fn write_claude_desktop_config(
     }
 
     if config.get("mcpServers").is_none() {
-        config.as_object_mut().unwrap().insert("mcpServers".into(), serde_json::json!({}));
+        config
+            .as_object_mut()
+            .unwrap()
+            .insert("mcpServers".into(), serde_json::json!({}));
     }
 
     let content = serde_json::to_string_pretty(&config)?;
@@ -1145,8 +1232,8 @@ async fn write_hermes_config(
     profile_id: &str,
     gateway_enabled: bool,
 ) -> AppResult<()> {
-    let home = crate::user_home_dir()
-        .ok_or_else(|| AppError::Config("无法确定用户主目录".into()))?;
+    let home =
+        crate::user_home_dir().ok_or_else(|| AppError::Config("无法确定用户主目录".into()))?;
     let hermes_dir = home.join(".hermes");
     std::fs::create_dir_all(&hermes_dir)?;
 
@@ -1207,7 +1294,7 @@ async fn write_hermes_config(
     // Root level must only contain valid Hermes keys (inference_provider, model, custom_providers).
     // Misplaced root-level keys like api_key or base_url trigger validation warnings in Hermes CLI.
     let config_yaml = format!(
-r##"# Hermes Agent Configuration (Managed by AI Deck)
+        r##"# Hermes Agent Configuration (Managed by AI Deck)
 inference_provider: custom
 model: {model}
 
@@ -1226,7 +1313,7 @@ custom_providers:
 
     // 2. Write ~/.hermes/.env for CLI environment loader
     let env_content = format!(
-r#"INFERENCE_PROVIDER=custom
+        r#"INFERENCE_PROVIDER=custom
 MODEL={model}
 HERMES_MODEL={model}
 OPENAI_BASE_URL={target_base_url}
@@ -1259,18 +1346,34 @@ ANTHROPIC_API_KEY={key}
 
     let dot_config_hermes = home.join(".config").join("hermes");
     if std::fs::create_dir_all(&dot_config_hermes).is_ok() {
-        let _ = crate::storage::atomic_replace(&dot_config_hermes.join("config.yaml"), config_yaml.as_bytes());
-        let _ = crate::storage::atomic_replace(&dot_config_hermes.join("config.json"), json_content.as_bytes());
-        let _ = crate::storage::atomic_replace(&dot_config_hermes.join(".env"), env_content.as_bytes());
+        let _ = crate::storage::atomic_replace(
+            &dot_config_hermes.join("config.yaml"),
+            config_yaml.as_bytes(),
+        );
+        let _ = crate::storage::atomic_replace(
+            &dot_config_hermes.join("config.json"),
+            json_content.as_bytes(),
+        );
+        let _ =
+            crate::storage::atomic_replace(&dot_config_hermes.join(".env"), env_content.as_bytes());
     }
 
     #[cfg(windows)]
     if let Some(appdata) = std::env::var_os("APPDATA") {
         let appdata_hermes = std::path::PathBuf::from(appdata).join("hermes");
         if std::fs::create_dir_all(&appdata_hermes).is_ok() {
-            let _ = crate::storage::atomic_replace(&appdata_hermes.join("config.yaml"), config_yaml.as_bytes());
-            let _ = crate::storage::atomic_replace(&appdata_hermes.join("config.json"), json_content.as_bytes());
-            let _ = crate::storage::atomic_replace(&appdata_hermes.join(".env"), env_content.as_bytes());
+            let _ = crate::storage::atomic_replace(
+                &appdata_hermes.join("config.yaml"),
+                config_yaml.as_bytes(),
+            );
+            let _ = crate::storage::atomic_replace(
+                &appdata_hermes.join("config.json"),
+                json_content.as_bytes(),
+            );
+            let _ = crate::storage::atomic_replace(
+                &appdata_hermes.join(".env"),
+                env_content.as_bytes(),
+            );
         }
     }
 
@@ -1278,9 +1381,18 @@ ANTHROPIC_API_KEY={key}
     if let Some(localappdata) = std::env::var_os("LOCALAPPDATA") {
         let localappdata_hermes = std::path::PathBuf::from(localappdata).join("hermes");
         if std::fs::create_dir_all(&localappdata_hermes).is_ok() {
-            let _ = crate::storage::atomic_replace(&localappdata_hermes.join("config.yaml"), config_yaml.as_bytes());
-            let _ = crate::storage::atomic_replace(&localappdata_hermes.join("config.json"), json_content.as_bytes());
-            let _ = crate::storage::atomic_replace(&localappdata_hermes.join(".env"), env_content.as_bytes());
+            let _ = crate::storage::atomic_replace(
+                &localappdata_hermes.join("config.yaml"),
+                config_yaml.as_bytes(),
+            );
+            let _ = crate::storage::atomic_replace(
+                &localappdata_hermes.join("config.json"),
+                json_content.as_bytes(),
+            );
+            let _ = crate::storage::atomic_replace(
+                &localappdata_hermes.join(".env"),
+                env_content.as_bytes(),
+            );
         }
     }
 
@@ -1314,7 +1426,13 @@ mod tests {
         assert_eq!(list.len(), 3);
         assert_eq!(list[0]["slug"], "gemini-3.7-flash-high");
         assert_eq!(list[0]["priority"], 0);
-        assert_eq!(list[0]["supported_reasoning_levels"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            list[0]["supported_reasoning_levels"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
         assert_eq!(list[1]["slug"], "subtoken-opus-4-6-thinking");
         assert_eq!(list[2]["slug"], "subtoken-sonnet-4-6");
 
@@ -1391,8 +1509,12 @@ mod tests {
             let (default, levels, supports) = get_model_reasoning_config(name);
             assert!(supports, "{name}");
             assert_eq!(default, "medium", "{name}");
-            let efforts: Vec<&str> = levels.as_array().unwrap().iter()
-                .map(|l| l["effort"].as_str().unwrap()).collect();
+            let efforts: Vec<&str> = levels
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l["effort"].as_str().unwrap())
+                .collect();
             assert_eq!(efforts, vec!["low", "medium", "high"], "{name}");
         }
     }
@@ -1402,8 +1524,12 @@ mod tests {
         let (default, levels, supports) = get_model_reasoning_config("gpt-4o");
         assert!(!supports, "gpt-4o must not claim reasoning summaries");
         assert_eq!(default, "none");
-        let efforts: Vec<&str> = levels.as_array().unwrap().iter()
-            .map(|l| l["effort"].as_str().unwrap()).collect();
+        let efforts: Vec<&str> = levels
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["effort"].as_str().unwrap())
+            .collect();
         assert_eq!(efforts, vec!["none"]);
     }
 
@@ -1419,25 +1545,45 @@ mod tests {
         p1.providers[0].name = "Alpha Provider".into();
         p1.providers[0].default_model = "alpha-model".into();
         p1.providers[0].models = vec!["alpha-model".into()];
-        let p1 = pm.update_profile(&p1.id, ProfileUpdate {
-            name: Some("方案Alpha".into()),
-            providers: Some(p1.providers),
-            clients: Some(vec!["codex-cli".into(), "claude-code".into(), "hermes".into(), "claude-desktop".into()]),
-            gateway_enabled: Some(true),
-            failover_enabled: None,
-        }).unwrap();
+        let p1 = pm
+            .update_profile(
+                &p1.id,
+                ProfileUpdate {
+                    name: Some("方案Alpha".into()),
+                    providers: Some(p1.providers),
+                    clients: Some(vec![
+                        "codex-cli".into(),
+                        "claude-code".into(),
+                        "hermes".into(),
+                        "claude-desktop".into(),
+                    ]),
+                    gateway_enabled: Some(true),
+                    failover_enabled: None,
+                },
+            )
+            .unwrap();
 
         let mut p2 = pm.create_profile_simple("方案Beta").unwrap();
         p2.providers[0].name = "Beta Provider".into();
         p2.providers[0].default_model = "beta-model".into();
         p2.providers[0].models = vec!["beta-model".into()];
-        let p2 = pm.update_profile(&p2.id, ProfileUpdate {
-            name: Some("方案Beta".into()),
-            providers: Some(p2.providers),
-            clients: Some(vec!["codex-cli".into(), "claude-code".into(), "hermes".into(), "claude-desktop".into()]),
-            gateway_enabled: Some(true),
-            failover_enabled: None,
-        }).unwrap();
+        let p2 = pm
+            .update_profile(
+                &p2.id,
+                ProfileUpdate {
+                    name: Some("方案Beta".into()),
+                    providers: Some(p2.providers),
+                    clients: Some(vec![
+                        "codex-cli".into(),
+                        "claude-code".into(),
+                        "hermes".into(),
+                        "claude-desktop".into(),
+                    ]),
+                    gateway_enabled: Some(true),
+                    failover_enabled: None,
+                },
+            )
+            .unwrap();
 
         // 1. Switch to Profile Alpha
         let res1 = switch_profile(&mut pm, &p1.id).await.unwrap();
@@ -1446,16 +1592,41 @@ mod tests {
 
         let home = crate::user_home_dir().unwrap();
         let codex_doc = std::fs::read_to_string(home.join(".codex").join("config.toml")).unwrap();
-        assert!(codex_doc.contains("alpha-model"), "Codex 配置应写入 Alpha 方案模型");
-        assert!(!codex_doc.contains("beta-model"), "Codex 配置中不应包含未激活的 Beta 方案模型");
+        assert!(
+            codex_doc.contains("alpha-model"),
+            "Codex 配置应写入 Alpha 方案模型"
+        );
+        assert!(
+            !codex_doc.contains("beta-model"),
+            "Codex 配置中不应包含未激活的 Beta 方案模型"
+        );
 
-        let hermes_yaml = std::fs::read_to_string(home.join(".hermes").join("config.yaml")).unwrap();
-                assert!(hermes_yaml.contains("custom_providers:"), "Hermes 配置应包含 custom_providers");
-        assert!(hermes_yaml.contains("inference_provider: custom"), "Hermes 配置应声明 inference_provider: custom");
-        assert!(hermes_yaml.contains("model: alpha-model"), "Hermes 配置应写入 Alpha 方案模型");
-        assert!(!hermes_yaml.lines().any(|l| l.starts_with("api_key:")), "Hermes 配置根层级不应包含 api_key");
-        assert!(!hermes_yaml.lines().any(|l| l.starts_with("base_url:")), "Hermes 配置根层级不应包含 base_url");
-        assert!(!hermes_yaml.contains("model: beta-model"), "Hermes 配置中不应包含未激活的 Beta 方案模型");
+        let hermes_yaml =
+            std::fs::read_to_string(home.join(".hermes").join("config.yaml")).unwrap();
+        assert!(
+            hermes_yaml.contains("custom_providers:"),
+            "Hermes 配置应包含 custom_providers"
+        );
+        assert!(
+            hermes_yaml.contains("inference_provider: custom"),
+            "Hermes 配置应声明 inference_provider: custom"
+        );
+        assert!(
+            hermes_yaml.contains("model: alpha-model"),
+            "Hermes 配置应写入 Alpha 方案模型"
+        );
+        assert!(
+            !hermes_yaml.lines().any(|l| l.starts_with("api_key:")),
+            "Hermes 配置根层级不应包含 api_key"
+        );
+        assert!(
+            !hermes_yaml.lines().any(|l| l.starts_with("base_url:")),
+            "Hermes 配置根层级不应包含 base_url"
+        );
+        assert!(
+            !hermes_yaml.contains("model: beta-model"),
+            "Hermes 配置中不应包含未激活的 Beta 方案模型"
+        );
 
         // 2. Switch to Profile Beta
         let res2 = switch_profile(&mut pm, &p2.id).await.unwrap();
@@ -1463,12 +1634,25 @@ mod tests {
         assert_eq!(pm.active_profile().unwrap().id, p2.id);
 
         let codex_doc2 = std::fs::read_to_string(home.join(".codex").join("config.toml")).unwrap();
-        assert!(codex_doc2.contains("beta-model"), "Codex 配置应更新为 Beta 方案模型");
-        assert!(!codex_doc2.contains("alpha-model"), "Codex 配置中不应残留 Alpha 方案模型");
+        assert!(
+            codex_doc2.contains("beta-model"),
+            "Codex 配置应更新为 Beta 方案模型"
+        );
+        assert!(
+            !codex_doc2.contains("alpha-model"),
+            "Codex 配置中不应残留 Alpha 方案模型"
+        );
 
-        let hermes_yaml2 = std::fs::read_to_string(home.join(".hermes").join("config.yaml")).unwrap();
-        assert!(hermes_yaml2.contains("model: beta-model"), "Hermes 配置应更新为 Beta 方案模型");
-        assert!(!hermes_yaml2.contains("alpha-model"), "Hermes 配置中不应残留 Alpha 方案模型");
+        let hermes_yaml2 =
+            std::fs::read_to_string(home.join(".hermes").join("config.yaml")).unwrap();
+        assert!(
+            hermes_yaml2.contains("model: beta-model"),
+            "Hermes 配置应更新为 Beta 方案模型"
+        );
+        assert!(
+            !hermes_yaml2.contains("alpha-model"),
+            "Hermes 配置中不应残留 Alpha 方案模型"
+        );
     }
 
     #[tokio::test]
@@ -1487,11 +1671,7 @@ mod tests {
             is_primary: true,
             codex_compat: crate::types::CodexToolCompat::ResponsesFunction,
             reasoning_confidence: crate::types::ReasoningConfidence::Unknown,
-            models: vec![
-                "model-S".into(),
-                "model-O".into(),
-                "claude-opus-5".into(),
-            ],
+            models: vec!["model-S".into(), "model-O".into(), "claude-opus-5".into()],
             default_model: "opus".into(),
             accept_invalid_certs: false,
             max_price_per_request: None,
@@ -1515,35 +1695,63 @@ mod tests {
 
         // 1. Check auth: only ANTHROPIC_AUTH_TOKEN, no ANTHROPIC_API_KEY
         let env = parsed.get("env").and_then(|v| v.as_object()).unwrap();
-        assert!(env.contains_key("ANTHROPIC_AUTH_TOKEN"), "env 应包含 ANTHROPIC_AUTH_TOKEN");
-        assert!(!env.contains_key("ANTHROPIC_API_KEY"), "env 不应包含 ANTHROPIC_API_KEY 以免互斥告警");
+        assert!(
+            env.contains_key("ANTHROPIC_AUTH_TOKEN"),
+            "env 应包含 ANTHROPIC_AUTH_TOKEN"
+        );
+        assert!(
+            !env.contains_key("ANTHROPIC_API_KEY"),
+            "env 不应包含 ANTHROPIC_API_KEY 以免互斥告警"
+        );
 
         // 2. Every alias resolves to its tier's display name. With the gateway on
         //    the wire carries display names, not provider models — the gateway is
         //    what turns them back into provider models.
-        let overrides = parsed.get("modelOverrides").and_then(|v| v.as_object()).unwrap();
+        let overrides = parsed
+            .get("modelOverrides")
+            .and_then(|v| v.as_object())
+            .unwrap();
         for alias in CLAUDE_CODE_OPUS_ALIASES {
-            assert_eq!(overrides.get(*alias).and_then(|v| v.as_str()), Some(DEFAULT_OPUS_DISPLAY_NAME));
+            assert_eq!(
+                overrides.get(*alias).and_then(|v| v.as_str()),
+                Some(DEFAULT_OPUS_DISPLAY_NAME)
+            );
         }
         for alias in CLAUDE_CODE_SONNET_ALIASES {
-            assert_eq!(overrides.get(*alias).and_then(|v| v.as_str()), Some(DEFAULT_SONNET_DISPLAY_NAME));
+            assert_eq!(
+                overrides.get(*alias).and_then(|v| v.as_str()),
+                Some(DEFAULT_SONNET_DISPLAY_NAME)
+            );
         }
         for alias in CLAUDE_CODE_HAIKU_ALIASES {
-            assert_eq!(overrides.get(*alias).and_then(|v| v.as_str()), Some(DEFAULT_HAIKU_DISPLAY_NAME));
+            assert_eq!(
+                overrides.get(*alias).and_then(|v| v.as_str()),
+                Some(DEFAULT_HAIKU_DISPLAY_NAME)
+            );
         }
 
         // 3. Invariant: every availableModels entry resolves to something the
         //    gateway can route — a provider model or a tier display name.
-        let available_models = parsed.get("availableModels").and_then(|v| v.as_array()).unwrap();
+        let available_models = parsed
+            .get("availableModels")
+            .and_then(|v| v.as_array())
+            .unwrap();
         let mut routable: HashSet<String> = provider.models.iter().cloned().collect();
         routable.extend(
-            [DEFAULT_OPUS_DISPLAY_NAME, DEFAULT_SONNET_DISPLAY_NAME, DEFAULT_HAIKU_DISPLAY_NAME]
-                .map(str::to_string),
+            [
+                DEFAULT_OPUS_DISPLAY_NAME,
+                DEFAULT_SONNET_DISPLAY_NAME,
+                DEFAULT_HAIKU_DISPLAY_NAME,
+            ]
+            .map(str::to_string),
         );
 
         for m_val in available_models {
             let m_str = m_val.as_str().unwrap();
-            let resolved = overrides.get(m_str).and_then(|v| v.as_str()).unwrap_or(m_str);
+            let resolved = overrides
+                .get(m_str)
+                .and_then(|v| v.as_str())
+                .unwrap_or(m_str);
             assert!(
                 routable.contains(resolved),
                 "availableModels 项 '{m_str}' 经 modelOverrides 解析为 '{resolved}'，既不在 provider.models {:?} 中，也不是显示名",
@@ -1585,34 +1793,53 @@ mod tests {
         assert!(res2.is_ok());
         let content2 = std::fs::read_to_string(&settings_path).unwrap();
         let parsed2: serde_json::Value = serde_json::from_str(&content2).unwrap();
-        let overrides2 = parsed2.get("modelOverrides").and_then(|v| v.as_object()).unwrap();
+        let overrides2 = parsed2
+            .get("modelOverrides")
+            .and_then(|v| v.as_object())
+            .unwrap();
         // A custom upstream model normally leaves the shown name alone — except
         // where the tier's display name is another model this provider serves.
         // `claude-opus-5` is such a name here, so the Opus tier carries its
         // upstream name instead and the literal `claude-opus-5` stays reachable.
-        assert_eq!(overrides2.get("opus").and_then(|v| v.as_str()), Some("claude-opus-5-max"));
-        assert_eq!(overrides2.get("sonnet").and_then(|v| v.as_str()), Some(DEFAULT_SONNET_DISPLAY_NAME));
-        assert_eq!(overrides2.get("haiku").and_then(|v| v.as_str()), Some(DEFAULT_HAIKU_DISPLAY_NAME));
+        assert_eq!(
+            overrides2.get("opus").and_then(|v| v.as_str()),
+            Some("claude-opus-5-max")
+        );
+        assert_eq!(
+            overrides2.get("sonnet").and_then(|v| v.as_str()),
+            Some(DEFAULT_SONNET_DISPLAY_NAME)
+        );
+        assert_eq!(
+            overrides2.get("haiku").and_then(|v| v.as_str()),
+            Some(DEFAULT_HAIKU_DISPLAY_NAME)
+        );
         // `claude-opus-5` must still address the provider's own model, not the tier.
-        assert_eq!(overrides2.get("claude-opus-5").and_then(|v| v.as_str()), Some("claude-opus-5"));
+        assert_eq!(
+            overrides2.get("claude-opus-5").and_then(|v| v.as_str()),
+            Some("claude-opus-5")
+        );
         let env2 = parsed2.get("env").and_then(|v| v.as_object()).unwrap();
         assert_eq!(
-            env2.get("ANTHROPIC_DEFAULT_OPUS_MODEL").and_then(|v| v.as_str()),
+            env2.get("ANTHROPIC_DEFAULT_OPUS_MODEL")
+                .and_then(|v| v.as_str()),
             Some("claude-opus-5-max")
         );
         // Wire name and upstream now agree, so the label states one model.
         assert_eq!(
-            env2.get("ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION").and_then(|v| v.as_str()),
+            env2.get("ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION")
+                .and_then(|v| v.as_str()),
             Some("claude-opus-5-max via Custom Provider")
         );
         // Sonnet did not collide, so it keeps the display-name indirection.
         assert_eq!(
-            env2.get("ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION").and_then(|v| v.as_str()),
+            env2.get("ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION")
+                .and_then(|v| v.as_str()),
             Some("claude-sonnet-5 -> claude-opus-5-xhigh via Custom Provider")
         );
         // Discovery has to be on, or the picker only ever offers the three slots.
         assert_eq!(
-            env2.get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY").and_then(|v| v.as_str()),
+            env2.get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY")
+                .and_then(|v| v.as_str()),
             Some("1")
         );
 
@@ -1673,7 +1900,10 @@ mod tests {
         // so a reordered, decorated or vendor-prefixed name still lands.
         for (catalog, expected_opus) in [
             (vec!["Claude-5-opus", "Claude-5-sonnet"], "Claude-5-opus"),
-            (vec!["claude-opus-5-A", "claude-sonnet-5-A"], "claude-opus-5-A"),
+            (
+                vec!["claude-opus-5-A", "claude-sonnet-5-A"],
+                "claude-opus-5-A",
+            ),
             (vec!["Claude.Opus.5", "Claude.Sonnet.4.5"], "Claude.Opus.5"),
             (vec!["Claude-Opus-5-thinking"], "Claude-Opus-5-thinking"),
             (vec!["anthropic/claude-opus-5"], "anthropic/claude-opus-5"),
@@ -1724,7 +1954,13 @@ mod tests {
         // upstream name. Sonnet's display name collides with nothing and keeps
         // the indirection that lets Claude Code size and price it.
         let provider = tier_provider(
-            &["model-S", "claude-opus-5", "claude-opus-5-max", "claude-opus-5-xhigh", "model-T"],
+            &[
+                "model-S",
+                "claude-opus-5",
+                "claude-opus-5-max",
+                "claude-opus-5-xhigh",
+                "model-T",
+            ],
             Some("claude-opus-5-max"),
             Some("claude-opus-5-xhigh"),
             Some("model-T"),
@@ -1794,7 +2030,12 @@ mod tests {
     fn tier_warnings_flag_collapsed_tiers() {
         // A catalog with no tier words hands every tier the same fallback; the
         // switch must say so instead of letting the collapse pass silently.
-        let provider = tier_provider(&["model-S", "model-O", "model-A", "model-T"], None, None, None);
+        let provider = tier_provider(
+            &["model-S", "model-O", "model-A", "model-T"],
+            None,
+            None,
+            None,
+        );
         let warnings = claude_tier_warnings(&provider);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("model-S"), "{warnings:?}");
@@ -1805,7 +2046,12 @@ mod tests {
     #[test]
     fn tier_warnings_stay_quiet_when_every_tier_is_pinned() {
         // All three pinned to one model is deliberate and must not warn.
-        let provider = tier_provider(&["big", "mid", "small"], Some("big"), Some("big"), Some("big"));
+        let provider = tier_provider(
+            &["big", "mid", "small"],
+            Some("big"),
+            Some("big"),
+            Some("big"),
+        );
         assert!(claude_tier_warnings(&provider).is_empty());
     }
 
@@ -1879,45 +2125,93 @@ mod tests {
 
         write_claude_config(&base, "p", true).await.unwrap();
         let parsed = read_config();
-        let overrides = parsed.get("modelOverrides").and_then(|v| v.as_object()).unwrap();
-        let available: Vec<&str> =
-            parsed["availableModels"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let overrides = parsed
+            .get("modelOverrides")
+            .and_then(|v| v.as_object())
+            .unwrap();
+        let available: Vec<&str> = parsed["availableModels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
 
         // A custom name is honoured; a blank one falls back to the default.
-        assert_eq!(overrides.get("opus").and_then(|v| v.as_str()), Some("claude-opus-4-8"));
-        assert_eq!(overrides.get("haiku").and_then(|v| v.as_str()), Some(DEFAULT_HAIKU_DISPLAY_NAME));
-        assert_eq!(overrides.get("sonnet").and_then(|v| v.as_str()), Some(DEFAULT_SONNET_DISPLAY_NAME));
+        assert_eq!(
+            overrides.get("opus").and_then(|v| v.as_str()),
+            Some("claude-opus-4-8")
+        );
+        assert_eq!(
+            overrides.get("haiku").and_then(|v| v.as_str()),
+            Some(DEFAULT_HAIKU_DISPLAY_NAME)
+        );
+        assert_eq!(
+            overrides.get("sonnet").and_then(|v| v.as_str()),
+            Some(DEFAULT_SONNET_DISPLAY_NAME)
+        );
         // A custom display name self-maps, so Claude Code leaves it alone.
-        assert_eq!(overrides.get("claude-opus-4-8").and_then(|v| v.as_str()), Some("claude-opus-4-8"));
+        assert_eq!(
+            overrides.get("claude-opus-4-8").and_then(|v| v.as_str()),
+            Some("claude-opus-4-8")
+        );
 
         // Display names lead the picker and the bare aliases survive alongside.
         assert_eq!(available[0], "claude-opus-4-8");
         for alias in ["opus", "sonnet", "haiku"] {
-            assert!(available.contains(&alias), "别名 {alias} 应保留在 availableModels 中");
+            assert!(
+                available.contains(&alias),
+                "别名 {alias} 应保留在 availableModels 中"
+            );
         }
 
         // 1M-capable tiers offer a `[1m]` entry that keeps its suffix; Haiku,
         // capped at 200K, never does.
         assert!(available.contains(&"claude-opus-4-8[1m]"));
         assert!(available.contains(&"claude-sonnet-5[1m]"));
-        assert!(!available.iter().any(|m| m.starts_with(DEFAULT_HAIKU_DISPLAY_NAME) && m.ends_with("[1m]")));
-        assert_eq!(overrides.get("claude-opus-5[1m]").and_then(|v| v.as_str()), Some("claude-opus-4-8[1m]"));
+        assert!(!available
+            .iter()
+            .any(|m| m.starts_with(DEFAULT_HAIKU_DISPLAY_NAME) && m.ends_with("[1m]")));
         assert_eq!(
-            overrides.get("claude-haiku-4-5[1m]").and_then(|v| v.as_str()),
+            overrides.get("claude-opus-5[1m]").and_then(|v| v.as_str()),
+            Some("claude-opus-4-8[1m]")
+        );
+        assert_eq!(
+            overrides
+                .get("claude-haiku-4-5[1m]")
+                .and_then(|v| v.as_str()),
             Some(DEFAULT_HAIKU_DISPLAY_NAME)
         );
 
         // Without the gateway nothing can translate a display name, so the wire
         // has to carry the provider's own models.
-        let no_1m = crate::profile::ProviderConfig { supports_1m_context: Some(false), ..base.clone() };
+        let no_1m = crate::profile::ProviderConfig {
+            supports_1m_context: Some(false),
+            ..base.clone()
+        };
         write_claude_config(&no_1m, "p", false).await.unwrap();
         let parsed = read_config();
-        let overrides = parsed.get("modelOverrides").and_then(|v| v.as_object()).unwrap();
-        assert_eq!(overrides.get("opus").and_then(|v| v.as_str()), Some("glm-4.6"));
-        assert_eq!(overrides.get("sonnet").and_then(|v| v.as_str()), Some("glm-4.6"));
-        assert!(!parsed["availableModels"].as_array().unwrap().iter().any(|m| m == "claude-opus-4-8"));
+        let overrides = parsed
+            .get("modelOverrides")
+            .and_then(|v| v.as_object())
+            .unwrap();
+        assert_eq!(
+            overrides.get("opus").and_then(|v| v.as_str()),
+            Some("glm-4.6")
+        );
+        assert_eq!(
+            overrides.get("sonnet").and_then(|v| v.as_str()),
+            Some("glm-4.6")
+        );
+        assert!(!parsed["availableModels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m == "claude-opus-4-8"));
         // A `[1m]` request must not survive to an upstream that cannot serve it.
-        assert_eq!(overrides.get("claude-opus-5[1m]").and_then(|v| v.as_str()), Some("glm-4.6"));
+        assert_eq!(
+            overrides.get("claude-opus-5[1m]").and_then(|v| v.as_str()),
+            Some("glm-4.6")
+        );
     }
 
     #[test]
@@ -1992,7 +2286,10 @@ mod tests {
         let read_base_url = |dir: &std::path::Path| -> String {
             let content = std::fs::read_to_string(dir.join("settings.json")).unwrap();
             let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-            parsed["env"]["ANTHROPIC_BASE_URL"].as_str().unwrap().to_string()
+            parsed["env"]["ANTHROPIC_BASE_URL"]
+                .as_str()
+                .unwrap()
+                .to_string()
         };
 
         // Gateway mode: must point at the bare loopback origin.
@@ -2008,7 +2305,10 @@ mod tests {
         write_claude_config(&provider, "prof", false).await.unwrap();
         let direct_url = read_base_url(&claude_dir);
         assert_eq!(direct_url, "https://relay.example.com");
-        assert!(!direct_url.ends_with("/v1"), "直连模式同样不能保留 /v1 后缀");
+        assert!(
+            !direct_url.ends_with("/v1"),
+            "直连模式同样不能保留 /v1 后缀"
+        );
 
         // Direct mode without a /v1 suffix must stay unchanged.
         provider.base_url = "https://relay.example.com".into();

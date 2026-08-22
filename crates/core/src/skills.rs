@@ -37,5 +37,7 @@ pub fn builtin_skills() -> Vec<ManagedSkill> {
 }
 
 pub fn install_from_github(_spec: &GithubSkillSpec) -> AppResult<ManagedSkill> {
-    Err(crate::error::AppError::Internal("GitHub 技能安装尚未实现".into()))
+    Err(crate::error::AppError::Internal(
+        "GitHub 技能安装尚未实现".into(),
+    ))
 }

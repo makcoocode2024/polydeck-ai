@@ -1,8 +1,8 @@
 //! Prompt template management with variable rendering.
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 use std::collections::HashMap;
+use ts_rs::TS;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -28,14 +28,22 @@ pub struct PromptStore {
 }
 
 impl PromptStore {
-    pub fn new() -> Self { Self { prompts: vec![] } }
-    
-    pub fn list(&self) -> Vec<PromptTemplate> { self.prompts.clone() }
-    
-    pub fn add(&mut self, prompt: PromptTemplate) { self.prompts.push(prompt); }
-    
-    pub fn remove(&mut self, id: &str) { self.prompts.retain(|p| p.id != id); }
-    
+    pub fn new() -> Self {
+        Self { prompts: vec![] }
+    }
+
+    pub fn list(&self) -> Vec<PromptTemplate> {
+        self.prompts.clone()
+    }
+
+    pub fn add(&mut self, prompt: PromptTemplate) {
+        self.prompts.push(prompt);
+    }
+
+    pub fn remove(&mut self, id: &str) {
+        self.prompts.retain(|p| p.id != id);
+    }
+
     pub fn render(template: &str, vars: &HashMap<String, String>) -> String {
         let mut result = template.to_string();
         for (key, value) in vars {

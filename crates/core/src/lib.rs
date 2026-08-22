@@ -1,4 +1,4 @@
-﻿//! AI Deck Core — business logic, no UI dependencies.
+//! AI Deck Core — business logic, no UI dependencies.
 //!
 //! This crate contains protocol detection, credential management, profile system,
 //! reasoning engine, chat history, extension management, and all platform logic.

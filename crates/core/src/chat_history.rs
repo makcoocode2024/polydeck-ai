@@ -1,4 +1,4 @@
-﻿//! Unified chat history storage and indexing for multiple AI clients.
+//! Unified chat history storage and indexing for multiple AI clients.
 //!
 //! Indexes local conversation logs from Codex CLI, Claude Code, Hermes, and Claude Desktop,
 //! providing fast SQLite querying, usage statistics, export, and encrypted backups.
@@ -130,8 +130,14 @@ impl HistoryStore {
             )
             .map_err(|e| AppError::Storage(format!("创建数据表失败: {e}")))?;
 
-        let _ = self.conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_client ON sessions(client)", []);
-        let _ = self.conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC)", []);
+        let _ = self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_client ON sessions(client)",
+            [],
+        );
+        let _ = self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC)",
+            [],
+        );
         Ok(())
     }
 
@@ -307,14 +313,21 @@ impl HistoryStore {
 
         let count_sql = format!("SELECT COUNT(*) FROM sessions {where_clause}");
         let total: i64 = {
-            let mut stmt = self.conn.prepare(&count_sql)
+            let mut stmt = self
+                .conn
+                .prepare(&count_sql)
                 .map_err(|e| AppError::Storage(e.to_string()))?;
-            let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+            let params_refs: Vec<&dyn rusqlite::ToSql> =
+                params_vec.iter().map(|b| b.as_ref()).collect();
             stmt.query_row(rusqlite::params_from_iter(params_refs), |r| r.get(0))
                 .unwrap_or(0)
         };
 
-        let page_size = if query.page_size == 0 { 20 } else { query.page_size };
+        let page_size = if query.page_size == 0 {
+            20
+        } else {
+            query.page_size
+        };
         let page = if query.page == 0 { 1 } else { query.page };
         let offset = (page - 1) * page_size;
 
@@ -322,22 +335,27 @@ impl HistoryStore {
             "SELECT id, client, title, message_count, total_tokens, created_at, updated_at FROM sessions {where_clause} ORDER BY updated_at DESC LIMIT {page_size} OFFSET {offset}"
         );
 
-        let mut stmt = self.conn.prepare(&query_sql)
+        let mut stmt = self
+            .conn
+            .prepare(&query_sql)
             .map_err(|e| AppError::Storage(e.to_string()))?;
-        let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
-        let rows = stmt.query_map(rusqlite::params_from_iter(params_refs), |row| {
-            let msg_count: i64 = row.get(3)?;
-            let tokens: i64 = row.get(4)?;
-            Ok(SessionSummary {
-                id: row.get(0)?,
-                client: row.get(1)?,
-                title: row.get(2)?,
-                message_count: msg_count as usize,
-                total_tokens: tokens as usize,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
+        let params_refs: Vec<&dyn rusqlite::ToSql> =
+            params_vec.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params_refs), |row| {
+                let msg_count: i64 = row.get(3)?;
+                let tokens: i64 = row.get(4)?;
+                Ok(SessionSummary {
+                    id: row.get(0)?,
+                    client: row.get(1)?,
+                    title: row.get(2)?,
+                    message_count: msg_count as usize,
+                    total_tokens: tokens as usize,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
             })
-        }).map_err(|e| AppError::Storage(e.to_string()))?;
+            .map_err(|e| AppError::Storage(e.to_string()))?;
 
         let mut items = Vec::new();
         for r in rows {
@@ -364,8 +382,13 @@ impl HistoryStore {
             .unwrap_or((0, 0, 0));
 
         let mut sessions_by_client = HashMap::new();
-        if let Ok(mut stmt) = self.conn.prepare("SELECT client, COUNT(*) FROM sessions GROUP BY client") {
-            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
+        if let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT client, COUNT(*) FROM sessions GROUP BY client")
+        {
+            if let Ok(rows) =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            {
                 for r in rows.flatten() {
                     sessions_by_client.insert(r.0, r.1 as usize);
                 }
@@ -395,12 +418,19 @@ impl HistoryStore {
     pub fn export_all(&self, format: &str) -> AppResult<String> {
         let list = self.list_summaries()?;
         if format.eq_ignore_ascii_case("csv") {
-            let mut csv = String::from("id,client,title,message_count,total_tokens,created_at,updated_at\n");
+            let mut csv =
+                String::from("id,client,title,message_count,total_tokens,created_at,updated_at\n");
             for s in list {
                 let escaped_title = s.title.replace('"', "\"\"");
                 csv.push_str(&format!(
                     "\"{}\",\"{}\",\"{}\",{},{},\"{}\",\"{}\"\n",
-                    s.id, s.client, escaped_title, s.message_count, s.total_tokens, s.created_at, s.updated_at
+                    s.id,
+                    s.client,
+                    escaped_title,
+                    s.message_count,
+                    s.total_tokens,
+                    s.created_at,
+                    s.updated_at
                 ));
             }
             Ok(csv)
@@ -417,11 +447,14 @@ impl HistoryStore {
             .map_err(|e| AppError::Encryption(e.to_string()))?;
         let encrypted = crate::encrypted_backup::encrypt_data(&json_bytes)?;
 
-        let home = crate::user_home_dir()
-            .ok_or_else(|| AppError::Config("无法获取用户目录".into()))?;
+        let home =
+            crate::user_home_dir().ok_or_else(|| AppError::Config("无法获取用户目录".into()))?;
         let backup_dir = home.join(".ai-deck").join("backups");
         let _ = std::fs::create_dir_all(&backup_dir);
-        let filename = format!("ai-deck-backup-{}.history-backup", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
+        let filename = format!(
+            "ai-deck-backup-{}.history-backup",
+            chrono::Utc::now().format("%Y%m%d-%H%M%S")
+        );
         let target = backup_dir.join(filename);
         std::fs::write(&target, encrypted)?;
         Ok(target.to_string_lossy().to_string())
@@ -442,17 +475,26 @@ impl HistoryStore {
 }
 
 fn get_db_path() -> AppResult<PathBuf> {
-    let home = crate::user_home_dir()
-        .ok_or_else(|| AppError::Config("无法获取用户目录".into()))?;
+    let home = crate::user_home_dir().ok_or_else(|| AppError::Config("无法获取用户目录".into()))?;
     Ok(home.join(".ai-deck").join("history.db"))
 }
 
 pub fn clean_session_title(raw: &str) -> String {
     let mut clean = raw.trim().to_string();
-    if clean.starts_with("<instructions>") || clean.starts_with("# AGENTS.md") || clean.starts_with("<permissions") || clean.starts_with("<collaboration_mode") {
+    if clean.starts_with("<instructions>")
+        || clean.starts_with("# AGENTS.md")
+        || clean.starts_with("<permissions")
+        || clean.starts_with("<collaboration_mode")
+    {
         for line in clean.lines() {
             let l = line.trim();
-            if l.is_empty() || l.starts_with('#') || l.starts_with('<') || l.starts_with("```") || l.starts_with('-') || l.starts_with('*') {
+            if l.is_empty()
+                || l.starts_with('#')
+                || l.starts_with('<')
+                || l.starts_with("```")
+                || l.starts_with('-')
+                || l.starts_with('*')
+            {
                 continue;
             }
             if l.len() > 3 {
@@ -477,7 +519,13 @@ pub fn collect_files_recursive(dir: &Path, max_depth: usize, extension: &str) ->
     results
 }
 
-fn collect_files_inner(dir: &Path, depth: usize, max_depth: usize, extension: &str, out: &mut Vec<PathBuf>) {
+fn collect_files_inner(
+    dir: &Path,
+    depth: usize,
+    max_depth: usize,
+    extension: &str,
+    out: &mut Vec<PathBuf>,
+) {
     if depth > max_depth {
         return;
     }
@@ -520,7 +568,10 @@ pub fn parse_codex_session_file(path: &Path) -> Option<SessionSummary> {
         if line_count <= 40 || session_id.is_empty() || title.is_empty() {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
                 let event_type = val.get("type").and_then(|v| v.as_str()).unwrap_or_default();
-                let ts = val.get("timestamp").and_then(|v| v.as_str()).unwrap_or_default();
+                let ts = val
+                    .get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
                 if !ts.is_empty() {
                     if created_at.is_empty() {
                         created_at = ts.to_string();
@@ -541,9 +592,14 @@ pub fn parse_codex_session_file(path: &Path) -> Option<SessionSummary> {
                     }
                 } else if event_type == "response_item" && title.is_empty() {
                     if let Some(payload) = val.get("payload") {
-                        let role = payload.get("role").and_then(|v| v.as_str()).unwrap_or_default();
+                        let role = payload
+                            .get("role")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
                         if role == "user" {
-                            if let Some(content_arr) = payload.get("content").and_then(|v| v.as_array()) {
+                            if let Some(content_arr) =
+                                payload.get("content").and_then(|v| v.as_array())
+                            {
                                 for c in content_arr {
                                     if let Some(text) = c.get("text").and_then(|v| v.as_str()) {
                                         let clean = text.trim();
@@ -631,7 +687,10 @@ pub fn parse_claude_session_file(path: &Path) -> Option<SessionSummary> {
                         session_id = sid.to_string();
                     }
                 }
-                let ts = val.get("timestamp").and_then(|v| v.as_str()).unwrap_or_default();
+                let ts = val
+                    .get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
                 if !ts.is_empty() {
                     if created_at.is_empty() {
                         created_at = ts.to_string();
@@ -700,25 +759,40 @@ pub fn parse_claude_session_file(path: &Path) -> Option<SessionSummary> {
 pub fn parse_hermes_session_file(path: &Path) -> Option<SessionSummary> {
     let content = std::fs::read_to_string(path).ok()?;
     let val: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let session_id = val.get("id").and_then(|v| v.as_str())
+    let session_id = val
+        .get("id")
+        .and_then(|v| v.as_str())
         .or_else(|| path.file_stem().and_then(|s| s.to_str()))
         .unwrap_or("hermes-session")
         .to_string();
 
-    let title = val.get("title").and_then(|v| v.as_str())
+    let title = val
+        .get("title")
+        .and_then(|v| v.as_str())
         .or_else(|| val.get("name").and_then(|v| v.as_str()))
         .unwrap_or("Hermes 会话")
         .to_string();
 
-    let message_count = val.get("messages").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(2);
-    let total_tokens = val.get("tokens").and_then(|v| v.as_u64()).unwrap_or((message_count * 200) as u64) as usize;
+    let message_count = val
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(2);
+    let total_tokens = val
+        .get("tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or((message_count * 200) as u64) as usize;
 
-    let created_at = val.get("createdAt").and_then(|v| v.as_str())
+    let created_at = val
+        .get("createdAt")
+        .and_then(|v| v.as_str())
         .or_else(|| val.get("created_at").and_then(|v| v.as_str()))
         .map(|s| s.to_string())
         .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
 
-    let updated_at = val.get("updatedAt").and_then(|v| v.as_str())
+    let updated_at = val
+        .get("updatedAt")
+        .and_then(|v| v.as_str())
         .or_else(|| val.get("updated_at").and_then(|v| v.as_str()))
         .map(|s| s.to_string())
         .unwrap_or_else(|| created_at.clone());
@@ -750,7 +824,9 @@ mod tests {
             created_at: "2026-08-20T10:00:00Z".into(),
             updated_at: "2026-08-20T10:30:00Z".into(),
         };
-        store.upsert_session(&summary, "/path/to/file.jsonl").unwrap();
+        store
+            .upsert_session(&summary, "/path/to/file.jsonl")
+            .unwrap();
 
         let list = store.list_summaries().unwrap();
         assert_eq!(list.len(), 1);

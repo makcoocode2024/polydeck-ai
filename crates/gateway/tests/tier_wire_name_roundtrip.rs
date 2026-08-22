@@ -13,7 +13,12 @@ use polydeck_gateway::model_rewrite::{
     generate_provider_model_rewrites_with_overrides, ModelRewriter, TierOverrides,
 };
 
-fn provider(models: &[&str], opus: Option<&str>, sonnet: Option<&str>, haiku: Option<&str>) -> ProviderConfig {
+fn provider(
+    models: &[&str],
+    opus: Option<&str>,
+    sonnet: Option<&str>,
+    haiku: Option<&str>,
+) -> ProviderConfig {
     ProviderConfig {
         id: "prov".into(),
         name: "Relay".into(),
@@ -149,28 +154,94 @@ fn discovery_prefixed_names_resolve_for_non_claude_models() {
 #[test]
 fn properties_hold_across_unrelated_provider_shapes() {
     let shapes: Vec<(&str, ProviderConfig)> = vec![
-        ("unknown names, no overrides", provider(&["gpt-5.6-luna", "deepseek-v4-pro-0813"], None, None, None)),
-        ("effort suffix that is not -max", provider(&["claude-opus-5", "claude-opus-5-ultra"], Some("claude-opus-5-ultra"), None, None)),
+        (
+            "unknown names, no overrides",
+            provider(&["gpt-5.6-luna", "deepseek-v4-pro-0813"], None, None, None),
+        ),
+        (
+            "effort suffix that is not -max",
+            provider(
+                &["claude-opus-5", "claude-opus-5-ultra"],
+                Some("claude-opus-5-ultra"),
+                None,
+                None,
+            ),
+        ),
         // Opus pinned to a model named after a *different* tier.
-        ("tier pinned across tiers", provider(&["claude-sonnet-5", "claude-haiku-4-5"], Some("claude-sonnet-5"), None, None)),
+        (
+            "tier pinned across tiers",
+            provider(
+                &["claude-sonnet-5", "claude-haiku-4-5"],
+                Some("claude-sonnet-5"),
+                None,
+                None,
+            ),
+        ),
         // All three display names served, every tier pinned elsewhere.
-        ("all display names collide", provider(
-            &["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5", "big", "mid", "small"],
-            Some("big"), Some("mid"), Some("small"))),
+        (
+            "all display names collide",
+            provider(
+                &[
+                    "claude-opus-5",
+                    "claude-sonnet-5",
+                    "claude-haiku-4-5",
+                    "big",
+                    "mid",
+                    "small",
+                ],
+                Some("big"),
+                Some("mid"),
+                Some("small"),
+            ),
+        ),
         ("single model", provider(&["only-model"], None, None, None)),
         // The ceded name carries no tier word for the `[1m]` regexes to match.
-        ("ceded name has no tier word", provider(&["claude-opus-5", "model-O"], Some("model-O"), None, None)),
+        (
+            "ceded name has no tier word",
+            provider(&["claude-opus-5", "model-O"], Some("model-O"), None, None),
+        ),
         // `.` and `[` must not act as regex metacharacters.
-        ("regex metacharacters", provider(&["glm-4.6", "glm-4.6[1m]"], None, None, None)),
+        (
+            "regex metacharacters",
+            provider(&["glm-4.6", "glm-4.6[1m]"], None, None, None),
+        ),
         // Case-variant names are distinct upstream ids and must stay distinct.
-        ("case-variant name", provider(&["Claude-Opus-5", "claude-opus-5-max"], Some("claude-opus-5-max"), None, None)),
+        (
+            "case-variant name",
+            provider(
+                &["Claude-Opus-5", "claude-opus-5-max"],
+                Some("claude-opus-5-max"),
+                None,
+                None,
+            ),
+        ),
         // Irregular relay spellings, which no tier override pins down.
-        ("reordered tier word", provider(&["Claude-5-opus", "Claude-5-sonnet"], None, None, None)),
-        ("decorated tier word", provider(&["claude-opus-5-A", "claude-sonnet-5-A"], None, None, None)),
-        ("vendor-prefixed", provider(&["anthropic/claude-opus-5", "anthropic/claude-sonnet-5"], None, None, None)),
-        ("dots as separators", provider(&["Claude.Opus.5", "Claude.Sonnet.4.5"], None, None, None)),
+        (
+            "reordered tier word",
+            provider(&["Claude-5-opus", "Claude-5-sonnet"], None, None, None),
+        ),
+        (
+            "decorated tier word",
+            provider(&["claude-opus-5-A", "claude-sonnet-5-A"], None, None, None),
+        ),
+        (
+            "vendor-prefixed",
+            provider(
+                &["anthropic/claude-opus-5", "anthropic/claude-sonnet-5"],
+                None,
+                None,
+                None,
+            ),
+        ),
+        (
+            "dots as separators",
+            provider(&["Claude.Opus.5", "Claude.Sonnet.4.5"], None, None, None),
+        ),
         // Canonical name and a decorated sibling, in the order that used to break.
-        ("canonical listed after variant", provider(&["claude-opus-5-A", "claude-opus-5"], None, None, None)),
+        (
+            "canonical listed after variant",
+            provider(&["claude-opus-5-A", "claude-opus-5"], None, None, None),
+        ),
     ];
 
     for (label, p) in shapes {
@@ -180,7 +251,8 @@ fn properties_hold_across_unrelated_provider_shapes() {
 
         for model in &p.models {
             assert_eq!(
-                &rewriter.rewrite_request(model), model,
+                &rewriter.rewrite_request(model),
+                model,
                 "[{label}] '{model}' must address itself"
             );
         }
@@ -190,13 +262,19 @@ fn properties_hold_across_unrelated_provider_shapes() {
             ("haiku", haiku_wire, haiku_model),
         ] {
             assert_eq!(
-                rewriter.rewrite_request(wire), expected,
+                rewriter.rewrite_request(wire),
+                expected,
                 "[{label}] {tier} shown as '{wire}' must forward '{expected}'"
             );
         }
-        for (alias, expected) in [("opus", opus_model), ("sonnet", sonnet_model), ("haiku", haiku_model)] {
+        for (alias, expected) in [
+            ("opus", opus_model),
+            ("sonnet", sonnet_model),
+            ("haiku", haiku_model),
+        ] {
             assert_eq!(
-                rewriter.rewrite_request(alias), expected,
+                rewriter.rewrite_request(alias),
+                expected,
                 "[{label}] alias '{alias}' must forward '{expected}'"
             );
         }

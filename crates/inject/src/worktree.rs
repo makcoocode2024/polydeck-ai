@@ -1,7 +1,10 @@
-﻿//! Safe upstream worktree and editor launch planning.
+//! Safe upstream worktree and editor launch planning.
 
 use serde::{Deserialize, Serialize};
-use std::{path::{Path, PathBuf}, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,10 +71,20 @@ pub fn preflight(config: &WorktreeConfig) -> Result<(), WorktreeError> {
     if !git_ok(&config.repository, &["remote", "get-url", &config.remote]) {
         return Err(WorktreeError::RemoteMissing(config.remote.clone()));
     }
-    if !git_ok(&config.repository, &["rev-parse", "--verify", &config.base_branch]) {
+    if !git_ok(
+        &config.repository,
+        &["rev-parse", "--verify", &config.base_branch],
+    ) {
         return Err(WorktreeError::BaseMissing(config.base_branch.clone()));
     }
-    if git_ok(&config.repository, &["show-ref", "--verify", &format!("refs/heads/{}", config.branch)]) {
+    if git_ok(
+        &config.repository,
+        &[
+            "show-ref",
+            "--verify",
+            &format!("refs/heads/{}", config.branch),
+        ],
+    ) {
         return Err(WorktreeError::BranchExists(config.branch.clone()));
     }
     Ok(())
@@ -79,10 +92,21 @@ pub fn preflight(config: &WorktreeConfig) -> Result<(), WorktreeError> {
 
 pub fn create(config: &WorktreeConfig) -> Result<WorktreeResult, WorktreeError> {
     preflight(config)?;
-    run_git(&config.repository, &["fetch", &config.remote]).map_err(|_| WorktreeError::FetchFailed)?;
+    run_git(&config.repository, &["fetch", &config.remote])
+        .map_err(|_| WorktreeError::FetchFailed)?;
     let base = format!("{}/{}", config.remote, config.base_branch);
-    run_git(&config.repository, &["worktree", "add", "-b", &config.branch, path_arg(&config.path).as_str(), &base])
-        .map_err(|_| WorktreeError::AddFailed)?;
+    run_git(
+        &config.repository,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            &config.branch,
+            path_arg(&config.path).as_str(),
+            &base,
+        ],
+    )
+    .map_err(|_| WorktreeError::AddFailed)?;
     Ok(WorktreeResult {
         path: config.path.clone(),
         branch: config.branch.clone(),
@@ -108,7 +132,9 @@ fn path_arg(path: &Path) -> String {
 
 fn validate_name(value: &str) -> Result<(), WorktreeError> {
     if value.is_empty() || value.starts_with('-') || value.contains('\0') || value.contains(' ') {
-        return Err(WorktreeError::InvalidInput("branch, remote and base use safe names".into()));
+        return Err(WorktreeError::InvalidInput(
+            "branch, remote and base use safe names".into(),
+        ));
     }
     Ok(())
 }
@@ -144,11 +170,17 @@ mod tests {
             branch: "feature; echo bad".into(),
             path: PathBuf::from("out"),
         };
-        assert!(matches!(preflight(&config), Err(WorktreeError::InvalidInput(_))));
+        assert!(matches!(
+            preflight(&config),
+            Err(WorktreeError::InvalidInput(_))
+        ));
     }
 
     #[test]
     fn editor_allowlist_rejects_arbitrary_command() {
-        assert!(matches!(open_in_editor("powershell", Path::new(".")), Err(WorktreeError::EditorNotFound(_))));
+        assert!(matches!(
+            open_in_editor("powershell", Path::new(".")),
+            Err(WorktreeError::EditorNotFound(_))
+        ));
     }
 }

@@ -43,20 +43,21 @@ pub fn build_gateway_config(
             rate_limit: primary.rate_limit.clone(),
             default_effort_level: primary.default_effort_level.clone(),
         },
-        model_rewrites: polydeck_gateway::model_rewrite::generate_provider_model_rewrites_with_overrides(
-            &primary.models,
-            primary.supports_1m_context.unwrap_or(false),
-            polydeck_gateway::model_rewrite::TierOverrides {
-                sonnet_model: Some(sonnet_model),
-                opus_model: Some(opus_model),
-                haiku_model: Some(haiku_model),
-                // Claude Code sends the display names the profile writer gave it,
-                // so the gateway resolves the effective ones, not the raw fields.
-                sonnet_display_name: Some(sonnet_display),
-                opus_display_name: Some(opus_display),
-                haiku_display_name: Some(haiku_display),
-            },
-        ),
+        model_rewrites:
+            polydeck_gateway::model_rewrite::generate_provider_model_rewrites_with_overrides(
+                &primary.models,
+                primary.supports_1m_context.unwrap_or(false),
+                polydeck_gateway::model_rewrite::TierOverrides {
+                    sonnet_model: Some(sonnet_model),
+                    opus_model: Some(opus_model),
+                    haiku_model: Some(haiku_model),
+                    // Claude Code sends the display names the profile writer gave it,
+                    // so the gateway resolves the effective ones, not the raw fields.
+                    sonnet_display_name: Some(sonnet_display),
+                    opus_display_name: Some(opus_display),
+                    haiku_display_name: Some(haiku_display),
+                },
+            ),
         timeout: std::time::Duration::from_secs(120),
         max_retries: 3,
     }
@@ -87,7 +88,7 @@ pub async fn ad_gateway_start(
             .find(|p| p.is_primary)
             .or_else(|| active_profile.providers.first())
             .cloned()
-.ok_or_else(|| "配置方案中未配置 Provider 节点".to_string())?;
+            .ok_or_else(|| "配置方案中未配置 Provider 节点".to_string())?;
 
         (active_profile, primary)
     };

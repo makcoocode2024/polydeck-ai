@@ -1,4 +1,4 @@
-﻿//! Protocol auto-detection engine.
+//! Protocol auto-detection engine.
 //!
 //! Probes a Base URL to identify the AI protocol (OpenAI/Anthropic/Gemini/Azure),
 //! fetch model lists, and detect Codex tool compatibility. All detection is based
@@ -113,7 +113,9 @@ pub async fn probe(
 ) -> AppResult<ProbeResult> {
     let raw_url = base_url.trim();
     if raw_url.is_empty() {
-        return Err(AppError::Protocol("API 基础地址 (Base URL) 不能为空".into()));
+        return Err(AppError::Protocol(
+            "API 基础地址 (Base URL) 不能为空".into(),
+        ));
     }
     let url = normalize_url(raw_url);
     let client = build_client(accept_invalid_certs)?;
@@ -133,7 +135,11 @@ pub async fn probe(
         }
         Err(e) => {
             let err_msg = e.to_string();
-            if err_msg.contains("401") || err_msg.contains("403") || err_msg.contains("Unauthorized") || err_msg.contains("Forbidden") {
+            if err_msg.contains("401")
+                || err_msg.contains("403")
+                || err_msg.contains("Unauthorized")
+                || err_msg.contains("Forbidden")
+            {
                 auth_error = Some(format!("OpenAI 鉴权失败：{err_msg}"));
             }
             evidence.push(format!("GET /v1/models 失败：{err_msg}"));
@@ -149,7 +155,11 @@ pub async fn probe(
                     Ok(false) => {}
                     Err(fb_err) => {
                         let fb_msg = fb_err.to_string();
-                        if fb_msg.contains("401") || fb_msg.contains("403") || fb_msg.contains("Unauthorized") || fb_msg.contains("Forbidden") {
+                        if fb_msg.contains("401")
+                            || fb_msg.contains("403")
+                            || fb_msg.contains("Unauthorized")
+                            || fb_msg.contains("Forbidden")
+                        {
                             auth_error = Some(format!("OpenAI 鉴权失败：{fb_msg}"));
                         }
                     }
@@ -169,7 +179,11 @@ pub async fn probe(
             }
             Err(e) => {
                 let err_msg = e.to_string();
-                if err_msg.contains("401") || err_msg.contains("403") || err_msg.contains("Unauthorized") || err_msg.contains("Forbidden") {
+                if err_msg.contains("401")
+                    || err_msg.contains("403")
+                    || err_msg.contains("Unauthorized")
+                    || err_msg.contains("Forbidden")
+                {
                     auth_error = Some(format!("Anthropic 鉴权失败：{err_msg}"));
                 }
                 evidence.push(format!("Anthropic 探测失败：{err_msg}"));
@@ -184,7 +198,11 @@ pub async fn probe(
                         Ok(false) => {}
                         Err(fb_err) => {
                             let fb_msg = fb_err.to_string();
-                            if fb_msg.contains("401") || fb_msg.contains("403") || fb_msg.contains("Unauthorized") || fb_msg.contains("Forbidden") {
+                            if fb_msg.contains("401")
+                                || fb_msg.contains("403")
+                                || fb_msg.contains("Unauthorized")
+                                || fb_msg.contains("Forbidden")
+                            {
                                 auth_error = Some(format!("Anthropic 鉴权失败：{fb_msg}"));
                             }
                         }
@@ -206,7 +224,10 @@ pub async fn probe(
         } else {
             evidence.join("； ")
         };
-        return Err(AppError::Protocol(format!("服务连接与协议探测失败：{}", details)));
+        return Err(AppError::Protocol(format!(
+            "服务连接与协议探测失败：{}",
+            details
+        )));
     }
 
     // Probe Codex tool compatibility
@@ -217,12 +238,15 @@ pub async fn probe(
         CodexToolCompat::ResponsesCustom
     };
 
-    if protocol == ProtocolKind::OpenAI && (codex_compat == CodexToolCompat::ResponsesCustom || codex_compat == CodexToolCompat::ResponsesFunction) {
+    if protocol == ProtocolKind::OpenAI
+        && (codex_compat == CodexToolCompat::ResponsesCustom
+            || codex_compat == CodexToolCompat::ResponsesFunction)
+    {
         protocol = ProtocolKind::Responses;
         evidence.push("上游终端原生支持 OpenAI Responses API 协议".into());
     }
 
-   let supports_1m_context = if let Some(first_model) = models.first() {
+    let supports_1m_context = if let Some(first_model) = models.first() {
         let ok = probe_1m_context(&client, &url, api_key, protocol, &first_model.id).await;
         if ok {
             evidence.push("供应商端点支持 [1m] 原生长上下文".into());
@@ -256,7 +280,11 @@ pub async fn test_chat(
     let url = normalize_url(base_url);
     let client = build_client(accept_invalid_certs)?;
     let test_prompt = prompt.unwrap_or("请回复五个字以内：连接测试成功");
-    let model_to_use = if model.trim().is_empty() { "gpt-4o" } else { model.trim() };
+    let model_to_use = if model.trim().is_empty() {
+        "gpt-4o"
+    } else {
+        model.trim()
+    };
     let start = std::time::Instant::now();
 
     let target_protocol = protocol.unwrap_or(ProtocolKind::OpenAI);
@@ -280,7 +308,9 @@ pub async fn test_chat(
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::Protocol(format!("Anthropic 对话测试失败 HTTP {status}: {text}")));
+            return Err(AppError::Protocol(format!(
+                "Anthropic 对话测试失败 HTTP {status}: {text}"
+            )));
         }
 
         let json: serde_json::Value = resp.json().await?;
@@ -315,7 +345,9 @@ pub async fn test_chat(
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::Protocol(format!("Responses 对话测试失败 HTTP {status}: {text}")));
+            return Err(AppError::Protocol(format!(
+                "Responses 对话测试失败 HTTP {status}: {text}"
+            )));
         }
         let json: serde_json::Value = resp.json().await?;
         let reply = json
@@ -366,7 +398,10 @@ pub async fn test_chat(
                 protocol: ProtocolKind::OpenAI,
             })
         }
-        Ok(res) if res.status() == reqwest::StatusCode::NOT_FOUND || res.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED => {
+        Ok(res)
+            if res.status() == reqwest::StatusCode::NOT_FOUND
+                || res.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED =>
+        {
             // Try Responses endpoint
             let resp_body = serde_json::json!({
                 "model": model_to_use,
@@ -383,7 +418,9 @@ pub async fn test_chat(
             if !resp2.status().is_success() {
                 let status = resp2.status();
                 let text = resp2.text().await.unwrap_or_default();
-                return Err(AppError::Protocol(format!("Responses 对话测试失败 HTTP {status}: {text}")));
+                return Err(AppError::Protocol(format!(
+                    "Responses 对话测试失败 HTTP {status}: {text}"
+                )));
             }
             let json: serde_json::Value = resp2.json().await?;
             let reply = json
@@ -403,7 +440,9 @@ pub async fn test_chat(
         Ok(res) => {
             let status = res.status();
             let text = res.text().await.unwrap_or_default();
-            Err(AppError::Protocol(format!("对话测试失败 HTTP {status}: {text}")))
+            Err(AppError::Protocol(format!(
+                "对话测试失败 HTTP {status}: {text}"
+            )))
         }
         Err(e) => Err(AppError::Network(format!("网络请求失败: {e}"))),
     }
@@ -416,7 +455,15 @@ pub async fn self_test(
     model: &str,
     accept_invalid_certs: bool,
 ) -> AppResult<String> {
-    let result = test_chat(base_url, api_key, model, None, accept_invalid_certs, Some("Reply with exactly: OK")).await?;
+    let result = test_chat(
+        base_url,
+        api_key,
+        model,
+        None,
+        accept_invalid_certs,
+        Some("Reply with exactly: OK"),
+    )
+    .await?;
     Ok(result.reply)
 }
 
@@ -522,7 +569,6 @@ async fn probe_codex_compat(
     CodexToolCompat::None
 }
 
-
 async fn probe_openai_chat_fallback(
     client: &reqwest::Client,
     base_url: &str,
@@ -546,7 +592,9 @@ async fn probe_openai_chat_fallback(
     }
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
         let err_text = resp.text().await.unwrap_or_default();
-        return Err(AppError::Protocol(format!("HTTP {status} 鉴权失败：{err_text}")));
+        return Err(AppError::Protocol(format!(
+            "HTTP {status} 鉴权失败：{err_text}"
+        )));
     }
     if status.is_client_error() {
         let err_text = resp.text().await.unwrap_or_default();
@@ -581,7 +629,9 @@ async fn probe_anthropic_messages_fallback(
     }
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
         let err_text = resp.text().await.unwrap_or_default();
-        return Err(AppError::Protocol(format!("Anthropic HTTP {status} 鉴权失败：{err_text}")));
+        return Err(AppError::Protocol(format!(
+            "Anthropic HTTP {status} 鉴权失败：{err_text}"
+        )));
     }
     if status.is_client_error() {
         let err_text = resp.text().await.unwrap_or_default();
@@ -605,10 +655,7 @@ async fn fetch_openai_models(
         .await?;
 
     if !resp.status().is_success() {
-        return Err(AppError::Protocol(format!(
-            "HTTP {}",
-            resp.status()
-        )));
+        return Err(AppError::Protocol(format!("HTTP {}", resp.status())));
     }
 
     let json: serde_json::Value = resp.json().await?;
@@ -631,9 +678,7 @@ async fn fetch_openai_models(
                     .get("context_length")
                     .or_else(|| m.get("context_window"))
                     .and_then(|v| v.as_u64()),
-                max_output_tokens: m
-                    .get("max_output_tokens")
-                    .and_then(|v| v.as_u64()),
+                max_output_tokens: m.get("max_output_tokens").and_then(|v| v.as_u64()),
             })
         })
         .collect();
@@ -678,19 +723,14 @@ async fn fetch_anthropic_models(
                     .unwrap_or(&id)
                     .to_string(),
                 id,
-                context_length: m
-                    .get("max_input_tokens")
-                    .and_then(|v| v.as_u64()),
-                max_output_tokens: m
-                    .get("max_output_tokens")
-                    .and_then(|v| v.as_u64()),
+                context_length: m.get("max_input_tokens").and_then(|v| v.as_u64()),
+                max_output_tokens: m.get("max_output_tokens").and_then(|v| v.as_u64()),
             })
         })
         .collect();
 
     Ok(models)
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -710,7 +750,9 @@ pub async fn probe_rate_limits(
 ) -> AppResult<RateLimitRecommendation> {
     let raw_url = base_url.trim();
     if raw_url.is_empty() {
-        return Err(AppError::Protocol("API 基础地址 (Base URL) 不能为空".into()));
+        return Err(AppError::Protocol(
+            "API 基础地址 (Base URL) 不能为空".into(),
+        ));
     }
     let url = normalize_url(raw_url);
     let client = build_client(accept_invalid_certs)?;
@@ -729,8 +771,12 @@ pub async fn probe_rate_limits(
 
     if let Ok(resp) = req.send().await {
         let (rpm, tpm) = parse_generic_ratelimit_headers(resp.headers());
-        if rpm.is_some() { detected_rpm = rpm; }
-        if tpm.is_some() { detected_tpm = tpm; }
+        if rpm.is_some() {
+            detected_rpm = rpm;
+        }
+        if tpm.is_some() {
+            detected_tpm = tpm;
+        }
     }
 
     // 2. If headers not found, send minimal POST /v1/chat/completions ping to check response headers
@@ -751,8 +797,12 @@ pub async fn probe_rate_limits(
             .await
         {
             let (rpm, tpm) = parse_generic_ratelimit_headers(resp.headers());
-            if detected_rpm.is_none() && rpm.is_some() { detected_rpm = rpm; }
-            if detected_tpm.is_none() && tpm.is_some() { detected_tpm = tpm; }
+            if detected_rpm.is_none() && rpm.is_some() {
+                detected_rpm = rpm;
+            }
+            if detected_tpm.is_none() && tpm.is_some() {
+                detected_tpm = tpm;
+            }
         }
     }
 
@@ -776,16 +826,26 @@ pub async fn probe_rate_limits(
             recommended_rpm: safe_rpm,
             recommended_tpm: estimated_tpm,
             detected_from_headers: true,
-            message: format!("已从上游响应头获取到 RPM={rpm}，已按模型标准负载推断推荐 TPM={estimated_tpm}"),
+            message: format!(
+                "已从上游响应头获取到 RPM={rpm}，已按模型标准负载推断推荐 TPM={estimated_tpm}"
+            ),
         });
     }
 
     // 5. If no headers detected: generic heuristic algorithm (zero vendor hardcoding)
     let is_local = is_loopback_or_private_url(&url);
     let (rpm, tpm, desc) = if is_local {
-        (300, 1_000_000, "本地/局域网环境通用高吞吐推荐配置 (300 RPM / 1,000,000 TPM)")
+        (
+            300,
+            1_000_000,
+            "本地/局域网环境通用高吞吐推荐配置 (300 RPM / 1,000,000 TPM)",
+        )
     } else {
-        (60, 100_000, "通用大模型服务商标准安全推荐配置 (60 RPM / 100,000 TPM)")
+        (
+            60,
+            100_000,
+            "通用大模型服务商标准安全推荐配置 (60 RPM / 100,000 TPM)",
+        )
     };
 
     Ok(RateLimitRecommendation {
@@ -797,7 +857,9 @@ pub async fn probe_rate_limits(
 }
 
 /// Generic case-insensitive parser for RateLimit response headers across various providers.
-fn parse_generic_ratelimit_headers(headers: &reqwest::header::HeaderMap) -> (Option<u32>, Option<u32>) {
+fn parse_generic_ratelimit_headers(
+    headers: &reqwest::header::HeaderMap,
+) -> (Option<u32>, Option<u32>) {
     let mut detected_rpm = None;
     let mut detected_tpm = None;
 
@@ -830,13 +892,17 @@ fn parse_generic_ratelimit_headers(headers: &reqwest::header::HeaderMap) -> (Opt
 
         if detected_rpm.is_none() && RPM_HEADERS.iter().any(|h| key_str == *h) {
             if let Ok(num) = val_str.parse::<u32>() {
-                if num > 0 { detected_rpm = Some(num); }
+                if num > 0 {
+                    detected_rpm = Some(num);
+                }
             }
         }
 
         if detected_tpm.is_none() && TPM_HEADERS.iter().any(|h| key_str == *h) {
             if let Ok(num) = val_str.parse::<u32>() {
-                if num > 0 { detected_tpm = Some(num); }
+                if num > 0 {
+                    detected_tpm = Some(num);
+                }
             }
         }
 
@@ -847,18 +913,24 @@ fn parse_generic_ratelimit_headers(headers: &reqwest::header::HeaderMap) -> (Opt
                 if part.starts_with("req") || part.starts_with("r=") {
                     if let Some(num_str) = part.split('=').nth(1) {
                         if let Ok(num) = num_str.trim().parse::<u32>() {
-                            if detected_rpm.is_none() && num > 0 { detected_rpm = Some(num); }
+                            if detected_rpm.is_none() && num > 0 {
+                                detected_rpm = Some(num);
+                            }
                         }
                     }
                 } else if part.starts_with("tok") || part.starts_with("t=") {
                     if let Some(num_str) = part.split('=').nth(1) {
                         if let Ok(num) = num_str.trim().parse::<u32>() {
-                            if detected_tpm.is_none() && num > 0 { detected_tpm = Some(num); }
+                            if detected_tpm.is_none() && num > 0 {
+                                detected_tpm = Some(num);
+                            }
                         }
                     }
                 } else if detected_rpm.is_none() {
                     if let Ok(num) = part.parse::<u32>() {
-                        if num > 0 { detected_rpm = Some(num); }
+                        if num > 0 {
+                            detected_rpm = Some(num);
+                        }
                     }
                 }
             }
@@ -889,14 +961,17 @@ fn is_loopback_or_private_url(url: &str) -> bool {
 
 fn build_client(accept_invalid_certs: bool) -> AppResult<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
-        .danger_accept_invalid_certs(accept_invalid_certs).use_rustls_tls()
+        .danger_accept_invalid_certs(accept_invalid_certs)
+        .use_rustls_tls()
         .timeout(std::time::Duration::from_secs(30));
     if let Some(proxy_url) = crate::proxy_manager::get_configured_proxy() {
         if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
             builder = builder.proxy(proxy);
         }
     }
-    builder.build().map_err(|e| AppError::Network(format!("HTTP 客户端创建失败：{e}")))
+    builder
+        .build()
+        .map_err(|e| AppError::Network(format!("HTTP 客户端创建失败：{e}")))
 }
 
 #[cfg(test)]
@@ -920,15 +995,24 @@ mod tests {
         use reqwest::header::{HeaderMap, HeaderValue};
 
         let mut headers = HeaderMap::new();
-        headers.insert("x-ratelimit-limit-requests", HeaderValue::from_static("120"));
-        headers.insert("x-ratelimit-limit-tokens", HeaderValue::from_static("250000"));
+        headers.insert(
+            "x-ratelimit-limit-requests",
+            HeaderValue::from_static("120"),
+        );
+        headers.insert(
+            "x-ratelimit-limit-tokens",
+            HeaderValue::from_static("250000"),
+        );
 
         let (rpm, tpm) = parse_generic_ratelimit_headers(&headers);
         assert_eq!(rpm, Some(120));
         assert_eq!(tpm, Some(250000));
 
         let mut rfc_headers = HeaderMap::new();
-        rfc_headers.insert("ratelimit-limit", HeaderValue::from_static("requests=300, tokens=600000"));
+        rfc_headers.insert(
+            "ratelimit-limit",
+            HeaderValue::from_static("requests=300, tokens=600000"),
+        );
         let (rpm2, tpm2) = parse_generic_ratelimit_headers(&rfc_headers);
         assert_eq!(rpm2, Some(300));
         assert_eq!(tpm2, Some(600000));
@@ -942,5 +1026,4 @@ mod tests {
         assert!(!is_loopback_or_private_url("https://api.openai.com"));
         assert!(!is_loopback_or_private_url("https://api.anthropic.com"));
     }
-
 }

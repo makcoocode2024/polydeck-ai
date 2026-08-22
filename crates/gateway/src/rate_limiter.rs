@@ -71,13 +71,19 @@ impl ProviderRateLimiter {
         let rpm_fill_rate = self.current_rpm / 60.0;
         let tpm_fill_rate = self.current_tpm / 60.0;
 
-        self.rpm_tokens = (self.rpm_tokens + elapsed * rpm_fill_rate).min(self.current_rpm.max(1.0));
-        self.tpm_tokens = (self.tpm_tokens + elapsed * tpm_fill_rate).min(self.current_tpm.max(1000.0));
+        self.rpm_tokens =
+            (self.rpm_tokens + elapsed * rpm_fill_rate).min(self.current_rpm.max(1.0));
+        self.tpm_tokens =
+            (self.tpm_tokens + elapsed * tpm_fill_rate).min(self.current_tpm.max(1000.0));
     }
 
     /// Acquire tokens for a request. If tokens are insufficient, asynchronously
     /// queues and waits until tokens are replenished, up to `max_wait`.
-    pub async fn acquire(&mut self, requested_tokens: u32, max_wait: Duration) -> Result<(), String> {
+    pub async fn acquire(
+        &mut self,
+        requested_tokens: u32,
+        max_wait: Duration,
+    ) -> Result<(), String> {
         if !self.enabled {
             return Ok(());
         }
@@ -88,9 +94,12 @@ impl ProviderRateLimiter {
             if start.elapsed() >= max_wait {
                 return Err(format!(
                     "Provider '{}' 速率超限排队超时 ({:.1}s) - RPM: {:.1}/{}, TPM: {:.0}/{}",
-                    self.provider_id, max_wait.as_secs_f64(),
-                    self.current_rpm, self.configured_rpm,
-                    self.current_tpm, self.configured_tpm
+                    self.provider_id,
+                    max_wait.as_secs_f64(),
+                    self.current_rpm,
+                    self.configured_rpm,
+                    self.current_tpm,
+                    self.configured_tpm
                 ));
             }
 
@@ -106,7 +115,8 @@ impl ProviderRateLimiter {
                     }
                     debug!(
                         "Provider '{}' in 429 cooldown, waiting {:.2}s...",
-                        self.provider_id, wait_time.as_secs_f64()
+                        self.provider_id,
+                        wait_time.as_secs_f64()
                     );
                     tokio::time::sleep(wait_time).await;
                     continue;
@@ -184,7 +194,8 @@ impl ProviderRateLimiter {
         self.backoff_until = Some(Instant::now() + backoff);
         info!(
             "Provider '{}' 设置 429 冷却退避等待: {:.2}s",
-            self.provider_id, backoff.as_secs_f64()
+            self.provider_id,
+            backoff.as_secs_f64()
         );
     }
 
@@ -337,7 +348,10 @@ mod tests {
         let mut limiter = ProviderRateLimiter::new("prov_rpm".into(), &settings);
 
         // Consume initial tokens
-        assert!(limiter.acquire(100, Duration::from_millis(10)).await.is_ok());
+        assert!(limiter
+            .acquire(100, Duration::from_millis(10))
+            .await
+            .is_ok());
         assert_eq!(limiter.available_rpm_tokens().floor(), 59.0);
     }
 
@@ -354,7 +368,10 @@ mod tests {
         // Simulate 429
         limiter.on_429(Some(Duration::from_millis(5)));
         assert!(limiter.current_rpm() < 60.0, "RPM should be throttled down");
-        assert!(limiter.current_tpm() < 100_000.0, "TPM should be throttled down");
+        assert!(
+            limiter.current_tpm() < 100_000.0,
+            "TPM should be throttled down"
+        );
 
         // Wait for cooldown
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -362,7 +379,10 @@ mod tests {
         // On success, rates should gradually recover
         let throttled_rpm = limiter.current_rpm();
         limiter.on_success();
-        assert!(limiter.current_rpm() >= throttled_rpm, "RPM should begin recovering");
+        assert!(
+            limiter.current_rpm() >= throttled_rpm,
+            "RPM should begin recovering"
+        );
     }
 
     #[tokio::test]
@@ -392,7 +412,11 @@ mod tests {
 
         {
             let guard_b = lim_b.lock().await;
-            assert_eq!(guard_b.current_rpm(), 100.0, "Provider B must remain unaffected by Provider A's 429");
+            assert_eq!(
+                guard_b.current_rpm(),
+                100.0,
+                "Provider B must remain unaffected by Provider A's 429"
+            );
         }
     }
 
@@ -418,8 +442,16 @@ mod tests {
         };
         let mut limiter = ProviderRateLimiter::new("prov_no_adapt".into(), &settings);
         limiter.on_429(Some(Duration::from_millis(5)));
-        assert_eq!(limiter.current_rpm(), 60.0, "RPM should not change when adaptive is false");
-        assert_eq!(limiter.current_tpm(), 100_000.0, "TPM should not change when adaptive is false");
+        assert_eq!(
+            limiter.current_rpm(),
+            60.0,
+            "RPM should not change when adaptive is false"
+        );
+        assert_eq!(
+            limiter.current_tpm(),
+            100_000.0,
+            "TPM should not change when adaptive is false"
+        );
     }
 
     #[tokio::test]
@@ -451,5 +483,4 @@ mod tests {
             assert!(guard.adaptive);
         }
     }
-
 }

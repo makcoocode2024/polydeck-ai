@@ -27,7 +27,7 @@ pub struct ImportResult {
 pub fn detect_importable_sources() -> Vec<String> {
     let mut sources = Vec::new();
     let home = dirs::home_dir().unwrap_or_default();
-    
+
     if home.join(".provider-deck").exists() || home.join("AppData/Roaming/Provider Deck").exists() {
         sources.push("Provider Deck".into());
     }
