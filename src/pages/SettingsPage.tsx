@@ -310,7 +310,7 @@ export default function SettingsPage() {
           </CardHeader>
           <CardContent className="space-y-3 text-xs">
             <p className="text-muted-foreground">
-              检测到本地存在旧版配置，支持一键无缝导入至 PolyDeck v2.0.4。
+              检测到本地存在旧版配置，支持一键无缝导入至 PolyDeck v2.0.5。
             </p>
             <div className="flex items-center gap-3">
               <Button
