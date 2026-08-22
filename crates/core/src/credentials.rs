@@ -1,4 +1,4 @@
-﻿//! Credential management via the operating system's secure storage.
+//! Credential management via the operating system's secure storage.
 //!
 //! API keys, proxy tokens, WebDAV passwords, and chat backup keys are stored
 //! in the OS credential store (Windows Credential Manager / macOS Keychain /

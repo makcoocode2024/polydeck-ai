@@ -35,7 +35,10 @@ pub fn builtin_servers() -> Vec<McpServer> {
             name: "Filesystem".into(),
             description: "文件系统读写".into(),
             command: "npx".into(),
-            args: vec!["-y".into(), "@modelcontextprotocol/server-filesystem".into()],
+            args: vec![
+                "-y".into(),
+                "@modelcontextprotocol/server-filesystem".into(),
+            ],
             env_keys: vec![],
             is_builtin: true,
         },
@@ -51,6 +54,13 @@ pub fn builtin_servers() -> Vec<McpServer> {
     ]
 }
 
-pub fn sync_to_client(_profile_id: &str, _servers: &[McpServerConfig], _client: &str) -> AppResult<SyncResult> {
-    Ok(SyncResult { synced: vec![], errors: vec![] })
+pub fn sync_to_client(
+    _profile_id: &str,
+    _servers: &[McpServerConfig],
+    _client: &str,
+) -> AppResult<SyncResult> {
+    Ok(SyncResult {
+        synced: vec![],
+        errors: vec![],
+    })
 }

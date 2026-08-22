@@ -1,4 +1,4 @@
-﻿//! Gateway server implementation
+//! Gateway server implementation
 
 use crate::{
     client::UpstreamClient,
@@ -23,41 +23,60 @@ pub struct GatewayServer {
 
 impl GatewayServer {
     pub fn new(config: GatewayConfig) -> Self {
-        Self { config, actual_addr: None, handle: None, failover: None }
+        Self {
+            config,
+            actual_addr: None,
+            handle: None,
+            failover: None,
+        }
     }
 
     pub fn with_failover_slot(mut self, failover: FailoverSlot) -> Self {
-        self.failover = Some(failover); self
+        self.failover = Some(failover);
+        self
     }
 
     pub fn with_failover(self, failover: Arc<FailoverManager>) -> Self {
         self.with_failover_slot(FailoverSlot::from_manager(failover))
     }
 
-    pub fn failover(&self) -> Option<&FailoverSlot> { self.failover.as_ref() }
+    pub fn failover(&self) -> Option<&FailoverSlot> {
+        self.failover.as_ref()
+    }
 
     pub async fn start(&mut self) -> Result<SocketAddr, String> {
         if self.is_running() {
-            return Err(format!("Gateway already running on {}",
-                self.actual_addr.map(|a| a.to_string()).unwrap_or_else(|| "unknown address".into())));
+            return Err(format!(
+                "Gateway already running on {}",
+                self.actual_addr
+                    .map(|a| a.to_string())
+                    .unwrap_or_else(|| "unknown address".into())
+            ));
         }
         let upstream = UpstreamClient::new(
             self.config.upstream.base_url.clone(),
             self.config.upstream.api_key.clone(),
-            self.config.timeout, self.config.max_retries,
+            self.config.timeout,
+            self.config.max_retries,
         )?;
         let rewriter = ModelRewriter::new(&self.config.model_rewrites)?;
         let health_state = HealthState::new();
         let rate_limiter_registry = Arc::new(crate::rate_limiter::RateLimiterRegistry::new());
         let app_state = Arc::new(AppState {
-            upstream, rewriter,
+            upstream,
+            rewriter,
             health: health_state.clone(),
             failover: self.failover.clone(),
             responses_mode: self.config.upstream.responses_mode,
             responses_native: Arc::new(OnceLock::new()),
             max_price_per_request: self.config.upstream.max_price_per_request,
             rate_limiter_registry,
-            primary_provider_id: self.config.upstream.provider_id.clone().unwrap_or_else(|| "primary_provider".into()),
+            primary_provider_id: self
+                .config
+                .upstream
+                .provider_id
+                .clone()
+                .unwrap_or_else(|| "primary_provider".into()),
             rate_limit_settings: self.config.upstream.rate_limit.clone(),
             max_retries: self.config.max_retries,
             default_effort_level: self.config.upstream.default_effort_level.clone(),
@@ -67,18 +86,29 @@ impl GatewayServer {
             upstream_api_key: self.config.upstream.api_key.clone(),
         });
         let app = build_router(app_state, middleware_state);
-        let bind_addr = self.config.listen_addr
+        let bind_addr = self
+            .config
+            .listen_addr
             .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)));
         if !bind_addr.ip().is_loopback() {
-            return Err(format!("Gateway must bind to a loopback address, got {}", bind_addr));
+            return Err(format!(
+                "Gateway must bind to a loopback address, got {}",
+                bind_addr
+            ));
         }
-        let listener = tokio::net::TcpListener::bind(bind_addr).await
+        let listener = tokio::net::TcpListener::bind(bind_addr)
+            .await
             .map_err(|e| format!("Failed to bind to {}: {}", bind_addr, e))?;
-        let actual_addr = listener.local_addr()
+        let actual_addr = listener
+            .local_addr()
             .map_err(|e| format!("Failed to get local address: {}", e))?;
         info!("Gateway listening on {}", actual_addr);
         let handle = tokio::spawn(async move {
-            axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
         });
         self.actual_addr = Some(actual_addr);
         self.handle = Some(handle);
@@ -94,8 +124,12 @@ impl GatewayServer {
         self.actual_addr = None;
     }
 
-    pub fn addr(&self) -> Option<SocketAddr> { self.actual_addr }
-    pub fn port(&self) -> Option<u16> { self.actual_addr.map(|a| a.port()) }
+    pub fn addr(&self) -> Option<SocketAddr> {
+        self.actual_addr
+    }
+    pub fn port(&self) -> Option<u16> {
+        self.actual_addr.map(|a| a.port())
+    }
     pub fn is_running(&self) -> bool {
         self.handle.is_some() && !self.handle.as_ref().unwrap().is_finished()
     }
@@ -103,7 +137,9 @@ impl GatewayServer {
 
 impl Drop for GatewayServer {
     fn drop(&mut self) {
-        if let Some(handle) = self.handle.take() { handle.abort(); }
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
     }
 }
 

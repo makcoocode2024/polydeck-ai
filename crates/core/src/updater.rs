@@ -27,11 +27,19 @@ pub struct UpdateStore {
 
 impl UpdateStore {
     pub fn new() -> Self {
-        Self { config: UpdateConfig { frequency: UpdateFrequency::Weekly, last_check: None } }
+        Self {
+            config: UpdateConfig {
+                frequency: UpdateFrequency::Weekly,
+                last_check: None,
+            },
+        }
     }
 
     pub fn should_check(&self) -> bool {
-        matches!(self.config.frequency, UpdateFrequency::Daily | UpdateFrequency::Weekly)
+        matches!(
+            self.config.frequency,
+            UpdateFrequency::Daily | UpdateFrequency::Weekly
+        )
     }
 
     pub async fn check_for_update(&mut self) -> AppResult<Option<String>> {

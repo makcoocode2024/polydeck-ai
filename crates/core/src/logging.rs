@@ -18,7 +18,9 @@ pub struct LogEntry {
 }
 
 pub struct LogRouter;
-pub struct LogStore { log_dir: PathBuf }
+pub struct LogStore {
+    log_dir: PathBuf,
+}
 
 impl LogRouter {
     pub fn init() -> AppResult<()> {
@@ -26,8 +28,10 @@ impl LogRouter {
         fs::create_dir_all(&log_dir)?;
         // Basic tracing init
         let _ = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()))
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::from_default_env()
+                    .add_directive(tracing::Level::INFO.into()),
+            )
             .try_init();
         Ok(())
     }
@@ -44,8 +48,10 @@ impl LogStore {
         Ok(vec![])
     }
 
-    pub fn clear_logs(&self) -> AppResult<()> { Ok(()) }
-    
+    pub fn clear_logs(&self) -> AppResult<()> {
+        Ok(())
+    }
+
     pub fn export_logs(&self) -> AppResult<String> {
         Ok(self.log_dir.to_string_lossy().into())
     }

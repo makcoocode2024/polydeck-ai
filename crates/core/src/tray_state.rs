@@ -22,7 +22,11 @@ pub struct TrayState {
 
 impl TrayState {
     pub fn new() -> Self {
-        Self { status: TrayStatus::Offline, gateway_running: false, active_profile: None }
+        Self {
+            status: TrayStatus::Offline,
+            gateway_running: false,
+            active_profile: None,
+        }
     }
 
     pub fn update_status(&mut self, gateway: bool, failover_ok: bool) {

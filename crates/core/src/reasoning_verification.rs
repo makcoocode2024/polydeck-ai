@@ -1,4 +1,4 @@
-﻿//! Reasoning verification via real API calls.
+//! Reasoning verification via real API calls.
 //!
 //! Verifies that reasoning parameters actually produce reasoning tokens,
 //! recording token usage for cost estimation.
@@ -68,13 +68,22 @@ pub async fn verify(
     let json: serde_json::Value = resp.json().await?;
     let usage = json.get("usage").cloned().unwrap_or_default();
 
-    let input_tokens = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-    let output_tokens = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let input_tokens = usage
+        .get("prompt_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let output_tokens = usage
+        .get("completion_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     let reasoning_tokens = usage
         .pointer("/completion_tokens_details/reasoning_tokens")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    let total_tokens = usage.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let total_tokens = usage
+        .get("total_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
 
     let verified = reasoning_tokens > 0;
     let confidence = if verified {

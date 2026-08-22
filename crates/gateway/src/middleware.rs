@@ -1,4 +1,4 @@
-﻿//! Middleware for authentication, logging, and security
+//! Middleware for authentication, logging, and security
 
 use axum::{
     extract::{ConnectInfo, Request, State},
@@ -33,17 +33,26 @@ pub async fn auth_middleware(
 
     let token = extract_auth_token(&headers);
     match token {
-        Some(t) if t == state.local_token || (!state.upstream_api_key.is_empty() && t == state.upstream_api_key) => {
+        Some(t)
+            if t == state.local_token
+                || (!state.upstream_api_key.is_empty() && t == state.upstream_api_key) =>
+        {
             next.run(request).await
         }
         // In local desktop mode, allow requests that supply any non-empty auth key
         Some(_) => next.run(request).await,
-        None => json_error(StatusCode::UNAUTHORIZED, "Missing or invalid Authorization / x-api-key header"),
+        None => json_error(
+            StatusCode::UNAUTHORIZED,
+            "Missing or invalid Authorization / x-api-key header",
+        ),
     }
 }
 
 pub fn extract_auth_token(headers: &HeaderMap) -> Option<&str> {
-    if let Some(auth) = headers.get(header::AUTHORIZATION).and_then(|h| h.to_str().ok()) {
+    if let Some(auth) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+    {
         if let Some(bearer) = auth.strip_prefix("Bearer ") {
             return Some(bearer.trim());
         }
@@ -70,9 +79,20 @@ pub async fn logging_middleware(request: Request, next: Next) -> Response {
 pub async fn cors_middleware(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, "http://127.0.0.1".parse().unwrap());
-    headers.insert(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, OPTIONS".parse().unwrap());
-    headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type, Authorization, x-api-key, anthropic-version".parse().unwrap());
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        "http://127.0.0.1".parse().unwrap(),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        "GET, POST, OPTIONS".parse().unwrap(),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        "Content-Type, Authorization, x-api-key, anthropic-version"
+            .parse()
+            .unwrap(),
+    );
     response
 }
 
@@ -91,7 +111,12 @@ fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
     let body = json!({
         "error": { "message": message.into(), "type": "gateway_error", "code": status.as_u16() }
     });
-    (status, [(header::CONTENT_TYPE, "application/json")], Json(body)).into_response()
+    (
+        status,
+        [(header::CONTENT_TYPE, "application/json")],
+        Json(body),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -101,7 +126,10 @@ mod tests {
     #[test]
     fn extracts_bearer_token() {
         let mut headers = HeaderMap::new();
-        headers.insert(header::AUTHORIZATION, "Bearer test-token-123".parse().unwrap());
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer test-token-123".parse().unwrap(),
+        );
         assert_eq!(extract_auth_token(&headers), Some("test-token-123"));
     }
 

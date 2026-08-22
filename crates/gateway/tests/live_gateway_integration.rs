@@ -1,4 +1,4 @@
-﻿use polydeck_gateway::{
+use polydeck_gateway::{
     config::{GatewayConfig, ModelRewriteRule, ResponsesMode, UpstreamConfig},
     server::GatewayServer,
 };
@@ -22,10 +22,7 @@ async fn test_full_gateway_and_clients_flow() {
         "claude-3-5-sonnet-20241022",
         "subtoken-sonnet-4-6",
     ));
-    rules.push(ModelRewriteRule::exact(
-        "gpt-4o",
-        "gemini-3.7-flash-high",
-    ));
+    rules.push(ModelRewriteRule::exact("gpt-4o", "gemini-3.7-flash-high"));
 
     let config = GatewayConfig {
         listen_addr: Some(SocketAddr::from(([127, 0, 0, 1], 18889))),
@@ -46,7 +43,10 @@ async fn test_full_gateway_and_clients_flow() {
     };
 
     let mut server = GatewayServer::new(config);
-    let addr = server.start().await.expect("Failed to start gateway server");
+    let addr = server
+        .start()
+        .await
+        .expect("Failed to start gateway server");
     println!("Gateway server running on {}", addr);
 
     let client = Client::new();
@@ -65,7 +65,10 @@ async fn test_full_gateway_and_clients_flow() {
     println!("Status: {}, Body: {}", status, models_body);
     assert_eq!(status, 200);
     assert!(models_body.contains("gemini-3.7-flash-high") || models_body.contains("gpt-4o"));
-    assert!(models_body.contains("subtoken-sonnet-4-6") || models_body.contains("claude-3-5-sonnet-20241022"));
+    assert!(
+        models_body.contains("subtoken-sonnet-4-6")
+            || models_body.contains("claude-3-5-sonnet-20241022")
+    );
 
     // 2. Test GET /models with local token
     println!("=== 2. Test GET /models (Auth: Bearer ai-deck-local) ===");

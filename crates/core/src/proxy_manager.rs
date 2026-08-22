@@ -74,7 +74,10 @@ impl ProxyManager {
 
     pub fn detect_tools(&self) -> Vec<ProxyToolInfo> {
         let tool_candidates: Vec<(&str, &[u16])> = vec![
-            ("Clash / Mihomo / Clash Verge", &[7890, 7897, 7891, 7892, 7893, 7895, 7896, 9090, 9097]),
+            (
+                "Clash / Mihomo / Clash Verge",
+                &[7890, 7897, 7891, 7892, 7893, 7895, 7896, 9090, 9097],
+            ),
             ("v2rayN / Xray", &[10809, 10808, 10810, 10811]),
             ("Sing-box", &[2080, 20808, 2081, 5353]),
             ("Shadowsocks", &[1080, 1081]),
@@ -135,18 +138,25 @@ impl ProxyManager {
     pub fn get_status(&self) -> ProxyStatus {
         let tools = self.detect_tools();
         let sys_proxy = detect_system_proxy();
-        let env_http = std::env::var("HTTP_PROXY").or_else(|_| std::env::var("http_proxy")).ok();
-        let env_https = std::env::var("HTTPS_PROXY").or_else(|_| std::env::var("https_proxy")).ok();
-        let env_all = std::env::var("ALL_PROXY").or_else(|_| std::env::var("all_proxy")).ok();
+        let env_http = std::env::var("HTTP_PROXY")
+            .or_else(|_| std::env::var("http_proxy"))
+            .ok();
+        let env_https = std::env::var("HTTPS_PROXY")
+            .or_else(|_| std::env::var("https_proxy"))
+            .ok();
+        let env_all = std::env::var("ALL_PROXY")
+            .or_else(|_| std::env::var("all_proxy"))
+            .ok();
 
         let active_proxy = sys_proxy
             .or_else(|| env_https.clone())
             .or_else(|| env_http.clone())
             .or_else(|| env_all)
             .or_else(|| {
-                tools.iter().find(|t| t.running && t.port.is_some()).map(|t| {
-                    format!("http://127.0.0.1:{}", t.port.unwrap())
-                })
+                tools
+                    .iter()
+                    .find(|t| t.running && t.port.is_some())
+                    .map(|t| format!("http://127.0.0.1:{}", t.port.unwrap()))
             });
 
         ProxyStatus {
@@ -163,7 +173,10 @@ pub fn get_configured_proxy() -> Option<String> {
     let status = mgr.get_status();
     status.active_proxy.map(|p| {
         let clean = p.trim();
-        if !clean.starts_with("http://") && !clean.starts_with("https://") && !clean.starts_with("socks5://") {
+        if !clean.starts_with("http://")
+            && !clean.starts_with("https://")
+            && !clean.starts_with("socks5://")
+        {
             format!("http://{clean}")
         } else {
             clean.to_string()
@@ -207,7 +220,11 @@ pub fn parse_proxy_server_string(raw: &str) -> Option<String> {
 
 fn normalize_proxy_scheme(target: &str, default_scheme: &str) -> String {
     let t = target.trim();
-    if t.starts_with("http://") || t.starts_with("https://") || t.starts_with("socks5://") || t.starts_with("socks5h://") {
+    if t.starts_with("http://")
+        || t.starts_with("https://")
+        || t.starts_with("socks5://")
+        || t.starts_with("socks5h://")
+    {
         t.to_string()
     } else {
         format!("{default_scheme}{t}")
@@ -231,9 +248,9 @@ pub fn detect_system_proxy() -> Option<String> {
             .ok()?;
 
         let text = String::from_utf8_lossy(&output.stdout);
-        let enabled = text
-            .lines()
-            .any(|line| line.contains("ProxyEnable") && (line.contains("0x1") || line.contains("1")));
+        let enabled = text.lines().any(|line| {
+            line.contains("ProxyEnable") && (line.contains("0x1") || line.contains("1"))
+        });
 
         if enabled {
             let server_output = std::process::Command::new("reg")

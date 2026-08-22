@@ -20,19 +20,32 @@ impl HealthState {
             last_upstream_latency_ms: Arc::new(AtomicU64::new(0)),
         }
     }
-    pub fn increment_connections(&self) { self.active_connections.fetch_add(1, Ordering::Relaxed); }
-    pub fn decrement_connections(&self) { self.active_connections.fetch_sub(1, Ordering::Relaxed); }
+    pub fn increment_connections(&self) {
+        self.active_connections.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn decrement_connections(&self) {
+        self.active_connections.fetch_sub(1, Ordering::Relaxed);
+    }
     pub fn record_request(&self, upstream_latency_ms: u64) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
-        self.last_upstream_latency_ms.store(upstream_latency_ms, Ordering::Relaxed);
+        self.last_upstream_latency_ms
+            .store(upstream_latency_ms, Ordering::Relaxed);
     }
-    pub fn active_connections(&self) -> usize { self.active_connections.load(Ordering::Relaxed) }
-    pub fn total_requests(&self) -> u64 { self.total_requests.load(Ordering::Relaxed) }
-    pub fn last_upstream_latency_ms(&self) -> u64 { self.last_upstream_latency_ms.load(Ordering::Relaxed) }
+    pub fn active_connections(&self) -> usize {
+        self.active_connections.load(Ordering::Relaxed)
+    }
+    pub fn total_requests(&self) -> u64 {
+        self.total_requests.load(Ordering::Relaxed)
+    }
+    pub fn last_upstream_latency_ms(&self) -> u64 {
+        self.last_upstream_latency_ms.load(Ordering::Relaxed)
+    }
 }
 
 impl Default for HealthState {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Serialize, Deserialize)]

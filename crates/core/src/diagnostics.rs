@@ -72,9 +72,18 @@ pub async fn run_diagnostics() -> AppResult<DiagnosticReport> {
         }
     }
 
-    let errors = items.iter().filter(|i| i.level == DiagnosticLevel::Error).count();
-    let warnings = items.iter().filter(|i| i.level == DiagnosticLevel::Warning).count();
-    let ok_count = items.iter().filter(|i| i.level == DiagnosticLevel::Ok).count();
+    let errors = items
+        .iter()
+        .filter(|i| i.level == DiagnosticLevel::Error)
+        .count();
+    let warnings = items
+        .iter()
+        .filter(|i| i.level == DiagnosticLevel::Warning)
+        .count();
+    let ok_count = items
+        .iter()
+        .filter(|i| i.level == DiagnosticLevel::Ok)
+        .count();
 
     Ok(DiagnosticReport {
         items,

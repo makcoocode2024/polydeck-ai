@@ -1,4 +1,4 @@
-﻿//! Whether a failed request may be replayed on a different provider.
+//! Whether a failed request may be replayed on a different provider.
 
 use axum::http::HeaderMap;
 use serde_json::Value;
@@ -16,7 +16,9 @@ pub enum ReplayDecision {
 }
 
 impl ReplayDecision {
-    pub fn allowed(self) -> bool { !matches!(self, ReplayDecision::Unsafe(_)) }
+    pub fn allowed(self) -> bool {
+        !matches!(self, ReplayDecision::Unsafe(_))
+    }
     pub fn reason(self) -> &'static str {
         match self {
             ReplayDecision::Unsafe(reason) => reason,
@@ -26,7 +28,9 @@ impl ReplayDecision {
 }
 
 pub fn classify(headers: &HeaderMap, body: &Value, never_sent: bool) -> ReplayDecision {
-    if never_sent { return ReplayDecision::NeverSent; }
+    if never_sent {
+        return ReplayDecision::NeverSent;
+    }
     if header_is_set(headers, NO_REPLAY_HEADER) {
         return ReplayDecision::Unsafe("client sent x-ai-deck-no-replay");
     }
@@ -89,7 +93,10 @@ mod tests {
     #[test]
     fn plain_completion_is_idempotent() {
         let body = json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]});
-        assert_eq!(classify(&HeaderMap::new(), &body, false), ReplayDecision::Idempotent);
+        assert_eq!(
+            classify(&HeaderMap::new(), &body, false),
+            ReplayDecision::Idempotent
+        );
     }
 
     #[test]
@@ -100,6 +107,9 @@ mod tests {
 
     #[test]
     fn store_false_does_not_block() {
-        assert_eq!(classify(&HeaderMap::new(), &json!({"store": false}), false), ReplayDecision::Idempotent);
+        assert_eq!(
+            classify(&HeaderMap::new(), &json!({"store": false}), false),
+            ReplayDecision::Idempotent
+        );
     }
 }

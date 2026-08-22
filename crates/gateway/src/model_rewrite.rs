@@ -1,4 +1,4 @@
-﻿//! Model name rewriting engine
+//! Model name rewriting engine
 
 use crate::config::{MatchKind, ModelRewriteRule};
 use std::collections::HashMap;
@@ -31,7 +31,11 @@ impl ModelRewriter {
                 MatchKind::Auto => !is_literal_pattern(&rule.from),
             };
 
-            let compiled = if as_regex { regex::Regex::new(&rule.from).ok() } else { None };
+            let compiled = if as_regex {
+                regex::Regex::new(&rule.from).ok()
+            } else {
+                None
+            };
             match compiled {
                 Some(re) => regex_rules.push((re, rule.to.clone())),
                 // An uncompilable pattern is still usable as a literal; keeping
@@ -42,7 +46,10 @@ impl ModelRewriter {
             }
         }
 
-        Ok(Self { exact_rules, regex_rules })
+        Ok(Self {
+            exact_rules,
+            regex_rules,
+        })
     }
 
     pub fn rewrite_request(&self, model: &str) -> String {
@@ -129,32 +136,48 @@ pub fn generate_provider_model_rewrites_with_overrides(
         .map(|s| s.as_str())
         .unwrap_or(auto_sonnet);
 
-    let sonnet_candidate = custom_sonnet.filter(|s| !s.trim().is_empty()).unwrap_or(auto_sonnet);
-    let opus_candidate = custom_opus.filter(|s| !s.trim().is_empty()).unwrap_or(auto_opus);
-    let haiku_candidate = custom_haiku.filter(|s| !s.trim().is_empty()).unwrap_or(auto_haiku);
+    let sonnet_candidate = custom_sonnet
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(auto_sonnet);
+    let opus_candidate = custom_opus
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(auto_opus);
+    let haiku_candidate = custom_haiku
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(auto_haiku);
 
     // 1. Self-mapping for all available provider models (exact rules)
     for m in models {
         let trimmed = m.trim();
         if !trimmed.is_empty() {
-            rules.push(ModelRewriteRule::exact(trimmed, trimmed).with_description("Provider model passthrough"));
+            rules.push(
+                ModelRewriteRule::exact(trimmed, trimmed)
+                    .with_description("Provider model passthrough"),
+            );
         }
     }
 
     // 2. Short aliases
     let sonnet_aliases = ["sonnet", "default", "claude-sonnet"];
     for alias in sonnet_aliases {
-        rules.push(ModelRewriteRule::exact(alias, sonnet_candidate).with_description("Sonnet alias mapping"));
+        rules.push(
+            ModelRewriteRule::exact(alias, sonnet_candidate)
+                .with_description("Sonnet alias mapping"),
+        );
     }
 
     let opus_aliases = ["opus", "opusplan", "claude-opus"];
     for alias in opus_aliases {
-        rules.push(ModelRewriteRule::exact(alias, opus_candidate).with_description("Opus alias mapping"));
+        rules.push(
+            ModelRewriteRule::exact(alias, opus_candidate).with_description("Opus alias mapping"),
+        );
     }
 
     let haiku_aliases = ["haiku", "claude-haiku"];
     for alias in haiku_aliases {
-        rules.push(ModelRewriteRule::exact(alias, haiku_candidate).with_description("Haiku alias mapping"));
+        rules.push(
+            ModelRewriteRule::exact(alias, haiku_candidate).with_description("Haiku alias mapping"),
+        );
     }
 
     // 3. Known full Claude model names (Sonnet, Opus, Haiku)
@@ -171,11 +194,15 @@ pub fn generate_provider_model_rewrites_with_overrides(
         "claude-sonnet-4-6",
         "claude-sonnet-5",
     ];
-    let provider_model_set: std::collections::HashSet<&str> = models.iter().map(|s| s.trim()).collect();
+    let provider_model_set: std::collections::HashSet<&str> =
+        models.iter().map(|s| s.trim()).collect();
 
     for name in sonnet_full {
         if !provider_model_set.contains(name) {
-            rules.push(ModelRewriteRule::exact(name, sonnet_candidate).with_description("Sonnet full model mapping"));
+            rules.push(
+                ModelRewriteRule::exact(name, sonnet_candidate)
+                    .with_description("Sonnet full model mapping"),
+            );
         }
     }
 
@@ -194,7 +221,10 @@ pub fn generate_provider_model_rewrites_with_overrides(
     ];
     for name in opus_full {
         if !provider_model_set.contains(name) {
-            rules.push(ModelRewriteRule::exact(name, opus_candidate).with_description("Opus full model mapping"));
+            rules.push(
+                ModelRewriteRule::exact(name, opus_candidate)
+                    .with_description("Opus full model mapping"),
+            );
         }
     }
 
@@ -210,7 +240,10 @@ pub fn generate_provider_model_rewrites_with_overrides(
     ];
     for name in haiku_full {
         if !provider_model_set.contains(name) {
-            rules.push(ModelRewriteRule::exact(name, haiku_candidate).with_description("Haiku full model mapping"));
+            rules.push(
+                ModelRewriteRule::exact(name, haiku_candidate)
+                    .with_description("Haiku full model mapping"),
+            );
         }
     }
 
@@ -224,7 +257,9 @@ pub fn generate_provider_model_rewrites_with_overrides(
         ("Opus", tiers.opus_display_name, opus_candidate),
         ("Haiku", tiers.haiku_display_name, haiku_candidate),
     ] {
-        let Some(display) = display.map(str::trim).filter(|d| !d.is_empty()) else { continue };
+        let Some(display) = display.map(str::trim).filter(|d| !d.is_empty()) else {
+            continue;
+        };
         if display == candidate {
             // Already the tier's own model; the step-1 self-map says the same
             // thing. Testing that rather than mere membership in the provider's
@@ -258,9 +293,11 @@ pub fn generate_provider_model_rewrites_with_overrides(
     // each tier to its advertised 1M model when there is one and drop the suffix
     // otherwise. Provider names that already carry `[1m]` pass through untouched
     // via the exact self-maps in step 1.
-    for (tier, candidate) in
-        [("opus", opus_candidate), ("sonnet", sonnet_candidate), ("haiku", haiku_candidate)]
-    {
+    for (tier, candidate) in [
+        ("opus", opus_candidate),
+        ("sonnet", sonnet_candidate),
+        ("haiku", haiku_candidate),
+    ] {
         let target = resolve_1m_target(candidate, models, supports_1m);
         let to = target.as_deref().unwrap_or(candidate);
         rules.push(
@@ -305,11 +342,19 @@ fn resolve_1m_target(candidate: &str, models: &[String], supports_1m: bool) -> O
         return None;
     }
     let suffixed = format!("{candidate}[1m]");
-    models.iter().any(|m| m.trim() == suffixed).then_some(suffixed)
+    models
+        .iter()
+        .any(|m| m.trim() == suffixed)
+        .then_some(suffixed)
 }
 
 fn is_literal_pattern(pattern: &str) -> bool {
-    !pattern.chars().any(|c| matches!(c, '.' | '*' | '+' | '?' | '[' | ']' | '(' | ')' | '{' | '}' | '^' | '$' | '|' | '\\'))
+    !pattern.chars().any(|c| {
+        matches!(
+            c,
+            '.' | '*' | '+' | '?' | '[' | ']' | '(' | ')' | '{' | '}' | '^' | '$' | '|' | '\\'
+        )
+    })
 }
 
 #[cfg(test)]
@@ -329,7 +374,10 @@ mod tests {
 
     #[test]
     fn exact_match_rewrite() {
-        let rules = vec![make_rule("claude-sonnet-4-5", "glm-5.2"), make_rule("gpt-4o", "qwen-max")];
+        let rules = vec![
+            make_rule("claude-sonnet-4-5", "glm-5.2"),
+            make_rule("gpt-4o", "qwen-max"),
+        ];
         let rewriter = ModelRewriter::new(&rules).unwrap();
         assert_eq!(rewriter.rewrite_request("claude-sonnet-4-5"), "glm-5.2");
         assert_eq!(rewriter.rewrite_request("gpt-4o"), "qwen-max");
@@ -368,9 +416,18 @@ mod tests {
         assert_eq!(rewriter.rewrite_request("haiku"), "model-S");
 
         // 2. Full names
-        assert_eq!(rewriter.rewrite_request("claude-3-7-sonnet-20250219"), "model-S");
-        assert_eq!(rewriter.rewrite_request("claude-3-opus-20240229"), "claude-opus-5");
-        assert_eq!(rewriter.rewrite_request("claude-3-5-haiku-latest"), "model-S");
+        assert_eq!(
+            rewriter.rewrite_request("claude-3-7-sonnet-20250219"),
+            "model-S"
+        );
+        assert_eq!(
+            rewriter.rewrite_request("claude-3-opus-20240229"),
+            "claude-opus-5"
+        );
+        assert_eq!(
+            rewriter.rewrite_request("claude-3-5-haiku-latest"),
+            "model-S"
+        );
 
         // 3. Provider models passthrough
         assert_eq!(rewriter.rewrite_request("model-S"), "model-S");
@@ -379,7 +436,10 @@ mod tests {
 
         // 4. Suffix [1m] stripped when supports_1m is false
         assert_eq!(rewriter.rewrite_request("claude-sonnet-4-5[1m]"), "model-S");
-        assert_eq!(rewriter.rewrite_request("claude-opus-5[1m]"), "claude-opus-5");
+        assert_eq!(
+            rewriter.rewrite_request("claude-opus-5[1m]"),
+            "claude-opus-5"
+        );
     }
 
     #[test]
@@ -421,7 +481,10 @@ mod tests {
     #[test]
     fn display_name_that_is_its_own_tier_model_passes_through() {
         let models = vec!["claude-opus-5".to_string()];
-        let tiers = TierOverrides { opus_display_name: Some("claude-opus-5"), ..Default::default() };
+        let tiers = TierOverrides {
+            opus_display_name: Some("claude-opus-5"),
+            ..Default::default()
+        };
         let rules = generate_provider_model_rewrites_with_overrides(&models, false, tiers);
         let rewriter = ModelRewriter::new(&rules).unwrap();
         assert_eq!(rewriter.rewrite_request("claude-opus-5"), "claude-opus-5");
@@ -442,15 +505,22 @@ mod tests {
         };
         let rules = generate_provider_model_rewrites_with_overrides(&models, false, tiers);
         let rewriter = ModelRewriter::new(&rules).unwrap();
-        assert_eq!(rewriter.rewrite_request("claude-opus-5"), "claude-opus-5-max");
+        assert_eq!(
+            rewriter.rewrite_request("claude-opus-5"),
+            "claude-opus-5-max"
+        );
         // The pinned model still addresses itself.
-        assert_eq!(rewriter.rewrite_request("claude-opus-5-max"), "claude-opus-5-max");
+        assert_eq!(
+            rewriter.rewrite_request("claude-opus-5-max"),
+            "claude-opus-5-max"
+        );
     }
 
     #[test]
     fn names_with_regex_metacharacters_match_literally() {
         let models = vec!["glm-4.6".to_string()];
-        let rewriter = ModelRewriter::new(&generate_provider_model_rewrites(&models, false)).unwrap();
+        let rewriter =
+            ModelRewriter::new(&generate_provider_model_rewrites(&models, false)).unwrap();
         assert_eq!(rewriter.rewrite_request("glm-4.6"), "glm-4.6");
         // `.` must not act as a wildcard.
         assert_eq!(rewriter.rewrite_request("glm-4x6"), "glm-4x6");
@@ -459,23 +529,32 @@ mod tests {
     #[test]
     fn advertised_1m_name_passes_through() {
         let models = vec!["claude-opus-5".to_string(), "claude-opus-5[1m]".to_string()];
-        let rewriter = ModelRewriter::new(&generate_provider_model_rewrites(&models, true)).unwrap();
-        assert_eq!(rewriter.rewrite_request("claude-opus-5[1m]"), "claude-opus-5[1m]");
+        let rewriter =
+            ModelRewriter::new(&generate_provider_model_rewrites(&models, true)).unwrap();
+        assert_eq!(
+            rewriter.rewrite_request("claude-opus-5[1m]"),
+            "claude-opus-5[1m]"
+        );
         assert_eq!(rewriter.rewrite_request("claude-opus-5"), "claude-opus-5");
     }
 
     #[test]
     fn tier_1m_request_routes_to_advertised_variant() {
         let models = vec!["glm-4.6".to_string(), "glm-4.6[1m]".to_string()];
-        let rewriter = ModelRewriter::new(&generate_provider_model_rewrites(&models, true)).unwrap();
-        assert_eq!(rewriter.rewrite_request("claude-opus-4-5[1m]"), "glm-4.6[1m]");
+        let rewriter =
+            ModelRewriter::new(&generate_provider_model_rewrites(&models, true)).unwrap();
+        assert_eq!(
+            rewriter.rewrite_request("claude-opus-4-5[1m]"),
+            "glm-4.6[1m]"
+        );
         assert_eq!(rewriter.rewrite_request("claude-opus-4-5"), "glm-4.6");
     }
 
     #[test]
     fn unadvertised_1m_suffix_is_stripped() {
         let models = vec!["glm-4.6".to_string()];
-        let rewriter = ModelRewriter::new(&generate_provider_model_rewrites(&models, true)).unwrap();
+        let rewriter =
+            ModelRewriter::new(&generate_provider_model_rewrites(&models, true)).unwrap();
         assert_eq!(rewriter.rewrite_request("claude-opus-4-5[1m]"), "glm-4.6");
         // Non-Claude names still lose a suffix upstream cannot parse.
         assert_eq!(rewriter.rewrite_request("some-model[1m]"), "some-model");
@@ -485,7 +564,10 @@ mod tests {
     fn many_client_names_may_share_one_upstream_model() {
         // Collapsing is expected and is why there is no reverse map: `model-S`
         // alone cannot tell you which of these the client asked for.
-        let rules = vec![make_rule("sonnet", "model-S"), make_rule("claude-3-7-sonnet", "model-S")];
+        let rules = vec![
+            make_rule("sonnet", "model-S"),
+            make_rule("claude-3-7-sonnet", "model-S"),
+        ];
         let rewriter = ModelRewriter::new(&rules).unwrap();
         assert_eq!(rewriter.rewrite_request("sonnet"), "model-S");
         assert_eq!(rewriter.rewrite_request("claude-3-7-sonnet"), "model-S");

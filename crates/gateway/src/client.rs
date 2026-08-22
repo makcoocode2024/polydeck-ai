@@ -1,4 +1,4 @@
-﻿//! HTTP client for upstream requests
+//! HTTP client for upstream requests
 
 use reqwest::{Client, Response};
 use serde_json::Value;
@@ -16,18 +16,32 @@ pub struct UpstreamClient {
 }
 
 pub fn is_loopback_url(url: &str) -> bool {
-    let host_port = url.split("://").nth(1).unwrap_or(url)
-        .split('/').next().unwrap_or_default()
-        .rsplit('@').next().unwrap_or_default();
+    let host_port = url
+        .split("://")
+        .nth(1)
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .rsplit('@')
+        .next()
+        .unwrap_or_default();
     let host = if host_port.starts_with('[') {
-        host_port.strip_prefix('[')
+        host_port
+            .strip_prefix('[')
             .and_then(|r| r.split_once(']').map(|(h, _)| h))
             .unwrap_or(host_port)
     } else {
-        host_port.rsplit_once(':').map(|(h, _)| h).unwrap_or(host_port)
+        host_port
+            .rsplit_once(':')
+            .map(|(h, _)| h)
+            .unwrap_or(host_port)
     };
     host.eq_ignore_ascii_case("localhost")
-        || host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,7 +79,10 @@ pub struct UpstreamError {
 
 impl UpstreamError {
     fn new(message: impl Into<String>, never_sent: bool) -> Self {
-        Self { message: message.into(), never_sent }
+        Self {
+            message: message.into(),
+            never_sent,
+        }
     }
 }
 
@@ -78,12 +95,18 @@ impl std::fmt::Display for UpstreamError {
 impl std::error::Error for UpstreamError {}
 
 impl From<UpstreamError> for String {
-    fn from(error: UpstreamError) -> Self { error.message }
+    fn from(error: UpstreamError) -> Self {
+        error.message
+    }
 }
 
 pub(crate) fn build_http_client(base_url: &str, timeout: Duration) -> Result<Client, String> {
     let connect_timeout = (timeout / 2).min(Duration::from_secs(10));
-    let mut builder = Client::builder().timeout(timeout).connect_timeout(connect_timeout).danger_accept_invalid_certs(true).use_rustls_tls();
+    let mut builder = Client::builder()
+        .timeout(timeout)
+        .connect_timeout(connect_timeout)
+        .danger_accept_invalid_certs(true)
+        .use_rustls_tls();
     if is_loopback_url(base_url) {
         builder = builder.no_proxy();
     } else if let Some(proxy_url) = polydeck_core::proxy_manager::get_configured_proxy() {
@@ -91,16 +114,25 @@ pub(crate) fn build_http_client(base_url: &str, timeout: Duration) -> Result<Cli
             builder = builder.proxy(proxy);
         }
     }
-    builder.build().map_err(|e| format!("Failed to build HTTP client: {}", e))
+    builder
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))
 }
 
 impl UpstreamClient {
-    pub fn new(base_url: String, api_key: String, timeout: Duration, max_retries: u32) -> Result<Self, String> {
+    pub fn new(
+        base_url: String,
+        api_key: String,
+        timeout: Duration,
+        max_retries: u32,
+    ) -> Result<Self, String> {
         let client = build_http_client(&base_url, timeout)?;
         Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
-            api_key, timeout, max_retries,
+            api_key,
+            timeout,
+            max_retries,
         })
     }
 
@@ -118,12 +150,22 @@ impl UpstreamClient {
 
     pub async fn get_models(&self) -> Result<Response, UpstreamError> {
         let url = format!("{}{}", self.base_url, Endpoint::Models.path(&self.base_url));
-        self.client.get(&url)
+        self.client
+            .get(&url)
             .bearer_auth(&self.api_key)
             .header("x-api-key", &self.api_key)
             .send()
             .await
-            .map_err(|e| UpstreamError::new(format!("Network error: {:?} | source: {:?}", e, std::error::Error::source(&e)), e.is_connect()))
+            .map_err(|e| {
+                UpstreamError::new(
+                    format!(
+                        "Network error: {:?} | source: {:?}",
+                        e,
+                        std::error::Error::source(&e)
+                    ),
+                    e.is_connect(),
+                )
+            })
     }
 
     pub async fn send(&self, endpoint: Endpoint, body: Value) -> Result<Response, UpstreamError> {
@@ -158,13 +200,18 @@ impl UpstreamClient {
             }
         }
         Err(UpstreamError::new(
-            format!("Request failed after {} attempts: {}", self.max_retries + 1, last_error),
+            format!(
+                "Request failed after {} attempts: {}",
+                self.max_retries + 1,
+                last_error
+            ),
             never_sent,
         ))
     }
 
     async fn send_once(&self, url: &str, body: Value) -> Result<Response, UpstreamError> {
-        self.client.post(url)
+        self.client
+            .post(url)
             .bearer_auth(&self.api_key)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
@@ -172,10 +219,21 @@ impl UpstreamClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| UpstreamError::new(format!("Network error: {:?} | source: {:?}", e, std::error::Error::source(&e)), e.is_connect()))
+            .map_err(|e| {
+                UpstreamError::new(
+                    format!(
+                        "Network error: {:?} | source: {:?}",
+                        e,
+                        std::error::Error::source(&e)
+                    ),
+                    e.is_connect(),
+                )
+            })
     }
 
-    pub fn base_url(&self) -> &str { &self.base_url }
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
 }
 
 fn is_retryable_status(response: &Response) -> bool {
@@ -209,8 +267,10 @@ mod tests {
     #[test]
     fn creates_client() {
         let client = UpstreamClient::new(
-            "https://api.example.com".into(), "test-key".into(),
-            Duration::from_secs(30), 3,
+            "https://api.example.com".into(),
+            "test-key".into(),
+            Duration::from_secs(30),
+            3,
         );
         assert!(client.is_ok());
         assert_eq!(client.unwrap().base_url(), "https://api.example.com");
@@ -219,11 +279,12 @@ mod tests {
     #[test]
     fn trims_trailing_slash() {
         let client = UpstreamClient::new(
-            "https://api.example.com/".into(), "k".into(),
-            Duration::from_secs(30), 3,
-        ).unwrap();
+            "https://api.example.com/".into(),
+            "k".into(),
+            Duration::from_secs(30),
+            3,
+        )
+        .unwrap();
         assert_eq!(client.base_url(), "https://api.example.com");
     }
 }
-
-

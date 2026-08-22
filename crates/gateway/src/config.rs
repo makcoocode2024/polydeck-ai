@@ -1,4 +1,4 @@
-﻿//! Gateway configuration types
+//! Gateway configuration types
 
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -15,8 +15,12 @@ pub struct GatewayConfig {
     pub max_retries: u32,
 }
 
-fn default_timeout() -> Duration { Duration::from_secs(120) }
-fn default_retries() -> u32 { 3 }
+fn default_timeout() -> Duration {
+    Duration::from_secs(120)
+}
+fn default_retries() -> u32 {
+    3
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -81,14 +85,28 @@ pub struct ModelRewriteRule {
     pub match_kind: MatchKind,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 impl ModelRewriteRule {
     pub fn exact(from: impl Into<String>, to: impl Into<String>) -> Self {
-        Self { from: from.into(), to: to.into(), enabled: true, description: None, match_kind: MatchKind::Literal }
+        Self {
+            from: from.into(),
+            to: to.into(),
+            enabled: true,
+            description: None,
+            match_kind: MatchKind::Literal,
+        }
     }
     pub fn regex(from: impl Into<String>, to: impl Into<String>) -> Self {
-        Self { from: from.into(), to: to.into(), enabled: true, description: None, match_kind: MatchKind::Regex }
+        Self {
+            from: from.into(),
+            to: to.into(),
+            enabled: true,
+            description: None,
+            match_kind: MatchKind::Regex,
+        }
     }
     pub fn with_description(mut self, desc: impl Into<String>) -> Self {
         self.description = Some(desc.into());

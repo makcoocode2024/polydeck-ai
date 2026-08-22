@@ -1,4 +1,4 @@
-﻿//! API Key platform detection.
+//! API Key platform detection.
 //!
 //! Identifies the AI platform from key prefixes and suggests Base URL + default model.
 
@@ -24,13 +24,43 @@ pub fn detect(api_key: &str) -> Option<KeyDetection> {
 
     let detections: Vec<(&str, &str, &str, &str)> = vec![
         ("sk-", "OpenAI", "https://api.openai.com", "gpt-4o"),
-        ("sk-ant-", "Anthropic", "https://api.anthropic.com", "claude-sonnet-4-20250514"),
-        ("sk-or-", "OpenRouter", "https://openrouter.ai/api", "openai/gpt-4o"),
+        (
+            "sk-ant-",
+            "Anthropic",
+            "https://api.anthropic.com",
+            "claude-sonnet-4-20250514",
+        ),
+        (
+            "sk-or-",
+            "OpenRouter",
+            "https://openrouter.ai/api",
+            "openai/gpt-4o",
+        ),
         ("xai-", "xAI", "https://api.x.ai", "grok-3"),
-        ("AIza", "Google", "https://generativelanguage.googleapis.com", "gemini-2.5-flash"),
-        ("sk-proj-", "OpenAI Project", "https://api.openai.com", "gpt-4o"),
-        ("deepseek-", "DeepSeek", "https://api.deepseek.com", "deepseek-chat"),
-        ("glm-", "智谱", "https://open.bigmodel.cn/api/paas", "glm-4-flash"),
+        (
+            "AIza",
+            "Google",
+            "https://generativelanguage.googleapis.com",
+            "gemini-2.5-flash",
+        ),
+        (
+            "sk-proj-",
+            "OpenAI Project",
+            "https://api.openai.com",
+            "gpt-4o",
+        ),
+        (
+            "deepseek-",
+            "DeepSeek",
+            "https://api.deepseek.com",
+            "deepseek-chat",
+        ),
+        (
+            "glm-",
+            "智谱",
+            "https://open.bigmodel.cn/api/paas",
+            "glm-4-flash",
+        ),
     ];
 
     for (prefix, platform, base_url, model) in detections {

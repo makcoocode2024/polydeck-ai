@@ -15,7 +15,10 @@ pub async fn ad_get_active_profile(pm: State<'_, ProfileState>) -> Result<Option
 }
 
 #[command]
-pub async fn ad_create_profile(pm: State<'_, ProfileState>, name: String) -> Result<Profile, String> {
+pub async fn ad_create_profile(
+    pm: State<'_, ProfileState>,
+    name: String,
+) -> Result<Profile, String> {
     let mut pm = pm.lock().await;
     pm.create_profile_simple(&name).map_err(|e| e.to_string())
 }
@@ -29,8 +32,13 @@ pub async fn ad_update_profile(
 ) -> Result<Profile, String> {
     let (updated, is_active) = {
         let mut pm_guard = pm.lock().await;
-        let updated = pm_guard.update_profile(&id, update).map_err(|e| e.to_string())?;
-        let is_active = pm_guard.active_profile().map(|p| p.id == id).unwrap_or(false);
+        let updated = pm_guard
+            .update_profile(&id, update)
+            .map_err(|e| e.to_string())?;
+        let is_active = pm_guard
+            .active_profile()
+            .map(|p| p.id == id)
+            .unwrap_or(false);
         if is_active {
             let _ = polydeck_core::profile_switch::switch_profile(&mut pm_guard, &id).await;
         }
@@ -50,7 +58,8 @@ pub async fn ad_update_profile(
                 .find(|p| p.is_primary)
                 .or_else(|| updated.providers.first())
             {
-                let gw_config = crate::commands::gateway::build_gateway_config(&updated.id, primary);
+                let gw_config =
+                    crate::commands::gateway::build_gateway_config(&updated.id, primary);
                 let mut server = polydeck_gateway::GatewayServer::new(gw_config);
                 let _ = server.start().await;
                 *gw_guard = Some(server);
@@ -62,7 +71,10 @@ pub async fn ad_update_profile(
 }
 
 #[command]
-pub async fn ad_duplicate_profile(pm: State<'_, ProfileState>, id: String) -> Result<Profile, String> {
+pub async fn ad_duplicate_profile(
+    pm: State<'_, ProfileState>,
+    id: String,
+) -> Result<Profile, String> {
     let mut pm = pm.lock().await;
     pm.duplicate_profile(&id).map_err(|e| e.to_string())
 }
@@ -117,7 +129,8 @@ pub async fn ad_switch_profile(
 }
 
 #[command]
-pub async fn ad_get_profile_templates() -> Result<Vec<polydeck_core::profile_templates::ProfileTemplate>, String> {
+pub async fn ad_get_profile_templates(
+) -> Result<Vec<polydeck_core::profile_templates::ProfileTemplate>, String> {
     Ok(polydeck_core::profile_templates::builtin_templates())
 }
 
@@ -165,7 +178,6 @@ pub async fn ad_get_profile_api_key(profile_id: String) -> Result<Option<String>
         Err(_) => Ok(None),
     }
 }
-
 
 #[command]
 pub async fn ad_probe_rate_limits(

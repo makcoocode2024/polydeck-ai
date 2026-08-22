@@ -28,14 +28,12 @@ pub fn parse(url: &str) -> AppResult<DeepLinkAction> {
     } else if let Some(id) = path.strip_prefix("profile/switch/") {
         Ok(DeepLinkAction::SwitchProfile { id: id.to_string() })
     } else if path.starts_with("import") {
-        let data = path
-            .split("data=")
-            .nth(1)
-            .unwrap_or_default()
-            .to_string();
+        let data = path.split("data=").nth(1).unwrap_or_default().to_string();
         Ok(DeepLinkAction::ImportProfile { data })
     } else {
-        Ok(DeepLinkAction::Unknown { path: path.to_string() })
+        Ok(DeepLinkAction::Unknown {
+            path: path.to_string(),
+        })
     }
 }
 

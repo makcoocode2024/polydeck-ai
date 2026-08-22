@@ -35,18 +35,38 @@ pub struct ToolMap {
 
 impl ToolMap {
     fn insert(&mut self, chat_name: String, original_name: String, kind: ToolKind) {
-        self.by_original_name.insert(original_name.clone(), chat_name.clone());
-        self.by_chat_name.insert(chat_name, ToolMapping { original_name, kind });
+        self.by_original_name
+            .insert(original_name.clone(), chat_name.clone());
+        self.by_chat_name.insert(
+            chat_name,
+            ToolMapping {
+                original_name,
+                kind,
+            },
+        );
     }
 
     fn chat_name(&self, original_name: &str) -> String {
-        self.by_original_name.get(original_name).cloned().unwrap_or_else(|| safe_tool_name(original_name, "fn"))
+        self.by_original_name
+            .get(original_name)
+            .cloned()
+            .unwrap_or_else(|| safe_tool_name(original_name, "fn"))
     }
 
     fn mapping(&self, chat_name: &str) -> ToolMapping {
-        self.by_chat_name.get(chat_name).cloned()
-            .or_else(|| self.by_original_name.get(chat_name).and_then(|mapped| self.by_chat_name.get(mapped)).cloned())
-            .unwrap_or_else(|| ToolMapping { original_name: chat_name.to_string(), kind: ToolKind::Function })
+        self.by_chat_name
+            .get(chat_name)
+            .cloned()
+            .or_else(|| {
+                self.by_original_name
+                    .get(chat_name)
+                    .and_then(|mapped| self.by_chat_name.get(mapped))
+                    .cloned()
+            })
+            .unwrap_or_else(|| ToolMapping {
+                original_name: chat_name.to_string(),
+                kind: ToolKind::Function,
+            })
     }
 }
 
@@ -61,42 +81,80 @@ pub struct ConvertedRequest {
 fn safe_tool_name(name: &str, prefix: &str) -> String {
     let valid = !name.is_empty()
         && name.len() <= 64
-        && name.chars().all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'));
-    if valid { return name.to_string(); }
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'));
+    if valid {
+        return name.to_string();
+    }
     let mut hasher = Sha256::new();
     hasher.update(name.as_bytes());
     let digest = hex::encode(hasher.finalize());
-    let cleaned: String = name.chars()
-        .map(|character| if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') { character } else { '_' })
+    let cleaned: String = name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
         .take(40)
         .collect();
-    format!("ad_{prefix}_{}_{}", &digest[..8], cleaned).chars().take(64).collect()
+    format!("ad_{prefix}_{}_{}", &digest[..8], cleaned)
+        .chars()
+        .take(64)
+        .collect()
 }
 
 fn custom_chat_name(name: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(name.as_bytes());
     let digest = hex::encode(hasher.finalize());
-    let cleaned: String = name.chars()
-        .map(|character| if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') { character } else { '_' })
+    let cleaned: String = name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
         .take(32)
         .collect();
-    format!("ad_custom_{}_{}", &digest[..10], cleaned).chars().take(64).collect()
+    format!("ad_custom_{}_{}", &digest[..10], cleaned)
+        .chars()
+        .take(64)
+        .collect()
 }
 
 fn convert_tools(request: &Value, warnings: &mut Vec<String>) -> (Vec<Value>, ToolMap) {
     let mut converted = Vec::new();
     let mut mappings = ToolMap::default();
-    for tool in request.get("tools").and_then(Value::as_array).into_iter().flatten() {
+    for tool in request
+        .get("tools")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let tool_type = tool.get("type").and_then(Value::as_str).unwrap_or_default();
-        let name = tool.get("name").and_then(Value::as_str).unwrap_or("unnamed_tool");
+        let name = tool
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("unnamed_tool");
         match tool_type {
             "function" => {
                 let chat_name = safe_tool_name(name, "fn");
                 let mut function = Map::new();
                 function.insert("name".into(), Value::String(chat_name.clone()));
-                function.insert("parameters".into(), tool.get("parameters").cloned().unwrap_or_else(|| json!({ "type": "object", "properties": {} })));
-                if let Some(description) = tool.get("description").filter(|value| !value.is_null()) {
+                function.insert(
+                    "parameters".into(),
+                    tool.get("parameters")
+                        .cloned()
+                        .unwrap_or_else(|| json!({ "type": "object", "properties": {} })),
+                );
+                if let Some(description) = tool.get("description").filter(|value| !value.is_null())
+                {
                     function.insert("description".into(), description.clone());
                 }
                 if let Some(strict) = tool.get("strict").filter(|value| !value.is_null()) {
@@ -107,7 +165,10 @@ fn convert_tools(request: &Value, warnings: &mut Vec<String>) -> (Vec<Value>, To
             }
             "custom" => {
                 let chat_name = custom_chat_name(name);
-                let description = tool.get("description").and_then(Value::as_str).unwrap_or("Freeform Codex tool");
+                let description = tool
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Freeform Codex tool");
                 converted.push(json!({
                     "type": "function",
                     "function": {
@@ -124,16 +185,26 @@ fn convert_tools(request: &Value, warnings: &mut Vec<String>) -> (Vec<Value>, To
                 mappings.insert(chat_name, name.to_string(), ToolKind::Custom);
                 warnings.push(format!("custom 工具 {name} 已包装为标准 function"));
             }
-            "namespace" => warnings.push(format!("namespace 工具 {name} 无法可靠映射到 Chat Completions，已过滤")),
-            other => warnings.push(format!("Responses 工具类型 {other} 无法由 Chat 后端执行，已过滤")),
+            "namespace" => warnings.push(format!(
+                "namespace 工具 {name} 无法可靠映射到 Chat Completions，已过滤"
+            )),
+            other => warnings.push(format!(
+                "Responses 工具类型 {other} 无法由 Chat 后端执行，已过滤"
+            )),
         }
     }
     (converted, mappings)
 }
 
 fn convert_content(content: &Value) -> Result<Value, AdapterError> {
-    if let Some(text) = content.as_str() { return Ok(Value::String(text.to_string())); }
-    let Some(parts) = content.as_array() else { return Err(AdapterError::UnsupportedInput("message.content 不是字符串或数组".into())); };
+    if let Some(text) = content.as_str() {
+        return Ok(Value::String(text.to_string()));
+    }
+    let Some(parts) = content.as_array() else {
+        return Err(AdapterError::UnsupportedInput(
+            "message.content 不是字符串或数组".into(),
+        ));
+    };
     let mut converted = Vec::new();
     for part in parts {
         match part.get("type").and_then(Value::as_str).unwrap_or_default() {
@@ -143,7 +214,9 @@ fn convert_content(content: &Value) -> Result<Value, AdapterError> {
             })),
             "input_image" => {
                 let Some(url) = part.get("image_url").and_then(Value::as_str) else {
-                    return Err(AdapterError::UnsupportedInput("input_image 缺少 image_url".into()));
+                    return Err(AdapterError::UnsupportedInput(
+                        "input_image 缺少 image_url".into(),
+                    ));
                 };
                 converted.push(json!({
                     "type": "image_url",
@@ -153,19 +226,34 @@ fn convert_content(content: &Value) -> Result<Value, AdapterError> {
                     }
                 }));
             }
-            "input_file" => return Err(AdapterError::UnsupportedInput("Chat Completions 无法无损承载 Responses input_file".into())),
-            other => return Err(AdapterError::UnsupportedInput(format!("未知 content 类型 {other}"))),
+            "input_file" => {
+                return Err(AdapterError::UnsupportedInput(
+                    "Chat Completions 无法无损承载 Responses input_file".into(),
+                ))
+            }
+            other => {
+                return Err(AdapterError::UnsupportedInput(format!(
+                    "未知 content 类型 {other}"
+                )))
+            }
         }
     }
     Ok(Value::Array(converted))
 }
 
-fn push_input_item(messages: &mut Vec<Value>, item: &Value, tools: &ToolMap) -> Result<(), AdapterError> {
+fn push_input_item(
+    messages: &mut Vec<Value>,
+    item: &Value,
+    tools: &ToolMap,
+) -> Result<(), AdapterError> {
     if let Some(text) = item.as_str() {
         messages.push(json!({ "role": "user", "content": text }));
         return Ok(());
     }
-    let item_type = item.get("type").and_then(Value::as_str).unwrap_or("message");
+    let item_type = item
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("message");
     match item_type {
         "message" => {
             let role = match item.get("role").and_then(Value::as_str).unwrap_or("user") {
@@ -173,12 +261,22 @@ fn push_input_item(messages: &mut Vec<Value>, item: &Value, tools: &ToolMap) -> 
                 "assistant" => "assistant",
                 _ => "user",
             };
-            let content = item.get("content").cloned().unwrap_or_else(|| Value::String(String::new()));
+            let content = item
+                .get("content")
+                .cloned()
+                .unwrap_or_else(|| Value::String(String::new()));
             messages.push(json!({ "role": role, "content": convert_content(&content)? }));
         }
         "function_call" => {
-            let original_name = item.get("name").and_then(Value::as_str).unwrap_or("unnamed_tool");
-            let call_id = item.get("call_id").or_else(|| item.get("id")).and_then(Value::as_str).unwrap_or("call_unknown");
+            let original_name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("unnamed_tool");
+            let call_id = item
+                .get("call_id")
+                .or_else(|| item.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("call_unknown");
             messages.push(json!({
                 "role": "assistant",
                 "content": Value::Null,
@@ -193,9 +291,19 @@ fn push_input_item(messages: &mut Vec<Value>, item: &Value, tools: &ToolMap) -> 
             }));
         }
         "custom_tool_call" => {
-            let original_name = item.get("name").and_then(Value::as_str).unwrap_or("unnamed_tool");
-            let call_id = item.get("call_id").or_else(|| item.get("id")).and_then(Value::as_str).unwrap_or("call_unknown");
-            let input = item.get("input").and_then(Value::as_str).unwrap_or_default();
+            let original_name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("unnamed_tool");
+            let call_id = item
+                .get("call_id")
+                .or_else(|| item.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("call_unknown");
+            let input = item
+                .get("input")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             messages.push(json!({
                 "role": "assistant",
                 "content": Value::Null,
@@ -207,29 +315,61 @@ fn push_input_item(messages: &mut Vec<Value>, item: &Value, tools: &ToolMap) -> 
             }));
         }
         "function_call_output" | "custom_tool_call_output" => {
-            let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("call_unknown");
-            let output = item.get("output").map(|value| value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string())).unwrap_or_default();
+            let call_id = item
+                .get("call_id")
+                .and_then(Value::as_str)
+                .unwrap_or("call_unknown");
+            let output = item
+                .get("output")
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| value.to_string())
+                })
+                .unwrap_or_default();
             messages.push(json!({ "role": "tool", "tool_call_id": call_id, "content": output }));
         }
         "reasoning" => {}
-        other => return Err(AdapterError::UnsupportedInput(format!("未知 input item 类型 {other}"))),
+        other => {
+            return Err(AdapterError::UnsupportedInput(format!(
+                "未知 input item 类型 {other}"
+            )))
+        }
     }
     Ok(())
 }
 
 fn convert_tool_choice(choice: &Value, tools: &ToolMap) -> Value {
-    if let Some(value) = choice.as_str() { return Value::String(value.to_string()); }
-    let choice_type = choice.get("type").and_then(Value::as_str).unwrap_or_default();
-    let original_name = choice.get("name").and_then(Value::as_str).unwrap_or_default();
+    if let Some(value) = choice.as_str() {
+        return Value::String(value.to_string());
+    }
+    let choice_type = choice
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let original_name = choice
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if matches!(choice_type, "function" | "custom") && !original_name.is_empty() {
         return json!({ "type": "function", "function": { "name": tools.chat_name(original_name) } });
     }
     Value::String("auto".into())
 }
 
-pub fn responses_to_chat(request: &Value, previous_messages: Option<&[Value]>) -> Result<ConvertedRequest, AdapterError> {
-    let model = request.get("model").and_then(Value::as_str).ok_or(AdapterError::MissingModel)?;
-    let stream = request.get("stream").and_then(Value::as_bool).unwrap_or(false);
+pub fn responses_to_chat(
+    request: &Value,
+    previous_messages: Option<&[Value]>,
+) -> Result<ConvertedRequest, AdapterError> {
+    let model = request
+        .get("model")
+        .and_then(Value::as_str)
+        .ok_or(AdapterError::MissingModel)?;
+    let stream = request
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let mut warnings = Vec::new();
     let (converted_tools, tools) = convert_tools(request, &mut warnings);
     let mut messages = previous_messages.map(ToOwned::to_owned).unwrap_or_default();
@@ -238,9 +378,17 @@ pub fn responses_to_chat(request: &Value, previous_messages: Option<&[Value]>) -
     }
     match request.get("input") {
         Some(Value::String(text)) => messages.push(json!({ "role": "user", "content": text })),
-        Some(Value::Array(items)) => for item in items { push_input_item(&mut messages, item, &tools)?; },
+        Some(Value::Array(items)) => {
+            for item in items {
+                push_input_item(&mut messages, item, &tools)?;
+            }
+        }
         Some(item @ Value::Object(_)) => push_input_item(&mut messages, item, &tools)?,
-        Some(_) => return Err(AdapterError::UnsupportedInput("input 不是字符串、对象或数组".into())),
+        Some(_) => {
+            return Err(AdapterError::UnsupportedInput(
+                "input 不是字符串、对象或数组".into(),
+            ))
+        }
         None => messages.push(json!({ "role": "user", "content": "" })),
     }
 
@@ -248,26 +396,47 @@ pub fn responses_to_chat(request: &Value, previous_messages: Option<&[Value]>) -
     body.insert("model".into(), Value::String(model.into()));
     body.insert("messages".into(), Value::Array(messages));
     body.insert("stream".into(), Value::Bool(stream));
-    if !converted_tools.is_empty() { body.insert("tools".into(), Value::Array(converted_tools)); }
-    if let Some(choice) = request.get("tool_choice") { body.insert("tool_choice".into(), convert_tool_choice(choice, &tools)); }
-    if let Some(value) = request.get("max_output_tokens") { body.insert("max_tokens".into(), value.clone()); }
-    for key in ["temperature", "top_p", "parallel_tool_calls", "seed", "stop"] {
-        if let Some(value) = request.get(key) { body.insert(key.into(), value.clone()); }
+    if !converted_tools.is_empty() {
+        body.insert("tools".into(), Value::Array(converted_tools));
+    }
+    if let Some(choice) = request.get("tool_choice") {
+        body.insert("tool_choice".into(), convert_tool_choice(choice, &tools));
+    }
+    if let Some(value) = request.get("max_output_tokens") {
+        body.insert("max_tokens".into(), value.clone());
+    }
+    for key in [
+        "temperature",
+        "top_p",
+        "parallel_tool_calls",
+        "seed",
+        "stop",
+    ] {
+        if let Some(value) = request.get(key) {
+            body.insert(key.into(), value.clone());
+        }
     }
     if let Some(effort) = request.pointer("/reasoning/effort").and_then(Value::as_str) {
         let model_lower = model.to_ascii_lowercase();
         let effort_clean = effort.trim().to_ascii_lowercase();
         // Auto-thinking DeepSeek reasoner variants and QwQ drop the field; the
         // plain DeepSeek chat models accept low/medium/high/xhigh/max.
-        if model_lower.contains("reasoner") || model_lower.contains("r1") || model_lower.contains("qwq") {
-            warnings.push(format!("模型 {model} 自动执行思考推理，已安全忽略 reasoning_effort 参数以避免上游报错"));
+        if model_lower.contains("reasoner")
+            || model_lower.contains("r1")
+            || model_lower.contains("qwq")
+        {
+            warnings.push(format!(
+                "模型 {model} 自动执行思考推理，已安全忽略 reasoning_effort 参数以避免上游报错"
+            ));
         } else if model_lower.contains("gemini") {
             if effort_clean == "minimal" {
                 body.insert("reasoning_effort".into(), Value::String("low".into()));
                 warnings.push("Gemini 不支持 minimal 推理档位，已自动平滑提升为 low".into());
             } else if matches!(effort_clean.as_str(), "xhigh" | "max") {
                 body.insert("reasoning_effort".into(), Value::String("high".into()));
-                warnings.push(format!("Gemini 不支持 {effort} 推理档位，已自动降级为 high"));
+                warnings.push(format!(
+                    "Gemini 不支持 {effort} 推理档位，已自动降级为 high"
+                ));
             } else if matches!(effort_clean.as_str(), "low" | "medium" | "high") {
                 body.insert("reasoning_effort".into(), Value::String(effort_clean));
             } else {
@@ -286,11 +455,15 @@ pub fn responses_to_chat(request: &Value, previous_messages: Option<&[Value]>) -
                 body.insert("reasoning_effort".into(), Value::String(effort_clean));
             } else if matches!(effort_clean.as_str(), "xhigh" | "max") {
                 body.insert("reasoning_effort".into(), Value::String("high".into()));
-                warnings.push(format!("Chat 后端不支持 Responses reasoning effort={effort}，已降级为 high"));
+                warnings.push(format!(
+                    "Chat 后端不支持 Responses reasoning effort={effort}，已降级为 high"
+                ));
             } else if effort_clean == "none" {
                 // none: do not inject
             } else {
-                warnings.push(format!("Chat 后端不支持 Responses reasoning effort={effort}，已省略该字段"));
+                warnings.push(format!(
+                    "Chat 后端不支持 Responses reasoning effort={effort}，已省略该字段"
+                ));
             }
         }
     }
@@ -301,22 +474,41 @@ pub fn responses_to_chat(request: &Value, previous_messages: Option<&[Value]>) -
                 "schema": format.get("schema").cloned().unwrap_or_else(|| json!({})),
                 "strict": format.get("strict").cloned().unwrap_or(Value::Bool(false))
             }})
-        } else { format.clone() };
+        } else {
+            format.clone()
+        };
         body.insert("response_format".into(), response_format);
     }
-    Ok(ConvertedRequest { body: Value::Object(body), tools, warnings, stream })
+    Ok(ConvertedRequest {
+        body: Value::Object(body),
+        tools,
+        warnings,
+        stream,
+    })
 }
 
 fn extract_custom_input(arguments: &str) -> String {
-    serde_json::from_str::<Value>(arguments).ok()
-        .and_then(|value| value.get("input").and_then(Value::as_str).map(str::to_string))
+    serde_json::from_str::<Value>(arguments)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("input")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .unwrap_or_else(|| arguments.to_string())
 }
 
 fn usage_from_chat(chat: &Value) -> Value {
     let usage = chat.get("usage").cloned().unwrap_or_else(|| json!({}));
-    let input_tokens = usage.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0);
-    let output_tokens = usage.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0);
+    let input_tokens = usage
+        .get("prompt_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output_tokens = usage
+        .get("completion_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     json!({
         "input_tokens": input_tokens,
         "input_tokens_details": { "cached_tokens": usage.pointer("/prompt_tokens_details/cached_tokens").and_then(Value::as_u64).unwrap_or(0) },
@@ -327,12 +519,23 @@ fn usage_from_chat(chat: &Value) -> Value {
 }
 
 pub fn chat_to_response(chat: &Value, tools: &ToolMap) -> Result<Value, AdapterError> {
-    let choice = chat.pointer("/choices/0").ok_or_else(|| AdapterError::InvalidChatResponse("缺少 choices[0]".into()))?;
-    let message = choice.get("message").ok_or_else(|| AdapterError::InvalidChatResponse("缺少 choices[0].message".into()))?;
+    let choice = chat
+        .pointer("/choices/0")
+        .ok_or_else(|| AdapterError::InvalidChatResponse("缺少 choices[0]".into()))?;
+    let message = choice
+        .get("message")
+        .ok_or_else(|| AdapterError::InvalidChatResponse("缺少 choices[0].message".into()))?;
     let response_id = format!("resp_ad_{}", Uuid::new_v4().simple());
-    let created_at = chat.get("created").and_then(Value::as_u64).unwrap_or_else(|| chrono::Utc::now().timestamp() as u64);
+    let created_at = chat
+        .get("created")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| chrono::Utc::now().timestamp() as u64);
     let mut output = Vec::new();
-    if let Some(content) = message.get("content").and_then(Value::as_str).filter(|content| !content.is_empty()) {
+    if let Some(content) = message
+        .get("content")
+        .and_then(Value::as_str)
+        .filter(|content| !content.is_empty())
+    {
         output.push(json!({
             "id": format!("msg_ad_{}", Uuid::new_v4().simple()),
             "type": "message",
@@ -341,10 +544,25 @@ pub fn chat_to_response(chat: &Value, tools: &ToolMap) -> Result<Value, AdapterE
             "content": [{ "type": "output_text", "annotations": [], "logprobs": [], "text": content }]
         }));
     }
-    for call in message.get("tool_calls").and_then(Value::as_array).into_iter().flatten() {
-        let call_id = call.get("id").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("call_ad_{}", Uuid::new_v4().simple()));
-        let chat_name = call.pointer("/function/name").and_then(Value::as_str).unwrap_or("unnamed_tool");
-        let arguments = call.pointer("/function/arguments").and_then(Value::as_str).unwrap_or("{}");
+    for call in message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let call_id = call
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("call_ad_{}", Uuid::new_v4().simple()));
+        let chat_name = call
+            .pointer("/function/name")
+            .and_then(Value::as_str)
+            .unwrap_or("unnamed_tool");
+        let arguments = call
+            .pointer("/function/arguments")
+            .and_then(Value::as_str)
+            .unwrap_or("{}");
         let mapping = tools.mapping(chat_name);
         let item = match mapping.kind {
             ToolKind::Function => json!({
@@ -358,7 +576,10 @@ pub fn chat_to_response(chat: &Value, tools: &ToolMap) -> Result<Value, AdapterE
         };
         output.push(item);
     }
-    let finish_reason = choice.get("finish_reason").and_then(Value::as_str).unwrap_or("stop");
+    let finish_reason = choice
+        .get("finish_reason")
+        .and_then(Value::as_str)
+        .unwrap_or("stop");
     let completed = !matches!(finish_reason, "length" | "content_filter");
     Ok(json!({
         "id": response_id,
@@ -406,23 +627,40 @@ pub struct StreamAdapter {
 impl StreamAdapter {
     pub fn new(model: String, tools: ToolMap) -> Self {
         Self {
-            response_id: format!("resp_ad_{}", Uuid::new_v4().simple()), model, tools,
-            text_item_id: None, text_output_index: None, text: String::new(), next_output_index: 0,
-            tool_calls: HashMap::new(), usage: json!({ "input_tokens": 0, "output_tokens": 0, "total_tokens": 0 }),
+            response_id: format!("resp_ad_{}", Uuid::new_v4().simple()),
+            model,
+            tools,
+            text_item_id: None,
+            text_output_index: None,
+            text: String::new(),
+            next_output_index: 0,
+            tool_calls: HashMap::new(),
+            usage: json!({ "input_tokens": 0, "output_tokens": 0, "total_tokens": 0 }),
         }
     }
 
     pub fn start(&self) -> Vec<String> {
         let response = json!({ "id": self.response_id, "object": "response", "status": "in_progress", "model": self.model, "output": [] });
-        vec![sse_event("response.created", json!({ "type": "response.created", "sequence_number": 0, "response": response }))]
+        vec![sse_event(
+            "response.created",
+            json!({ "type": "response.created", "sequence_number": 0, "response": response }),
+        )]
     }
 
     pub fn push_chat_chunk(&mut self, chunk: &Value) -> Vec<String> {
         let mut events = Vec::new();
-        if let Some(usage) = chunk.get("usage").filter(|value| !value.is_null()) { self.usage = usage_from_chat(&json!({ "usage": usage })); }
-        let Some(choice) = chunk.pointer("/choices/0") else { return events; };
+        if let Some(usage) = chunk.get("usage").filter(|value| !value.is_null()) {
+            self.usage = usage_from_chat(&json!({ "usage": usage }));
+        }
+        let Some(choice) = chunk.pointer("/choices/0") else {
+            return events;
+        };
         let delta = choice.get("delta").cloned().unwrap_or_else(|| json!({}));
-        if let Some(content) = delta.get("content").and_then(Value::as_str).filter(|value| !value.is_empty()) {
+        if let Some(content) = delta
+            .get("content")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
             self.text.push_str(content);
             if self.text_item_id.is_none() {
                 let item_id = format!("msg_ad_{}", Uuid::new_v4().simple());
@@ -444,27 +682,51 @@ impl StreamAdapter {
                 "item_id": self.text_item_id, "delta": content, "logprobs": []
             })));
         }
-        for call in delta.get("tool_calls").and_then(Value::as_array).into_iter().flatten() {
+        for call in delta
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-            let chat_name = call.pointer("/function/name").and_then(Value::as_str).unwrap_or_default();
-            let arguments_delta = call.pointer("/function/arguments").and_then(Value::as_str).unwrap_or_default();
+            let chat_name = call
+                .pointer("/function/name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let arguments_delta = call
+                .pointer("/function/arguments")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             let tool = self.tool_calls.entry(index).or_insert_with(|| {
                 let output_index = self.next_output_index;
                 self.next_output_index += 1;
                 StreamingTool {
-                    output_index, item_id: format!("tool_ad_{}", Uuid::new_v4().simple()),
-                    call_id: call.get("id").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("call_ad_{}", Uuid::new_v4().simple())),
-                    chat_name: chat_name.to_string(), arguments: String::new(), started: false,
+                    output_index,
+                    item_id: format!("tool_ad_{}", Uuid::new_v4().simple()),
+                    call_id: call
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("call_ad_{}", Uuid::new_v4().simple())),
+                    chat_name: chat_name.to_string(),
+                    arguments: String::new(),
+                    started: false,
                 }
             });
-            if !chat_name.is_empty() { tool.chat_name = chat_name.to_string(); }
+            if !chat_name.is_empty() {
+                tool.chat_name = chat_name.to_string();
+            }
             tool.arguments.push_str(arguments_delta);
             let mapping = self.tools.mapping(&tool.chat_name);
             if !tool.started {
                 tool.started = true;
                 let item = match mapping.kind {
-                    ToolKind::Function => json!({ "id": tool.item_id, "type": "function_call", "status": "in_progress", "call_id": tool.call_id, "name": mapping.original_name, "arguments": "" }),
-                    ToolKind::Custom => json!({ "id": tool.item_id, "type": "custom_tool_call", "status": "in_progress", "call_id": tool.call_id, "name": mapping.original_name, "input": "" }),
+                    ToolKind::Function => {
+                        json!({ "id": tool.item_id, "type": "function_call", "status": "in_progress", "call_id": tool.call_id, "name": mapping.original_name, "arguments": "" })
+                    }
+                    ToolKind::Custom => {
+                        json!({ "id": tool.item_id, "type": "custom_tool_call", "status": "in_progress", "call_id": tool.call_id, "name": mapping.original_name, "input": "" })
+                    }
                 };
                 events.push(sse_event("response.output_item.added", json!({ "type": "response.output_item.added", "output_index": tool.output_index, "item": item })));
             }
@@ -479,22 +741,39 @@ impl StreamAdapter {
     }
 
     pub fn conversation_snapshot(&self) -> (String, Value) {
-        let tool_calls = self.tool_calls.values().map(|call| json!({
-            "id": call.call_id,
-            "type": "function",
-            "function": { "name": call.chat_name, "arguments": call.arguments }
-        })).collect::<Vec<_>>();
+        let tool_calls = self
+            .tool_calls
+            .values()
+            .map(|call| {
+                json!({
+                    "id": call.call_id,
+                    "type": "function",
+                    "function": { "name": call.chat_name, "arguments": call.arguments }
+                })
+            })
+            .collect::<Vec<_>>();
         let mut message = Map::new();
         message.insert("role".into(), Value::String("assistant".into()));
-        message.insert("content".into(), if self.text.is_empty() { Value::Null } else { Value::String(self.text.clone()) });
-        if !tool_calls.is_empty() { message.insert("tool_calls".into(), Value::Array(tool_calls)); }
+        message.insert(
+            "content".into(),
+            if self.text.is_empty() {
+                Value::Null
+            } else {
+                Value::String(self.text.clone())
+            },
+        );
+        if !tool_calls.is_empty() {
+            message.insert("tool_calls".into(), Value::Array(tool_calls));
+        }
         (self.response_id.clone(), Value::Object(message))
     }
 
     pub fn finish(mut self) -> Vec<String> {
         let mut events = Vec::new();
         let mut indexed_output = Vec::new();
-        if let (Some(item_id), Some(output_index)) = (self.text_item_id.take(), self.text_output_index) {
+        if let (Some(item_id), Some(output_index)) =
+            (self.text_item_id.take(), self.text_output_index)
+        {
             let text = self.text.clone();
             events.push(sse_event("response.output_text.done", json!({
                 "type": "response.output_text.done", "output_index": output_index, "content_index": 0,
@@ -540,12 +819,18 @@ impl StreamAdapter {
             indexed_output.push((call.output_index, item));
         }
         indexed_output.sort_by_key(|(index, _)| *index);
-        let output = indexed_output.into_iter().map(|(_, item)| item).collect::<Vec<_>>();
+        let output = indexed_output
+            .into_iter()
+            .map(|(_, item)| item)
+            .collect::<Vec<_>>();
         let response = json!({
             "id": self.response_id, "object": "response", "status": "completed", "model": self.model,
             "output": output, "usage": self.usage, "error": Value::Null, "incomplete_details": Value::Null
         });
-        events.push(sse_event("response.completed", json!({ "type": "response.completed", "response": response })));
+        events.push(sse_event(
+            "response.completed",
+            json!({ "type": "response.completed", "response": response }),
+        ));
         events
     }
 }
@@ -564,7 +849,9 @@ mod tests {
         let converted = responses_to_chat(&request, None).unwrap();
         assert_eq!(converted.body["model"], "third-party-model");
         assert_eq!(converted.body["tools"][0]["type"], "function");
-        let chat_name = converted.body["tools"][0]["function"]["name"].as_str().unwrap();
+        let chat_name = converted.body["tools"][0]["function"]["name"]
+            .as_str()
+            .unwrap();
         let chat = json!({
             "id": "chatcmpl-test", "created": 1, "model": "third-party-model",
             "choices": [{ "finish_reason": "tool_calls", "message": { "role": "assistant", "content": null, "tool_calls": [{
@@ -604,7 +891,10 @@ mod tests {
         });
         let converted = responses_to_chat(&request, None).unwrap();
         assert!(converted.body.get("tools").is_none());
-        assert!(converted.warnings.iter().any(|warning| warning.contains("namespace")));
+        assert!(converted
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("namespace")));
     }
 
     #[test]
@@ -614,7 +904,10 @@ mod tests {
         });
         let converted = responses_to_chat(&request, None).unwrap();
         assert_eq!(converted.body["reasoning_effort"], "high");
-        assert!(converted.warnings.iter().any(|warning| warning.contains("xhigh")));
+        assert!(converted
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("xhigh")));
     }
 
     #[test]
