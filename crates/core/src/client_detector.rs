@@ -341,10 +341,8 @@ fn which_exists(name: &str) -> bool {
                         return true;
                     }
                 }
-                "codex" => {
-                    if local.join(r"Programs\Codex\Codex.exe").exists() {
-                        return true;
-                    }
+                "codex" if local.join(r"Programs\Codex\Codex.exe").exists() => {
+                    return true;
                 }
                 _ => {}
             }

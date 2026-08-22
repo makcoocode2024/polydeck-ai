@@ -51,7 +51,7 @@ pub fn run() {
                                     &active.id, primary,
                                 );
                                 let mut server = polydeck_gateway::GatewayServer::new(gw_config);
-                                if let Ok(_) = server.start().await {
+                                if server.start().await.is_ok() {
                                     let mut gw_guard = gw.lock().await;
                                     *gw_guard = Some(server);
                                 }

@@ -27,6 +27,12 @@ pub struct PromptStore {
     prompts: Vec<PromptTemplate>,
 }
 
+impl Default for PromptStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PromptStore {
     pub fn new() -> Self {
         Self { prompts: vec![] }

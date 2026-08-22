@@ -262,10 +262,8 @@ impl HistoryStore {
             .map_err(|e| AppError::Storage(format!("查询历史列表失败: {e}")))?;
 
         let mut results = Vec::new();
-        for r in rows {
-            if let Ok(item) = r {
-                results.push(item);
-            }
+        for item in rows.flatten() {
+            results.push(item);
         }
         Ok(results)
     }
@@ -358,10 +356,8 @@ impl HistoryStore {
             .map_err(|e| AppError::Storage(e.to_string()))?;
 
         let mut items = Vec::new();
-        for r in rows {
-            if let Ok(item) = r {
-                items.push(item);
-            }
+        for item in rows.flatten() {
+            items.push(item);
         }
 
         Ok(HistoryPage {
