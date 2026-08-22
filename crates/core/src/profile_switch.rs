@@ -1400,6 +1400,12 @@ ANTHROPIC_API_KEY={key}
 }
 
 #[cfg(test)]
+// The HOME guard below is deliberately held across the `.await`s in these
+// tests. Serializing the whole test body is the point: `AI_DECK_HOME_OVERRIDE`
+// is process-global, and the config writers under test are async, so releasing
+// the guard at an await would let a concurrent test repoint HOME mid-write.
+// These are single-threaded-by-design tests, not a runtime deadlock risk.
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use crate::profile::ProfileUpdate;

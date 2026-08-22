@@ -59,8 +59,7 @@ pub fn normalize_url(url: &str) -> String {
     url
 }
 
-/// Probe a provider endpoint to detect protocol, models, and capabilities.
-
+/// Whether `model_name` also answers under its `[1m]` long-context alias.
 pub async fn probe_1m_context(
     client: &reqwest::Client,
     base_url: &str,
@@ -106,6 +105,7 @@ pub async fn probe_1m_context(
     false
 }
 
+/// Probe a provider endpoint to detect protocol, models, and capabilities.
 pub async fn probe(
     base_url: &str,
     api_key: &str,

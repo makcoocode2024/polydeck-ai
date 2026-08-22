@@ -1686,9 +1686,9 @@ mod tests {
             strip_claude_code_prefix("claude-code/gpt-5.6-luna").0,
             "gpt-5.6-luna"
         );
-        assert_eq!(strip_claude_code_prefix("claude-code/gpt-5.6-luna").1, true);
+        assert!(strip_claude_code_prefix("claude-code/gpt-5.6-luna").1);
         assert_eq!(strip_claude_code_prefix("gpt-5.6-luna").0, "gpt-5.6-luna");
-        assert_eq!(strip_claude_code_prefix("gpt-5.6-luna").1, false);
+        assert!(!strip_claude_code_prefix("gpt-5.6-luna").1);
         assert_eq!(strip_claude_code_prefix("claude-code/").0, "claude-code/");
     }
 }

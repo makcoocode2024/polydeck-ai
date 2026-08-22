@@ -9,6 +9,12 @@ pub struct HistoryWatcher {
     watched_dirs: Vec<PathBuf>,
 }
 
+impl Default for HistoryWatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HistoryWatcher {
     pub fn new() -> Self {
         Self {
