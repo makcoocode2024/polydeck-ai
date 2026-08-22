@@ -59,6 +59,20 @@ const KNOWN_CLIENTS = [
   { id: "aider", name: "Aider CLI" },
 ];
 
+/**
+ * Claude Code's three model tiers.
+ *
+ * `defaultDisplayName` mirrors `DEFAULT_*_DISPLAY_NAME` in
+ * `crates/core/src/profile_switch.rs`, which is what actually gets written when
+ * the field is left blank — keep the two in step when bumping generations. Only
+ * shown as placeholder text, so a drift misleads but never misconfigures.
+ */
+const ALIAS_TIERS = [
+  { alias: "opus", label: "Opus", field: "opusModel", displayField: "opusDisplayName", defaultDisplayName: "claude-opus-5" },
+  { alias: "sonnet", label: "Sonnet", field: "sonnetModel", displayField: "sonnetDisplayName", defaultDisplayName: "claude-sonnet-5" },
+  { alias: "haiku", label: "Haiku", field: "haikuModel", displayField: "haikuDisplayName", defaultDisplayName: "claude-haiku-4-5" },
+] as const;
+
 const PROVIDER_PRESETS = [
   {
     name: "自定义",
@@ -1378,6 +1392,12 @@ export default function ProfilesPage() {
                     <div className="space-y-5">
                       {editProviders.map((prov, index) => {
                         const pState = probeStates[index];
+                        // Suggestions for the alias-target fields. They stay
+                        // suggestions rather than a closed list: a provider may
+                        // serve models that probing never reported.
+                        const knownModelIds = Array.from(
+                          new Set([...(prov.models || []), ...(pState?.models?.map((m) => m.id) || [])])
+                        ).filter(Boolean);
                         return (
                           <div key={prov.id || index} className="p-4 rounded-xl border bg-card/60 space-y-3.5 shadow-sm">
                             {/* Provider Item Top */}
@@ -1725,6 +1745,134 @@ export default function ProfilesPage() {
                                 允许无效或自签名 SSL 证书 (适用于局域网或本地反代服务)
                               </span>
                             </label>
+
+                            
+                            {/* Claude Code Aliases & Thinking Section */}
+                            <div className="p-3.5 rounded-lg border bg-muted/10 space-y-3">
+                              <div className="flex items-center gap-2">
+                                <Sparkles className="h-4 w-4 text-purple-500" />
+                                <div>
+                                  <div className="text-xs font-semibold flex items-center gap-1.5">
+                                    Claude Code 别名映射与思考深度 (Model Aliases & Reasoning)
+                                  </div>
+                                  <div className="text-[10px] text-muted-foreground">
+                                    为 Claude Code 的 opus/sonnet/haiku 别名指定目标模型与显示名，并配置思考深度及 1M 长上下文
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Multi-tier Aliases: Opus / Sonnet / Haiku */}
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                {ALIAS_TIERS.map((tier) => (
+                                  <div key={tier.field} className="space-y-1">
+                                    <label
+                                      className="text-[11px] font-medium text-muted-foreground"
+                                      htmlFor={`provider-${index}-${tier.field}`}
+                                    >
+                                      {tier.label} 别名映射 ({tier.alias})
+                                    </label>
+                                    <input
+                                      id={`provider-${index}-${tier.field}`}
+                                      list={`provider-${index}-model-options`}
+                                      value={prov[tier.field] || ""}
+                                      onChange={(e) =>
+                                        handleUpdateProviderField(index, tier.field, e.target.value || null)
+                                      }
+                                      placeholder="自动推断 (默认最优匹配)"
+                                      spellCheck={false}
+                                      autoComplete="off"
+                                      className="w-full h-8 text-xs rounded-md border border-input bg-background px-2.5 py-1 text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-mono"
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                              {/* Shared suggestion list: the fields accept any
+                                  model id, including ones probing never saw. */}
+                              <datalist id={`provider-${index}-model-options`}>
+                                {knownModelIds.map((mId) => (
+                                  <option key={mId} value={mId} />
+                                ))}
+                              </datalist>
+
+                              {/* Display names Claude Code shows for each tier */}
+                              <div className="space-y-1.5 pt-1 border-t">
+                                <div className="text-[11px] font-medium text-muted-foreground pt-1.5">
+                                  Claude Code 显示名 (Display Names)
+                                </div>
+                                <div className="text-[10px] text-muted-foreground">
+                                  写入 <code className="font-mono">~/.claude.json</code> 的模型名。Claude
+                                  Code 只对认识的名字启用对应的上下文长度与计费，裸别名 opus/sonnet/haiku
+                                  在 <code className="font-mono">/model</code> 选择器、
+                                  <code className="font-mono">--model</code> 参数和 subagent
+                                  frontmatter 里解析不一致。留空使用默认的最新模型名。仅网关开启时生效。
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                  {ALIAS_TIERS.map((tier) => (
+                                    <div key={tier.displayField} className="space-y-1">
+                                      <label
+                                        className="text-[11px] font-medium text-muted-foreground"
+                                        htmlFor={`provider-${index}-${tier.displayField}`}
+                                      >
+                                        {tier.label} 显示名
+                                      </label>
+                                      <input
+                                        id={`provider-${index}-${tier.displayField}`}
+                                        value={prov[tier.displayField] || ""}
+                                        onChange={(e) =>
+                                          handleUpdateProviderField(
+                                            index,
+                                            tier.displayField,
+                                            e.target.value || null
+                                          )
+                                        }
+                                        placeholder={tier.defaultDisplayName}
+                                        spellCheck={false}
+                                        autoComplete="off"
+                                        className="w-full h-8 text-xs rounded-md border border-input bg-background px-2.5 py-1 text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-mono"
+                                      />
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+
+                              {/* Thinking Effort & 1M Context */}
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div className="space-y-1">
+                                  <label className="text-[11px] font-medium text-muted-foreground">思考深度等级 (Thinking Effort Level)</label>
+                                  <select
+                                    value={prov.defaultEffortLevel || ""}
+                                    onChange={(e) =>
+                                      handleUpdateProviderField(index, "defaultEffortLevel", e.target.value || null)
+                                    }
+                                    className="w-full h-8 text-xs rounded-md border border-input bg-background px-2.5 py-1 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                                  >
+                                    <option value="">自动推断 (默认)</option>
+                                    <option value="none">关闭推理思考 (none)</option>
+                                    <option value="low">快速轻度推理 (low - 2048 tokens)</option>
+                                    <option value="medium">平衡推理模式 (medium - 8192 tokens)</option>
+                                    <option value="high">深度复杂推理 (high - 16384 tokens)</option>
+                                    <option value="xhigh">极限深度推理 (xhigh - 32768 tokens)</option>
+                                    <option value="max">最大极限推理 (max - 63999 tokens)</option>
+                                  </select>
+                                </div>
+
+                                <div className="space-y-1">
+                                  <label className="text-[11px] font-medium text-muted-foreground">1M 长上下文支持 (1M Context)</label>
+                                  <select
+                                    value={prov.supports1mContext === true ? "true" : prov.supports1mContext === false ? "false" : ""}
+                                    onChange={(e) => {
+                                      const val = e.target.value === "true" ? true : e.target.value === "false" ? false : null;
+                                      handleUpdateProviderField(index, "supports1mContext", val);
+                                    }}
+                                    className="w-full h-8 text-xs rounded-md border border-input bg-background px-2.5 py-1 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                                  >
+                                    <option value="">自动探测 (未指定)</option>
+                                    <option value="true">支持 1M 长上下文 (Enabled - 1000K 上下文)</option>
+                                    <option value="false">不支持 (Disabled - 自动剥离 [1m] 后缀)</option>
+                                  </select>
+                                </div>
+                              </div>
+                            </div>
 
                             {/* Rate Limiting & 429 Protection Section */}
                             <div

@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -237,15 +237,15 @@ export default function ClientsPage() {
             </CardHeader>
             <CardContent className="space-y-3 text-xs">
               <p className="text-muted-foreground text-[11px]">
-                在终端启动 Claude Code 前，设置 <code>ANTHROPIC_BASE_URL</code> 环境变量指向 PolyDeck：
+                在终端启动 Claude Code 前，设置 <code>ANTHROPIC_BASE_URL</code> 环境变量指向 PolyDeck（不要带 <code>/v1</code>，Anthropic SDK 会自行拼接）：
               </p>
               <div className="p-2.5 bg-muted/50 rounded font-mono text-[11px] relative group">
-                <code>$env:ANTHROPIC_BASE_URL="http://127.0.0.1:18888/v1"</code>
+                <code>$env:ANTHROPIC_BASE_URL="http://127.0.0.1:18888"</code>
                 <Button
                   variant="ghost"
                   size="sm"
                   className="h-6 w-6 p-0 absolute top-2 right-2"
-                  onClick={() => copySnippet("claude", '$env:ANTHROPIC_BASE_URL="http://127.0.0.1:18888/v1"')}
+                  onClick={() => copySnippet("claude", '$env:ANTHROPIC_BASE_URL="http://127.0.0.1:18888"')}
                 >
                   {copiedKey === "claude" ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
                 </Button>

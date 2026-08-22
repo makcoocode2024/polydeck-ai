@@ -60,6 +60,7 @@ impl GatewayServer {
             primary_provider_id: self.config.upstream.provider_id.clone().unwrap_or_else(|| "primary_provider".into()),
             rate_limit_settings: self.config.upstream.rate_limit.clone(),
             max_retries: self.config.max_retries,
+            default_effort_level: self.config.upstream.default_effort_level.clone(),
         });
         let middleware_state = Arc::new(MiddlewareState {
             local_token: self.config.upstream.local_token.clone(),
@@ -124,8 +125,12 @@ mod tests {
                 max_price_per_request: None,
                 responses_mode: ResponsesMode::Auto,
                 rate_limit: polydeck_core::profile::RateLimitSettings::default(),
+                default_effort_level: None,
             },
-            model_rewrites: vec![],
+            model_rewrites: crate::model_rewrite::generate_provider_model_rewrites(
+                &["gpt-4o".to_string(), "claude-3-5-sonnet".to_string()],
+                false,
+            ),
             timeout: Duration::from_secs(30),
             max_retries: 3,
         }

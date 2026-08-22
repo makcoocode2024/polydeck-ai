@@ -79,6 +79,31 @@ pub struct ProviderConfig {
     pub max_price_per_request: Option<f64>,
     #[serde(default)]
     pub rate_limit: RateLimitSettings,
+    #[serde(default)]
+    pub supports_1m_context: Option<bool>,
+    #[serde(default)]
+    pub default_effort_level: Option<String>,
+    #[serde(default)]
+    pub opus_model: Option<String>,
+    #[serde(default)]
+    pub sonnet_model: Option<String>,
+    #[serde(default)]
+    pub haiku_model: Option<String>,
+    /// Name Claude Code should *show* for each tier, written into `~/.claude.json`
+    /// in place of the bare `opus`/`sonnet`/`haiku` aliases.
+    ///
+    /// Claude Code only grants a model its real context window, pricing and
+    /// feature set when it recognises the name, and the bare aliases resolve
+    /// inconsistently across its `/model` picker, `--model` flag and subagent
+    /// frontmatter. Naming a current built-in model here makes all three agree.
+    /// Only meaningful with the gateway enabled — it is what maps the display
+    /// name back to the provider's real model. Empty falls back to the alias.
+    #[serde(default)]
+    pub opus_display_name: Option<String>,
+    #[serde(default)]
+    pub sonnet_display_name: Option<String>,
+    #[serde(default)]
+    pub haiku_display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -419,6 +444,14 @@ impl ProfileManager {
             accept_invalid_certs: false,
             max_price_per_request: None,
             rate_limit: RateLimitSettings::default(),
+            supports_1m_context: None,
+            default_effort_level: None,
+            opus_model: None,
+            sonnet_model: None,
+            haiku_model: None,
+            opus_display_name: None,
+            sonnet_display_name: None,
+            haiku_display_name: None,
         };
         self.create_profile(ProfileCreate {
             name: name.to_string(),
@@ -497,6 +530,14 @@ mod tests {
                 accept_invalid_certs: false,
                 max_price_per_request: None,
                 rate_limit: RateLimitSettings::default(),
+                supports_1m_context: None,
+                default_effort_level: None,
+                opus_model: None,
+                sonnet_model: None,
+                haiku_model: None,
+                opus_display_name: None,
+                sonnet_display_name: None,
+                haiku_display_name: None,
             }]),
             clients: None,
             gateway_enabled: Some(false),
