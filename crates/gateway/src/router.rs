@@ -534,10 +534,41 @@ async fn handle_responses(
     debug!("Processing /v1/responses request");
     inject_max_price(&mut body, state.max_price_per_request);
     sanitize_responses_effort(&mut body);
+    // A tool type outside the narrow set real upstreams implement has to go
+    // through the bridge: `responses_to_chat` renames the tool and records the
+    // mapping so the reply can be rewritten back. Native passthrough returns
+    // the upstream reply verbatim, so converting only the request would hand
+    // the client a tool name it never registered.
+    if requires_tool_bridge(&body) {
+        debug!("Responses body carries non-native tool types; bridging");
+        return handle_bridged_responses(&state, &headers, body).await;
+    }
     if state.forward_responses_natively() {
         return handle_native_responses(&state, &headers, body).await;
     }
     handle_bridged_responses(&state, &headers, body).await
+}
+
+/// Tool types an OpenAI-compatible Responses upstream can be expected to accept.
+///
+/// The published spec has far more (`custom`, `namespace`, `apply_patch`,
+/// `local_shell`, `file_search`, ...), but real relays implement a subset and
+/// reject the rest outright with a deserialization error. Probed against
+/// Agnes: `function` is accepted; `custom`, `namespace`, `apply_patch` and
+/// `file_search` all fail with `unknown variant`.
+const NATIVE_RESPONSES_TOOL_TYPES: [&str; 4] =
+    ["function", "web_search_preview", "code_interpreter", "mcp"];
+
+/// True when `tools[]` holds a type native passthrough cannot safely carry.
+fn requires_tool_bridge(body: &Value) -> bool {
+    let Some(tools) = body.get("tools").and_then(Value::as_array) else { return false };
+    tools.iter().any(|tool| {
+        // A tool with no `type` is malformed; leave the verdict to the upstream
+        // rather than forcing a bridge on it.
+        tool.get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|t| !NATIVE_RESPONSES_TOOL_TYPES.contains(&t))
+    })
 }
 
 /// Sanitize reasoning effort on an OpenAI Responses body (`/reasoning/effort`).
@@ -578,7 +609,11 @@ async fn handle_native_responses(state: &AppState, headers: &HeaderMap, body: Va
     if let Some(p) = &attempt.switched_to { info!("Request retried on failover provider '{}'", p); }
     let upstream_response = attempt.response;
     state.health.record_request(start.elapsed().as_millis() as u64);
-    if state.responses_mode == ResponsesMode::Auto && !upstream_response.status().is_success() {
+    // Bridge-on-rejection applies in Native too, not just Auto: a provider
+    // pinned to Native still gets 400'd by an upstream that only implements
+    // part of the Responses shape, and passing that through just fails the
+    // user's request. Bridge mode is excluded — it never reaches here.
+    if !upstream_response.status().is_success() {
         let status = upstream_response.status();
         let resp_headers = upstream_response.headers().clone();
         let resp_body = upstream_response.bytes().await.unwrap_or_default();
@@ -587,13 +622,12 @@ async fn handle_native_responses(state: &AppState, headers: &HeaderMap, body: Va
             state.remember_responses_support(false);
             return handle_bridged_responses(state, headers, body).await;
         }
-        state.remember_responses_support(true);
+        if state.responses_mode == ResponsesMode::Auto {
+            state.remember_responses_support(true);
+        }
         return response_with_body(status, &resp_headers, resp_body);
     }
     state.remember_responses_support(true);
-    if !upstream_response.status().is_success() {
-        return passthrough_verbatim(upstream_response).await;
-    }
     if is_stream { passthrough_raw_stream(upstream_response) }
     else { passthrough_verbatim(upstream_response).await }
 }
@@ -626,6 +660,20 @@ const POOL_REJECTION_MARKERS: [&str; 6] = [
     "invalid url", "unsupported endpoint", "unknown endpoint",
 ];
 
+/// Markers for an upstream that speaks Responses but rejects part of the request
+/// shape it was handed — most often a tool type it never implemented.
+///
+/// `requires_tool_bridge` catches the known-bad types up front; this is the net
+/// for upstreams whose accepted set differs from the one we assume. Retrying
+/// through the bridge downgrades the request to Chat Completions, which every
+/// OpenAI-compatible upstream implements.
+const SHAPE_REJECTION_MARKERS: [&str; 4] = [
+    "unknown variant",
+    "json_parse_error",
+    "failed to deserialize the json body",
+    "unknown field",
+];
+
 fn is_missing_responses_error(status: reqwest::StatusCode, body: &[u8]) -> bool {
     if matches!(status, reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::NOT_IMPLEMENTED) {
         return true;
@@ -635,6 +683,7 @@ fn is_missing_responses_error(status: reqwest::StatusCode, body: &[u8]) -> bool 
     }
     let detail = String::from_utf8_lossy(body).to_ascii_lowercase();
     POOL_REJECTION_MARKERS.iter().any(|m| detail.contains(m))
+        || SHAPE_REJECTION_MARKERS.iter().any(|m| detail.contains(m))
 }
 
 /// Universal SSE stream idle timeout (25s without data chunk).
@@ -920,6 +969,97 @@ mod tests {
         assert!(s.forward_responses_natively());
         s.remember_responses_support(false);
         assert!(s.forward_responses_natively());
+    }
+
+    /// Probed against Agnes: only these four survive native passthrough.
+    #[test]
+    fn native_tool_types_do_not_force_a_bridge() {
+        for t in ["function", "web_search_preview", "code_interpreter", "mcp"] {
+            let body = serde_json::json!({ "model": "m", "tools": [{ "type": t }] });
+            assert!(!requires_tool_bridge(&body), "{t} should stay native");
+        }
+    }
+
+    /// The Agnes 400 listed `function`/`web_search_preview`/`code_interpreter`/`mcp`
+    /// as the accepted set; every other spec type has to be bridged.
+    #[test]
+    fn spec_tool_types_outside_the_native_set_force_a_bridge() {
+        for t in [
+            "custom", "namespace", "apply_patch", "file_search", "local_shell",
+            "shell", "computer", "computer_use_preview", "image_generation",
+            "tool_search", "web_search",
+        ] {
+            let body = serde_json::json!({ "model": "m", "tools": [{ "type": t }] });
+            assert!(requires_tool_bridge(&body), "{t} should bridge");
+        }
+    }
+
+    #[test]
+    fn one_bad_tool_among_many_bridges_the_whole_request() {
+        // Codex sends the offending `custom` tool alongside plain functions;
+        // the original report had it at tools[7].
+        let mut tools: Vec<Value> = (0..7)
+            .map(|i| serde_json::json!({ "type": "function", "name": format!("f{i}") }))
+            .collect();
+        tools.push(serde_json::json!({ "type": "custom", "name": "apply_patch" }));
+        let body = serde_json::json!({ "model": "agnes-2.5-flash", "tools": tools });
+        assert!(requires_tool_bridge(&body));
+    }
+
+    #[test]
+    fn absent_or_empty_tools_stay_native() {
+        assert!(!requires_tool_bridge(&serde_json::json!({ "model": "m" })));
+        assert!(!requires_tool_bridge(&serde_json::json!({ "model": "m", "tools": [] })));
+        // Not an array — nothing to inspect, leave the verdict upstream.
+        assert!(!requires_tool_bridge(&serde_json::json!({ "model": "m", "tools": "x" })));
+    }
+
+    #[test]
+    fn a_typeless_tool_is_left_for_the_upstream_to_reject() {
+        let body = serde_json::json!({ "model": "m", "tools": [{ "name": "no_type" }] });
+        assert!(!requires_tool_bridge(&body));
+    }
+
+    /// The verbatim Agnes rejection must trigger the bridge fallback.
+    #[test]
+    fn agnes_tool_type_rejection_triggers_bridge_fallback() {
+        let agnes = br#"{"error":{"message":"***.BadRequestError: OpenAIException - {\"error\":{\"message\":\"Invalid JSON data: Failed to deserialize the JSON body into the target type: tools[7].type: unknown variant `custom`, expected one of `function`, `web_search_preview`, `code_interpreter`, `mcp` at line 1 column 46194\",\"type\":\"invalid_request_error\",\"code\":\"json_parse_error\"}}","type":"upstream_error","param":"","code":"400"}}"#;
+        assert!(is_missing_responses_error(reqwest::StatusCode::BAD_REQUEST, agnes));
+    }
+
+    #[test]
+    fn shape_rejections_are_recognised_generically() {
+        for marker in [
+            b"unknown variant `apply_patch`".as_slice(),
+            b"json_parse_error".as_slice(),
+            b"Failed to deserialize the JSON body".as_slice(),
+            b"unknown field `defer_loading`".as_slice(),
+        ] {
+            assert!(
+                is_missing_responses_error(reqwest::StatusCode::BAD_REQUEST, marker),
+                "{}", String::from_utf8_lossy(marker)
+            );
+        }
+    }
+
+    /// An ordinary 400 must still surface to the client, not silently re-run.
+    #[test]
+    fn unrelated_bad_requests_do_not_trigger_fallback() {
+        for body in [
+            b"{\"error\":{\"message\":\"insufficient quota\"}}".as_slice(),
+            b"{\"error\":{\"message\":\"model not found\"}}".as_slice(),
+            b"{\"error\":{\"message\":\"context length exceeded\"}}".as_slice(),
+        ] {
+            assert!(!is_missing_responses_error(reqwest::StatusCode::BAD_REQUEST, body));
+        }
+        // 401/403/429/500 are never a shape problem regardless of body text.
+        for status in [
+            reqwest::StatusCode::UNAUTHORIZED,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            assert!(!is_missing_responses_error(status, b"unknown variant `custom`"));
+        }
     }
 
     #[test]
