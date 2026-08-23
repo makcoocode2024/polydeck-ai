@@ -59,18 +59,23 @@ jobs:
       - name: List installers to publish
         shell: bash
         run: |
-          echo "installers:"
-          found=$(find target/release/bundle -type f \
+          # No `tee /dev/stderr` here: Git Bash on the Windows runner has no
+          # /dev/stderr, and with the default `-o pipefail` that failed the whole
+          # pipeline, leaving $found empty and tripping the guard below — on a
+          # build that had in fact produced both the .msi and the .exe.
+          list=$(find target/release/bundle -type f \
             \( -name '*.msi' -o -name '*.exe' -o -name '*.dmg' \
                -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) \
-            -print | tee /dev/stderr | wc -l)
+            -print | sort)
+          found=$(printf '%s' "$list" | grep -c . || true)
+          echo "installers ($found):"
+          printf '%s\n' "$list" | sed 's/^/  /'
           if [ "$found" -eq 0 ]; then
-            echo "::error::no installer produced under target/release/bundle" >&2
-            echo "tree was:" >&2
-            find target/release/bundle -type f -print | head -40 >&2
+            echo "::error::no installer produced under target/release/bundle"
+            echo "full tree:"
+            find target/release/bundle -type f -print | head -40 | sed 's/^/  /'
             exit 1
           fi
-          echo "  ($found installer(s))"
       # Match installers by extension, never `**/*`. Tauri leaves its working
       # trees beside the finished artifacts — the unpacked .app, deb/rpm control
       # and data dirs, and an entire extracted AppImage filesystem. A recursive
