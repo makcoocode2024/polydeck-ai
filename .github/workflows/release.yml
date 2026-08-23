@@ -3,6 +3,15 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Manual re-run, for attaching assets to a tag whose release already exists —
+  # e.g. after fixing a bad upload path. Checks out the tag, so the build matches
+  # what that tag contains rather than whatever main holds now.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and attach assets to (e.g. v2.0.7)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -20,7 +29,11 @@ jobs:
             target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
+      # On a manual run, build the tag the user named rather than the default
+      # branch, so re-attaching assets cannot ship different code than the tag.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
@@ -45,6 +58,9 @@ jobs:
           find target/release/bundle -type f -print | sed 's/^/  /'
       - uses: softprops/action-gh-release@v2
         with:
+          # A manual run has no tag ref of its own, so name the target release
+          # explicitly; the action then updates it in place instead of failing.
+          tag_name: ${{ inputs.tag || github.ref_name }}
           files: |
             target/release/bundle/**/*
           fail_on_unmatched_files: true
