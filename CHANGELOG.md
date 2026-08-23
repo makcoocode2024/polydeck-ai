@@ -1,5 +1,26 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Agnes AI provider section in Quick Setup, with both routes (`api.agnes-ai.cn`
+  and `apihub.agnes-ai.com`) selectable and a four-model picker
+- Built-in `agnes-cn` and `agnes-global` profile templates, wiring all three
+  Claude tier slots to `agnes-2.5-flash` so the model is reachable from Claude
+  Code's picker, which lists only `claude-`-prefixed ids
+- Shared `src/domain/agnes.ts` so both preset lists and the panel read one source
+
+### Fixed
+- Responses bridge dropped `reasoning_content`, so a Chat upstream that spent its
+  whole output budget reasoning produced an empty `output: []`. It now becomes a
+  `reasoning` output item, matching what a native Responses upstream returns
+
+### Notes
+- Agnes free tier 429s at 20 RPM and exposes no `RateLimit-*` headers, so the
+  templates pin 20 rather than letting the probe leave its generic 60 in place
+- Agnes API keys are scoped per site: a CN key lists models on the international
+  host but 401s on inference. The route picker warns about this
+
 ## [2.0.0] - 2026-08-18
 
 ### Added
