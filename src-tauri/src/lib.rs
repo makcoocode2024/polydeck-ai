@@ -16,6 +16,15 @@ use tokio::sync::Mutex;
 const INJECT_SCRIPT_SOURCE: &str = "// AI Deck bridge placeholder";
 
 pub fn run() {
+    // First thing, before any state is loaded: the gateway and profile code paths
+    // emit tracing events, and until this installs a file subscriber they go to a
+    // stdout that a windowed build throws away. Nothing had called this, which is
+    // why ~/.ai-deck/logs/ held nothing newer than 2026-08-19.
+    if let Err(err) = polydeck_core::logging::LogRouter::init() {
+        // No logging yet, so this is the one place a bare eprintln earns its keep.
+        eprintln!("[PolyDeck] file logging unavailable: {err}");
+    }
+
     let pm = ProfileManager::load().unwrap_or_default();
     let profile_state: ProfileState = Arc::new(Mutex::new(pm));
     let gateway_state: GatewayState = Arc::new(Mutex::new(None));
