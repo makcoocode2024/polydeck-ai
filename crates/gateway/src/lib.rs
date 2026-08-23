@@ -13,7 +13,6 @@ pub mod rate_limiter;
 pub mod replay;
 pub mod router;
 pub mod server;
-pub mod stream_adapter;
 
 pub use config::{GatewayConfig, ModelRewriteRule, ResponsesMode, UpstreamConfig};
 pub use failover::{

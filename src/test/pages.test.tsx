@@ -9,6 +9,139 @@ import SettingsPage from "@/pages/SettingsPage";
 import { backend } from "@/services/backend";
 
 describe("Frontend Pages", () => {
+  it("arms an Agnes route from the dedicated panel and drives the form", async () => {
+    render(<QuickSetupPage />);
+
+    // Panel is present but no route armed, so no model choices yet.
+    expect(screen.getByTestId("agnes-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("agnes-model-agnes-2.5-flash")).not.toBeInTheDocument();
+
+    const baseUrlInput = screen.getByPlaceholderText("https://api.openai.com/v1") as HTMLInputElement;
+    const modelInput = screen.getByPlaceholderText("gpt-4o / claude-3-7-sonnet") as HTMLInputElement;
+
+    // Arming the CN route fills base URL and model, and opens the model picker.
+    fireEvent.click(screen.getByTestId("agnes-route-agnes-cn"));
+    await waitFor(() => {
+      expect(baseUrlInput.value).toBe("https://api.agnes-ai.cn/v1");
+    });
+    expect(modelInput.value).toBe("agnes-2.5-flash");
+    expect(screen.getByTestId("agnes-model-agnes-2.5-flash")).toBeInTheDocument();
+
+    // Switching to the international route only changes the host.
+    fireEvent.click(screen.getByTestId("agnes-route-agnes-global"));
+    await waitFor(() => {
+      expect(baseUrlInput.value).toBe("https://apihub.agnes-ai.com/v1");
+    });
+    expect(modelInput.value).toBe("agnes-2.5-flash");
+
+    // A paid model raises the output-budget warning; the free default does not.
+    expect(screen.queryByText(/先消耗输出预算做推理/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("agnes-model-agnes-2.5-pro"));
+    await waitFor(() => {
+      expect(modelInput.value).toBe("agnes-2.5-pro");
+    });
+    expect(screen.getByText(/先消耗输出预算做推理/)).toBeInTheDocument();
+
+    // Back to a free model clears it again.
+    fireEvent.click(screen.getByTestId("agnes-model-agnes-2.0-flash"));
+    await waitFor(() => {
+      expect(modelInput.value).toBe("agnes-2.0-flash");
+    });
+    expect(screen.queryByText(/先消耗输出预算做推理/)).not.toBeInTheDocument();
+  });
+
+  it("keeps Claude Code selected after a probe changes the protocol", async () => {
+    // Regression: the client-detection effect depended on `currentProtocol` and
+    // re-derived the selection whenever a probe adjusted it, silently dropping
+    // claude-code and leaving an Agnes profile's tier slots unreachable.
+    render(<QuickSetupPage />);
+
+    fireEvent.click(screen.getByTestId("agnes-route-agnes-cn"));
+    await waitFor(() => {
+      expect(screen.getByTestId("agnes-model-agnes-2.5-flash")).toBeInTheDocument();
+    });
+
+    const claudeCode = await screen.findByRole("checkbox", { name: /Claude Code/i });
+    expect((claudeCode as HTMLInputElement).checked).toBe(true);
+
+    // Probing reports `responses` for Agnes; the selection must survive it.
+    fireEvent.click(screen.getByRole("button", { name: /测试连接/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/当前协议/i)).toBeInTheDocument();
+    });
+    expect((claudeCode as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("hides non-chat Agnes models from the picker", async () => {
+    // Regression: /v1/models also lists image and video models, which answer on
+    // other endpoints. Saving them verbatim put agnes-video-2.5 into Codex's
+    // model catalogue as a selectable chat model.
+    vi.spyOn(backend, "probeProvider").mockResolvedValueOnce({
+      protocol: "responses",
+      confidence: "high",
+      evidence: [],
+      codexCompat: "responses_function",
+      baseUrl: "https://api.agnes-ai.cn",
+      supportsStreaming: true,
+      models: [
+        { id: "agnes-2.5-flash", name: "agnes-2.5-flash" },
+        { id: "agnes-2.0-flash", name: "agnes-2.0-flash" },
+        { id: "agnes-image-2.1-flash", name: "agnes-image-2.1-flash" },
+        { id: "agnes-video-2.5", name: "agnes-video-2.5" },
+        { id: "agnes-video-v2.0", name: "agnes-video-v2.0" },
+      ],
+    } as never);
+
+    render(<QuickSetupPage />);
+    fireEvent.click(screen.getByTestId("agnes-route-agnes-cn"));
+    await waitFor(() => {
+      expect(screen.getByTestId("agnes-model-agnes-2.5-flash")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /获取模型/i }));
+    const select = (await screen.findByRole("combobox", {
+      name: /从已获取的模型列表中选择/i,
+    })) as HTMLSelectElement;
+
+    const offered = Array.from(select.options)
+      .map((o) => o.value)
+      .filter(Boolean);
+    expect(offered).toContain("agnes-2.5-flash");
+    expect(offered).toContain("agnes-2.0-flash");
+    // The three non-chat models must not be selectable.
+    expect(offered).not.toContain("agnes-image-2.1-flash");
+    expect(offered).not.toContain("agnes-video-2.5");
+    expect(offered).not.toContain("agnes-video-v2.0");
+    expect(screen.getByText(/已隐藏 3 个非对话模型/)).toBeInTheDocument();
+  });
+
+  it("warns when the gateway is off but Codex needs it", async () => {
+    render(<QuickSetupPage />);
+
+    fireEvent.click(screen.getByTestId("agnes-route-agnes-cn"));
+    await waitFor(() => {
+      expect(screen.getByTestId("agnes-model-agnes-2.5-flash")).toBeInTheDocument();
+    });
+
+    // Agnes arms as chat_function, which Codex cannot reach directly.
+    expect(screen.getByText(/Codex 必须开启桥接/)).toBeInTheDocument();
+    expect(screen.queryByTestId("codex-needs-gateway-warning")).not.toBeInTheDocument();
+
+    // Switching the gateway off must name the failure rather than stay silent.
+    const gatewayToggle = screen.getByRole("checkbox", { name: /启用本地代理网关/i });
+    fireEvent.click(gatewayToggle);
+    await waitFor(() => {
+      expect(screen.getByTestId("codex-needs-gateway-warning")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/unknown variant/)).toBeInTheDocument();
+
+    // Back on, warning clears.
+    fireEvent.click(gatewayToggle);
+    await waitFor(() => {
+      expect(screen.queryByTestId("codex-needs-gateway-warning")).not.toBeInTheDocument();
+    });
+  });
+
   it("renders QuickSetupPage successfully and handles model fetch and dropdown selection", async () => {
     render(<QuickSetupPage />);
     expect(screen.getByText("快速配置 PolyDeck")).toBeInTheDocument();

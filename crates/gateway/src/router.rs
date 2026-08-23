@@ -8,7 +8,6 @@ use crate::{
     middleware::{auth_middleware, logging_middleware, loopback_only_middleware, MiddlewareState},
     model_rewrite::ModelRewriter,
     replay::{classify, ReplayDecision},
-    stream_adapter::StreamAdapter,
 };
 use axum::{
     body::Body,
@@ -21,7 +20,7 @@ use axum::{
 use bytes::Bytes;
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
-use polydeck_core::responses_chat::{chat_to_response, responses_to_chat, ToolMap};
+use polydeck_core::responses_chat::{chat_to_response, responses_to_chat, StreamAdapter, ToolMap};
 use serde_json::Value;
 use std::{
     convert::Infallible,
@@ -816,7 +815,7 @@ async fn handle_bridged_responses(
         return passthrough_verbatim(upstream_response).await;
     }
     if is_stream {
-        handle_responses_stream(upstream_response, client_model.unwrap_or_default()).await
+        handle_responses_stream(upstream_response, client_model.unwrap_or_default(), tools).await
     } else {
         handle_responses_nonstream(upstream_response, client_model, &tools).await
     }
@@ -989,11 +988,26 @@ async fn handle_responses_nonstream(
         .unwrap()
 }
 
+/// Bridge a Chat Completions SSE stream back to Responses events.
+///
+/// Uses the core adapter, not the gateway's own `stream_adapter`. That one
+/// accumulates `delta.tool_calls` into state and only reveals them inside the
+/// final `response.completed` snapshot, emitting no `response.output_item.added`
+/// or `response.function_call_arguments.delta` along the way. Codex reads tool
+/// calls from the incremental events and ignores the closing snapshot, so every
+/// tool call was invisible to it: the model asked to run `exec_command`, Codex
+/// saw only an empty text message, and the turn ended with nothing executed.
+///
+/// The core adapter emits the incremental events and, because it holds the
+/// `ToolMap`, restores a bridged custom tool's original name — `apply_patch`
+/// reaches the client under that name rather than the renamed one the Chat call
+/// used.
 async fn handle_responses_stream(
     upstream_response: reqwest::Response,
     client_model: String,
+    tools: ToolMap,
 ) -> Response<Body> {
-    let mut adapter = StreamAdapter::new(client_model);
+    let mut adapter = StreamAdapter::new(client_model, tools);
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(100);
     for event in adapter.start() {
         let _ = tx.send(Ok(Bytes::from(event))).await;
