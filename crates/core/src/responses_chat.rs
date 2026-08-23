@@ -536,35 +536,41 @@ pub fn chat_to_response(chat: &Value, tools: &ToolMap) -> Result<Value, AdapterE
         .unwrap_or_else(|| chrono::Utc::now().timestamp() as u64);
     let mut output = Vec::new();
     // Reasoning models on a Chat backend return their thinking in the
-    // non-standard `reasoning_content` field (DeepSeek's convention, also used
-    // by Agnes and QwQ). Responses carries it as a `reasoning` item, so a
-    // bridged reply that dropped it lost the thinking entirely — and when the
-    // model spent its whole output budget reasoning, `content` is empty and the
-    // bridged `output` came back as a bare `[]`. Emitted first, matching the
-    // ordering a native Responses upstream uses.
-    if let Some(reasoning) = message
+    // non-standard `reasoning_content` field (DeepSeek's convention, also used by
+    // Agnes and QwQ).
+    //
+    // Folded into the message text rather than emitted as a `reasoning` item, for
+    // the same reason as the streaming path: Codex sends
+    // include:["reasoning.encrypted_content"] and discards reasoning items that
+    // lack that blob, so an item here is dropped and the thinking never reaches
+    // the replayed history. Keeping both paths on the same shape also means a
+    // client cannot see the thinking appear or vanish depending on `stream`.
+    let reasoning = message
         .get("reasoning_content")
         .and_then(Value::as_str)
         .filter(|reasoning| !reasoning.is_empty())
-    {
-        output.push(json!({
-            "id": format!("rs_ad_{}", Uuid::new_v4().simple()),
-            "type": "reasoning",
-            "summary": [],
-            "content": [{ "type": "reasoning_text", "text": reasoning }]
-        }));
-    }
-    if let Some(content) = message
+        .map(|reasoning| {
+            format!(
+                "{REASONING_OPEN}\n{}\n{REASONING_CLOSE}\n\n",
+                reasoning.trim()
+            )
+        });
+    let content = message
         .get("content")
         .and_then(Value::as_str)
-        .filter(|content| !content.is_empty())
-    {
+        .filter(|content| !content.is_empty());
+    if reasoning.is_some() || content.is_some() {
+        let text = format!(
+            "{}{}",
+            reasoning.unwrap_or_default(),
+            content.unwrap_or_default()
+        );
         output.push(json!({
             "id": format!("msg_ad_{}", Uuid::new_v4().simple()),
             "type": "message",
             "status": "completed",
             "role": "assistant",
-            "content": [{ "type": "output_text", "annotations": [], "logprobs": [], "text": content }]
+            "content": [{ "type": "output_text", "annotations": [], "logprobs": [], "text": text }]
         }));
     }
     for call in message
@@ -635,6 +641,13 @@ struct StreamingTool {
     started: bool,
 }
 
+/// Delimiters wrapping folded-in reasoning inside assistant text.
+///
+/// Chosen to be recognisable to both a reader and the model on replay, and
+/// unlikely to collide with ordinary output.
+const REASONING_OPEN: &str = "<!-- thinking -->";
+const REASONING_CLOSE: &str = "<!-- /thinking -->";
+
 pub struct StreamAdapter {
     response_id: String,
     model: String,
@@ -642,17 +655,12 @@ pub struct StreamAdapter {
     text_item_id: Option<String>,
     text_output_index: Option<usize>,
     text: String,
-    /// Accumulated `delta.reasoning_content`, emitted as a `reasoning` item.
+    /// Accumulated `delta.reasoning_content`, awaiting a flush into the message.
     ///
     /// Reasoning models stream their thinking in this non-standard field
-    /// (DeepSeek's convention, also Agnes and QwQ). `chat_to_response` handled it
-    /// but this path did not, so on a streaming turn the reasoning was dropped:
-    /// the client stored an assistant message holding only the `"\n\n"` that
-    /// preceded it, and sent that back as history. Over a long session the model
-    /// kept losing its own chain of thought.
+    /// (DeepSeek's convention, also Agnes and QwQ). It is buffered rather than
+    /// forwarded as a `reasoning` item — see `flush_reasoning_into_text`.
     reasoning: String,
-    reasoning_item_id: Option<String>,
-    reasoning_output_index: Option<usize>,
     next_output_index: usize,
     tool_calls: HashMap<usize, StreamingTool>,
     usage: Value,
@@ -668,8 +676,6 @@ impl StreamAdapter {
             text_output_index: None,
             text: String::new(),
             reasoning: String::new(),
-            reasoning_item_id: None,
-            reasoning_output_index: None,
             next_output_index: 0,
             tool_calls: HashMap::new(),
             usage: json!({ "input_tokens": 0, "output_tokens": 0, "total_tokens": 0 }),
@@ -684,6 +690,64 @@ impl StreamAdapter {
         )]
     }
 
+    /// Open the assistant message item if it does not exist yet, then stream
+    /// `text` into it.
+    fn push_text(&mut self, text: &str) -> Vec<String> {
+        let mut events = Vec::new();
+        self.text.push_str(text);
+        if self.text_item_id.is_none() {
+            let item_id = format!("msg_ad_{}", Uuid::new_v4().simple());
+            let output_index = self.next_output_index;
+            self.next_output_index += 1;
+            self.text_item_id = Some(item_id.clone());
+            self.text_output_index = Some(output_index);
+            events.push(sse_event("response.output_item.added", json!({
+                "type": "response.output_item.added", "output_index": output_index,
+                "item": { "id": item_id, "type": "message", "status": "in_progress", "role": "assistant", "content": [] }
+            })));
+            events.push(sse_event("response.content_part.added", json!({
+                "type": "response.content_part.added", "output_index": output_index, "content_index": 0,
+                "item_id": self.text_item_id, "part": { "type": "output_text", "annotations": [], "text": "" }
+            })));
+        }
+        events.push(sse_event("response.output_text.delta", json!({
+            "type": "response.output_text.delta", "output_index": self.text_output_index, "content_index": 0,
+            "item_id": self.text_item_id, "delta": text, "logprobs": []
+        })));
+        events
+    }
+
+    /// Move buffered `reasoning_content` into the assistant message text.
+    ///
+    /// Emitting it as a proper `reasoning` output item was tried first and does
+    /// not survive: Codex sends `include: ["reasoning.encrypted_content"]` and
+    /// discards reasoning items that arrive without `encrypted_content`, which is
+    /// a blob signed with an OpenAI server key that a relay cannot produce.
+    /// Measured over a 12-turn session — the gateway emitted 39 reasoning deltas
+    /// and Codex stored `reasoning: 0`.
+    ///
+    /// Dropping it is not free either. The client then persists an assistant
+    /// message holding only the `"\n\n"` that preceded the thinking and replays
+    /// that as history, so the model is handed its own turns with the reasoning
+    /// removed and re-derives it every time. By turn 12 that consumed the entire
+    /// output budget — 131 of 133 tokens — leaving nothing for an answer or a tool
+    /// call, which is the stall this fixes.
+    ///
+    /// Folding it into the message text keeps it in history, at the cost of the
+    /// thinking being visible in the transcript. Marked so the model can tell its
+    /// own prior reasoning from its answers when the turn is replayed.
+    fn flush_reasoning_into_text(&mut self) -> Vec<String> {
+        if self.reasoning.is_empty() {
+            return Vec::new();
+        }
+        let reasoning = std::mem::take(&mut self.reasoning);
+        let block = format!(
+            "{REASONING_OPEN}\n{}\n{REASONING_CLOSE}\n\n",
+            reasoning.trim()
+        );
+        self.push_text(&block)
+    }
+
     pub fn push_chat_chunk(&mut self, chunk: &Value) -> Vec<String> {
         let mut events = Vec::new();
         if let Some(usage) = chunk.get("usage").filter(|value| !value.is_null()) {
@@ -693,64 +757,24 @@ impl StreamAdapter {
             return events;
         };
         let delta = choice.get("delta").cloned().unwrap_or_else(|| json!({}));
-        // Reasoning first, so the item order matches what a native Responses
-        // upstream produces: reasoning, then the message, then tool calls.
+        // Reasoning is buffered here and folded into the assistant message by
+        // `flush_reasoning_into_text`, rather than emitted as a `reasoning` item.
         if let Some(reasoning) = delta
             .get("reasoning_content")
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
         {
             self.reasoning.push_str(reasoning);
-            if self.reasoning_item_id.is_none() {
-                let item_id = format!("rs_ad_{}", Uuid::new_v4().simple());
-                let output_index = self.next_output_index;
-                self.next_output_index += 1;
-                self.reasoning_item_id = Some(item_id.clone());
-                self.reasoning_output_index = Some(output_index);
-                events.push(sse_event(
-                    "response.output_item.added",
-                    json!({
-                        "type": "response.output_item.added", "output_index": output_index,
-                        "item": { "id": item_id, "type": "reasoning", "summary": [], "content": [] }
-                    }),
-                ));
-            }
-            events.push(sse_event(
-                "response.reasoning_text.delta",
-                json!({
-                    "type": "response.reasoning_text.delta",
-                    "output_index": self.reasoning_output_index,
-                    "content_index": 0,
-                    "item_id": self.reasoning_item_id,
-                    "delta": reasoning
-                }),
-            ));
         }
         if let Some(content) = delta
             .get("content")
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
         {
-            self.text.push_str(content);
-            if self.text_item_id.is_none() {
-                let item_id = format!("msg_ad_{}", Uuid::new_v4().simple());
-                let output_index = self.next_output_index;
-                self.next_output_index += 1;
-                self.text_item_id = Some(item_id.clone());
-                self.text_output_index = Some(output_index);
-                events.push(sse_event("response.output_item.added", json!({
-                    "type": "response.output_item.added", "output_index": output_index,
-                    "item": { "id": item_id, "type": "message", "status": "in_progress", "role": "assistant", "content": [] }
-                })));
-                events.push(sse_event("response.content_part.added", json!({
-                    "type": "response.content_part.added", "output_index": output_index, "content_index": 0,
-                    "item_id": self.text_item_id, "part": { "type": "output_text", "annotations": [], "text": "" }
-                })));
-            }
-            events.push(sse_event("response.output_text.delta", json!({
-                "type": "response.output_text.delta", "output_index": self.text_output_index, "content_index": 0,
-                "item_id": self.text_item_id, "delta": content, "logprobs": []
-            })));
+            // Reasoning arrives before content, so flush it first and the thinking
+            // reads ahead of the answer it produced.
+            events.extend(self.flush_reasoning_into_text());
+            events.extend(self.push_text(content));
         }
         for call in delta
             .get("tool_calls")
@@ -841,25 +865,10 @@ impl StreamAdapter {
     pub fn finish(mut self) -> Vec<String> {
         let mut events = Vec::new();
         let mut indexed_output = Vec::new();
-        // Close the reasoning item first so it keeps its place in the output.
-        if let (Some(item_id), Some(output_index)) =
-            (self.reasoning_item_id.take(), self.reasoning_output_index)
-        {
-            let reasoning = self.reasoning.clone();
-            events.push(sse_event(
-                "response.reasoning_text.done",
-                json!({
-                    "type": "response.reasoning_text.done", "output_index": output_index,
-                    "content_index": 0, "item_id": item_id, "text": reasoning
-                }),
-            ));
-            let item = json!({
-                "id": item_id, "type": "reasoning", "summary": [],
-                "content": [{ "type": "reasoning_text", "text": reasoning }]
-            });
-            events.push(sse_event("response.output_item.done", json!({ "type": "response.output_item.done", "output_index": output_index, "item": item })));
-            indexed_output.push((output_index, item));
-        }
+        // A turn can end with reasoning and no content at all — that is exactly the
+        // stalling case, where the whole output budget went to thinking. Flushing
+        // here means the client still receives a message instead of nothing.
+        events.extend(self.flush_reasoning_into_text());
         if let (Some(item_id), Some(output_index)) =
             (self.text_item_id.take(), self.text_output_index)
         {
@@ -1000,7 +1009,11 @@ mod tests {
     }
 
     #[test]
-    fn carries_reasoning_content_into_a_reasoning_item() {
+    fn folds_reasoning_into_the_message_on_the_nonstream_path() {
+        // Same shape as the streaming path: a `reasoning` item would be discarded
+        // by a client sending include:["reasoning.encrypted_content"], and having
+        // the two paths differ would make the thinking appear or vanish depending
+        // on whether `stream` was set.
         let chat = json!({
             "model": "agnes-2.5-pro",
             "choices": [{
@@ -1014,22 +1027,25 @@ mod tests {
         });
         let converted = chat_to_response(&chat, &ToolMap::default()).unwrap();
         let output = converted["output"].as_array().unwrap();
-        // Reasoning leads, matching a native Responses upstream's ordering.
-        assert_eq!(output[0]["type"], "reasoning");
-        assert_eq!(output[0]["content"][0]["type"], "reasoning_text");
         assert_eq!(
-            output[0]["content"][0]["text"],
-            "All but 9 ran away, so 9 stayed."
+            output.len(),
+            1,
+            "one message, not a separate reasoning item"
         );
-        assert_eq!(output[1]["type"], "message");
-        assert_eq!(output[1]["content"][0]["text"], "9 remain.");
+        assert_eq!(output[0]["type"], "message");
+        let text = output[0]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("All but 9 ran away, so 9 stayed."));
+        assert!(text.contains("9 remain."));
+        assert!(text.contains(REASONING_OPEN) && text.contains(REASONING_CLOSE));
+        // Thinking before answer.
+        assert!(text.find("All but 9").unwrap() < text.find("9 remain.").unwrap());
     }
 
     #[test]
     fn reasoning_only_reply_still_yields_output() {
         // Agnes reasoning models bill thinking against `max_tokens`, so a tight
-        // budget returns reasoning with empty content. Before the reasoning item
-        // existed this produced `output: []` — a valid but empty response.
+        // budget returns reasoning with empty content. That used to produce
+        // `output: []` — a valid but empty response the client could not show.
         let chat = json!({
             "model": "agnes-2.5-pro",
             "choices": [{
@@ -1044,12 +1060,31 @@ mod tests {
         let converted = chat_to_response(&chat, &ToolMap::default()).unwrap();
         let output = converted["output"].as_array().unwrap();
         assert_eq!(output.len(), 1);
-        assert_eq!(output[0]["type"], "reasoning");
+        assert_eq!(output[0]["type"], "message");
+        assert!(output[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Let me work through this"));
         assert_eq!(converted["status"], "incomplete");
         assert_eq!(
             converted["incomplete_details"]["reason"],
             "max_output_tokens"
         );
+    }
+
+    #[test]
+    fn nonstream_reply_without_reasoning_gains_no_delimiters() {
+        let chat = json!({
+            "model": "gpt-4o",
+            "choices": [{ "finish_reason": "stop",
+                "message": { "role": "assistant", "content": "plain answer" } }]
+        });
+        let converted = chat_to_response(&chat, &ToolMap::default()).unwrap();
+        let text = converted["output"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert_eq!(text, "plain answer");
+        assert!(!text.contains(REASONING_OPEN));
     }
 
     #[test]
@@ -1138,12 +1173,15 @@ mod tests {
     }
 
     #[test]
-    fn streams_reasoning_content_as_a_reasoning_item() {
+    fn folds_reasoning_into_the_assistant_message() {
         // Measured against Agnes with reasoning_effort=medium: 17 reasoning_content
-        // deltas, one content delta holding just "\n\n", then the tool call. This
-        // path ignored reasoning_content entirely, so the client stored an assistant
-        // message containing only that "\n\n" and fed it back as history — the model
-        // lost its own chain of thought turn after turn.
+        // deltas, one content delta holding just "\n\n", then the tool call.
+        //
+        // Emitting a `reasoning` output item was tried and does not survive the
+        // client: Codex sends include:["reasoning.encrypted_content"] and discards
+        // reasoning items lacking that blob, which a relay cannot forge. Over a
+        // 12-turn session the gateway emitted 39 reasoning deltas and Codex stored
+        // zero. Folding the text into the message is what keeps it in history.
         let request = json!({ "model": "m", "input": "x" });
         let converted = responses_to_chat(&request, None).unwrap();
         let mut adapter = StreamAdapter::new("m".into(), converted.tools);
@@ -1154,41 +1192,47 @@ mod tests {
             })));
         }
         events.extend(adapter.push_chat_chunk(&json!({
-            "choices": [{ "delta": { "content": "\n\n" } }]
+            "choices": [{ "delta": { "content": "found it" } }]
         })));
-
-        let incremental = events.join("");
-        assert!(
-            incremental.contains("response.reasoning_text.delta"),
-            "no reasoning deltas emitted: {incremental}"
-        );
-        assert!(
-            incremental.contains("\"type\":\"reasoning\""),
-            "no reasoning item announced: {incremental}"
-        );
-
         events.extend(adapter.finish());
         let full = events.join("");
-        assert!(full.contains("response.reasoning_text.done"));
-        // Reasoning must lead, matching a native Responses upstream's ordering.
-        let reasoning_at = full.find("\"type\":\"reasoning\"").expect("reasoning item");
-        let message_at = full.find("\"type\":\"message\"").expect("message item");
+
+        // No `reasoning` item: the client would throw it away.
         assert!(
-            reasoning_at < message_at,
-            "reasoning must precede the message"
+            !full.contains("\"type\":\"reasoning\""),
+            "reasoning item would be discarded by the client: {full}"
         );
-        // And the accumulated text has to survive intact.
+        assert!(!full.contains("response.reasoning_text.delta"));
+        // The thinking has to be in the message text, delimited and intact.
         assert!(
             full.contains("Let me check the path"),
-            "reasoning text not reassembled: {full}"
+            "reasoning text lost: {full}"
+        );
+        assert!(full.contains(REASONING_OPEN) && full.contains(REASONING_CLOSE));
+        assert!(full.contains("found it"), "answer lost: {full}");
+        // Thinking must precede the answer it produced.
+        let think_at = full.find("Let me check the path").unwrap();
+        let answer_at = full.find("found it").unwrap();
+        assert!(
+            think_at < answer_at,
+            "reasoning must come before the answer"
+        );
+        // One message item, not one per flush: the reasoning and the answer share
+        // it. Counting events rather than JSON substrings, since field order is
+        // not guaranteed.
+        assert_eq!(
+            full.matches("event: response.output_item.added").count(),
+            1,
+            "reasoning and answer must share one message item: {full}"
         );
     }
 
     #[test]
-    fn reasoning_only_stream_still_produces_output() {
-        // When the whole output budget goes to reasoning there is no content delta
-        // at all. Without the reasoning item the completed response carried an
-        // empty output array and the client had nothing to show.
+    fn reasoning_only_stream_still_produces_a_message() {
+        // The stalling case: the whole output budget went to thinking, so there is
+        // no content delta at all. Previously the completed response carried an
+        // empty output array and the client showed nothing, then replayed a blank
+        // assistant turn as history.
         let request = json!({ "model": "m", "input": "x" });
         let converted = responses_to_chat(&request, None).unwrap();
         let mut adapter = StreamAdapter::new("m".into(), converted.tools);
@@ -1200,8 +1244,31 @@ mod tests {
         let full = events.join("");
         assert!(full.contains("response.completed"));
         assert!(
-            full.contains("\"type\":\"reasoning\""),
-            "reasoning-only turn produced no output item: {full}"
+            full.contains("thinking hard"),
+            "reasoning-only turn produced no visible output: {full}"
+        );
+        assert!(
+            full.contains("\"type\":\"message\""),
+            "no message item to carry it: {full}"
+        );
+    }
+
+    #[test]
+    fn a_turn_without_reasoning_gains_no_delimiters() {
+        // Non-reasoning models must be unaffected — no stray markers in their text.
+        let request = json!({ "model": "m", "input": "x" });
+        let converted = responses_to_chat(&request, None).unwrap();
+        let mut adapter = StreamAdapter::new("m".into(), converted.tools);
+        let mut events = adapter.start();
+        events.extend(adapter.push_chat_chunk(&json!({
+            "choices": [{ "delta": { "content": "plain answer" } }]
+        })));
+        events.extend(adapter.finish());
+        let full = events.join("");
+        assert!(full.contains("plain answer"));
+        assert!(
+            !full.contains(REASONING_OPEN),
+            "delimiters leaked into a non-reasoning turn: {full}"
         );
     }
 
