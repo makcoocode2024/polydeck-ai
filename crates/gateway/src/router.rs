@@ -28,6 +28,7 @@ use std::{
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -1242,15 +1243,23 @@ fn json_error(status: StatusCode, message: impl Into<String>) -> Response<Body> 
 
 /// Report a failure to a client that asked for `stream: true`.
 ///
-/// A streaming client is reading an SSE body; handing it `application/json` with
-/// an error status means it never sees a terminal event. Codex treats that as a
-/// stream that died mid-turn and stops the session with nothing to show — which
-/// is what an upstream 403/429/503 arriving between tool calls looked like: the
-/// transcript simply ended after the tool output, no assistant message, no error.
+/// Three shapes were tried against Codex, in this order:
 ///
-/// So frame it: HTTP 200 with a `text/event-stream` body carrying `error` and a
-/// terminal `response.failed`. The client then has both a readable reason and an
-/// end to the stream.
+/// 1. `application/json` with the error status — what the gateway did originally.
+///    A streaming client is reading an SSE body, so it never saw a terminal event
+///    and the session just stopped: the transcript ended after the tool output
+///    with no assistant message and no error.
+/// 2. `event: error` plus a terminal `event: response.failed`. Worse. Codex
+///    treats `response.failed` as a *retryable* stream failure, not an end, and
+///    reports `stream disconnected before completion: response.failed event
+///    received`. Measured: it retried once a minute for 18 minutes, then gave up
+///    with no message at all.
+/// 3. This one. `response.completed` is the only event Codex accepts as a clean
+///    end of turn, so the failure is delivered as a completed turn whose assistant
+///    text *is* the error. The turn is still failed — nothing here pretends the
+///    request succeeded — but the reason lands in front of the user in one turn
+///    instead of after an 18-minute retry loop, and `error` is still emitted
+///    first for clients that read it.
 fn sse_error(
     status: StatusCode,
     message: impl Into<String>,
@@ -1269,13 +1278,43 @@ fn sse_error(
         detail["upstream"] =
             parsed.unwrap_or_else(|| Value::String(raw.chars().take(2000).collect()));
     }
+
+    // Surface the upstream's own message when it has one; a bare "Upstream
+    // returned 503" tells the user nothing actionable.
+    let upstream_note = detail
+        .get("upstream")
+        .and_then(|u| u.pointer("/error/message").and_then(Value::as_str))
+        .map(|m| format!("\n\n上游返回：{m}"))
+        .unwrap_or_default();
+    let visible = format!("⚠ 网关无法完成这一轮请求。\n\n{message}{upstream_note}");
+
+    let response_id = format!("resp_ad_{}", Uuid::new_v4().simple());
+    let item_id = format!("msg_ad_{}", Uuid::new_v4().simple());
+    let message_item = serde_json::json!({
+        "id": item_id,
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [{ "type": "output_text", "annotations": [], "logprobs": [], "text": visible }]
+    });
+    let completed = serde_json::json!({
+        "type": "response.completed",
+        "response": {
+            "id": response_id,
+            "object": "response",
+            "status": "completed",
+            "output": [message_item],
+            "parallel_tool_calls": true,
+            "tools": [],
+            // The failure is recorded here as well, so a client that inspects the
+            // response rather than the text can still tell this turn failed.
+            "gateway_error": detail.clone(),
+        }
+    });
     let body = format!(
-        "event: error\ndata: {}\n\nevent: response.failed\ndata: {}\n\n",
-        serde_json::json!({ "type": "error", "error": detail.clone() }),
-        serde_json::json!({
-            "type": "response.failed",
-            "response": { "status": "failed", "error": detail }
-        })
+        "event: error\ndata: {}\n\nevent: response.completed\ndata: {}\n\n",
+        serde_json::json!({ "type": "error", "error": detail }),
+        completed
     );
     Response::builder()
         .status(StatusCode::OK)
@@ -1323,10 +1362,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_errors_are_sse_framed_with_a_terminal_event() {
-        // A streaming client reads an SSE body. Handing it application/json meant
-        // it never saw a terminal event, so an upstream 403/429/503 between tool
-        // calls ended the Codex session silently — no assistant message, no error.
+    async fn stream_errors_end_with_response_completed_not_failed() {
+        // Codex accepts only `response.completed` as a clean end of turn. Sending
+        // `response.failed` put it into retry: measured at once a minute for 18
+        // minutes, ending with `stream disconnected before completion:
+        // response.failed event received` and no message shown at all. Emitting
+        // JSON instead ended the session silently. So the failure is delivered as
+        // a completed turn whose assistant text is the error.
         let response = sse_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "Upstream returned 503 Service Unavailable",
@@ -1339,21 +1381,59 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("text/event-stream")
         );
-        // 200 on purpose: the transport succeeded, the turn failed, and the client
-        // has to read the body to learn that.
         assert_eq!(response.status(), StatusCode::OK);
 
         let body = body_text(response).await;
         assert!(body.contains("event: error"), "missing error event: {body}");
         assert!(
-            body.contains("event: response.failed"),
-            "missing terminal event: {body}"
+            body.contains("event: response.completed"),
+            "must terminate with response.completed: {body}"
         );
-        // The upstream's own reason must survive, or the cause is unknowable.
         assert!(
-            body.contains("model_not_found"),
-            "upstream detail lost: {body}"
+            !body.contains("response.failed"),
+            "response.failed sends Codex into an 18-minute retry loop: {body}"
         );
+        // The reason has to reach the user as assistant text, not only as metadata.
+        assert!(
+            body.contains("output_text"),
+            "error must be carried as assistant text: {body}"
+        );
+        assert!(
+            body.contains("No available channel"),
+            "upstream message must be visible to the user: {body}"
+        );
+        // And still be machine-readable for a client that inspects the response.
+        assert!(
+            body.contains("gateway_error"),
+            "failure not recorded on the response: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_error_payload_parses_as_responses_events() {
+        // Guard the framing itself: Codex parses each `data:` line as JSON, so a
+        // malformed body would look like yet another disconnect.
+        let response = sse_error(StatusCode::BAD_GATEWAY, "boom", None);
+        let body = body_text(response).await;
+        let mut saw_completed_output = false;
+        for block in body.split("\n\n").filter(|b| !b.trim().is_empty()) {
+            let data = block
+                .lines()
+                .find_map(|l| l.strip_prefix("data: "))
+                .unwrap_or_else(|| panic!("block without a data line: {block}"));
+            let parsed: Value =
+                serde_json::from_str(data).unwrap_or_else(|e| panic!("bad JSON {e}: {data}"));
+            if parsed["type"] == "response.completed" {
+                let output = parsed["response"]["output"]
+                    .as_array()
+                    .expect("completed event needs an output array");
+                assert_eq!(output.len(), 1, "expected one message item");
+                assert_eq!(output[0]["type"], "message");
+                assert_eq!(output[0]["status"], "completed");
+                saw_completed_output = true;
+            }
+        }
+        assert!(saw_completed_output, "no response.completed block: {body}");
     }
 
     #[tokio::test]
@@ -1387,7 +1467,10 @@ mod tests {
         );
         let body = body_text(streaming).await;
         assert!(body.contains("queue timeout"), "reason lost: {body}");
-        assert!(body.contains("event: response.failed"));
+        assert!(
+            body.contains("event: response.completed") && !body.contains("response.failed"),
+            "must end the turn cleanly, not send Codex into retry: {body}"
+        );
 
         let plain = SendError::Unavailable("queue timeout".into()).into_response(false);
         assert_eq!(
