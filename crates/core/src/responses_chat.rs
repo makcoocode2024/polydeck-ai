@@ -535,6 +535,25 @@ pub fn chat_to_response(chat: &Value, tools: &ToolMap) -> Result<Value, AdapterE
         .and_then(Value::as_u64)
         .unwrap_or_else(|| chrono::Utc::now().timestamp() as u64);
     let mut output = Vec::new();
+    // Reasoning models on a Chat backend return their thinking in the
+    // non-standard `reasoning_content` field (DeepSeek's convention, also used
+    // by Agnes and QwQ). Responses carries it as a `reasoning` item, so a
+    // bridged reply that dropped it lost the thinking entirely — and when the
+    // model spent its whole output budget reasoning, `content` is empty and the
+    // bridged `output` came back as a bare `[]`. Emitted first, matching the
+    // ordering a native Responses upstream uses.
+    if let Some(reasoning) = message
+        .get("reasoning_content")
+        .and_then(Value::as_str)
+        .filter(|reasoning| !reasoning.is_empty())
+    {
+        output.push(json!({
+            "id": format!("rs_ad_{}", Uuid::new_v4().simple()),
+            "type": "reasoning",
+            "summary": [],
+            "content": [{ "type": "reasoning_text", "text": reasoning }]
+        }));
+    }
     if let Some(content) = message
         .get("content")
         .and_then(Value::as_str)
@@ -912,6 +931,74 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("xhigh")));
+    }
+
+    #[test]
+    fn carries_reasoning_content_into_a_reasoning_item() {
+        let chat = json!({
+            "model": "agnes-2.5-pro",
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "9 remain.",
+                    "reasoning_content": "All but 9 ran away, so 9 stayed."
+                }
+            }]
+        });
+        let converted = chat_to_response(&chat, &ToolMap::default()).unwrap();
+        let output = converted["output"].as_array().unwrap();
+        // Reasoning leads, matching a native Responses upstream's ordering.
+        assert_eq!(output[0]["type"], "reasoning");
+        assert_eq!(output[0]["content"][0]["type"], "reasoning_text");
+        assert_eq!(
+            output[0]["content"][0]["text"],
+            "All but 9 ran away, so 9 stayed."
+        );
+        assert_eq!(output[1]["type"], "message");
+        assert_eq!(output[1]["content"][0]["text"], "9 remain.");
+    }
+
+    #[test]
+    fn reasoning_only_reply_still_yields_output() {
+        // Agnes reasoning models bill thinking against `max_tokens`, so a tight
+        // budget returns reasoning with empty content. Before the reasoning item
+        // existed this produced `output: []` — a valid but empty response.
+        let chat = json!({
+            "model": "agnes-2.5-pro",
+            "choices": [{
+                "finish_reason": "length",
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "Let me work through this"
+                }
+            }]
+        });
+        let converted = chat_to_response(&chat, &ToolMap::default()).unwrap();
+        let output = converted["output"].as_array().unwrap();
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0]["type"], "reasoning");
+        assert_eq!(converted["status"], "incomplete");
+        assert_eq!(
+            converted["incomplete_details"]["reason"],
+            "max_output_tokens"
+        );
+    }
+
+    #[test]
+    fn omits_reasoning_item_when_upstream_sends_none() {
+        let chat = json!({
+            "model": "agnes-2.5-flash",
+            "choices": [{
+                "finish_reason": "stop",
+                "message": { "role": "assistant", "content": "9 remain." }
+            }]
+        });
+        let converted = chat_to_response(&chat, &ToolMap::default()).unwrap();
+        let output = converted["output"].as_array().unwrap();
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0]["type"], "message");
     }
 
     #[test]

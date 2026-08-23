@@ -7,6 +7,18 @@ import { backend } from "@/services/backend";
 import type { DetectedClient } from "@/domain/client";
 import type { ModelInfo, ProviderConfig, ProtocolKind, CodexToolCompat, ChatTestResult } from "@/domain/profile";
 import {
+  AGNES_BASE_URL_CN,
+  AGNES_BASE_URL_GLOBAL,
+  AGNES_CONSOLE_URL,
+  AGNES_DEFAULT_MODEL,
+  AGNES_FREE_TIER_RPM,
+  AGNES_MODELS,
+  AGNES_PRO_BUDGET_WARNING,
+  AGNES_ROUTE_KEY_SCOPE_NOTE,
+  AGNES_ROUTES,
+  type AgnesRoute,
+} from "@/domain/agnes";
+import {
   Zap,
   CheckCircle2,
   AlertCircle,
@@ -29,6 +41,7 @@ import {
   Square,
   Eye,
   EyeOff,
+  Boxes,
 } from "lucide-react";
 
 interface PresetProvider {
@@ -37,6 +50,14 @@ interface PresetProvider {
   defaultModel: string;
   keyPrefix: string;
   protocol: ProtocolKind;
+  /**
+   * Codex tool compatibility, when the provider has been probed against a live
+   * endpoint. Left unset for presets whose upstream has not been verified, in
+   * which case the page keeps whatever the probe last concluded.
+   */
+  codexCompat?: CodexToolCompat;
+  /** Requests-per-minute ceiling, when it is known rather than guessed. */
+  rpm?: number;
 }
 
 const PRESETS: PresetProvider[] = [
@@ -46,6 +67,24 @@ const PRESETS: PresetProvider[] = [
     defaultModel: "gpt-4o",
     keyPrefix: "sk-",
     protocol: "openai",
+  },
+  {
+    name: "Agnes AI (国内站)",
+    baseUrl: AGNES_BASE_URL_CN,
+    defaultModel: AGNES_DEFAULT_MODEL,
+    keyPrefix: "sk-",
+    protocol: "openai",
+    codexCompat: "chat_function",
+    rpm: AGNES_FREE_TIER_RPM,
+  },
+  {
+    name: "Agnes AI (国际站)",
+    baseUrl: AGNES_BASE_URL_GLOBAL,
+    defaultModel: AGNES_DEFAULT_MODEL,
+    keyPrefix: "sk-",
+    protocol: "openai",
+    codexCompat: "chat_function",
+    rpm: AGNES_FREE_TIER_RPM,
   },
   {
     name: "OpenAI 官方 (Responses 原生)",
@@ -178,6 +217,11 @@ export default function QuickSetupPage() {
   );
   const [selectedClients, setSelectedClients] = useState<string[]>(CORE_CLIENT_IDS);
 
+  // Agnes panel: which route is armed, if any. Null means the user has not
+  // picked Agnes, so the panel stays collapsed and nothing below is touched.
+  const [agnesRouteId, setAgnesRouteId] = useState<AgnesRoute["id"] | null>(null);
+  const [agnesModel, setAgnesModel] = useState<string>(AGNES_DEFAULT_MODEL);
+
   useEffect(() => {
     backend.getVersion().then(setVersion).catch(() => {});
     backend.detectClients().then((clients) => {
@@ -199,10 +243,21 @@ export default function QuickSetupPage() {
   }, [apiKey]);
 
   const handleSelectPreset = (preset: PresetProvider) => {
+    // The two Agnes entries route through the dedicated panel so the button row
+    // and the panel cannot disagree about which host is armed.
+    const agnesRoute = AGNES_ROUTES.find((r) => r.baseUrl === preset.baseUrl);
+    if (agnesRoute) {
+      handleSelectAgnesRoute(agnesRoute, preset.defaultModel);
+      return;
+    }
+    setAgnesRouteId(null);
     setBaseUrl(preset.baseUrl);
     setModel(preset.defaultModel);
     setProfileName(preset.name + " 方案");
     setCurrentProtocol(preset.protocol);
+    if (preset.codexCompat) {
+      setCodexCompat(preset.codexCompat);
+    }
     setTestResult(null);
     setChatResult(null);
     setSaveStatus("idle");
@@ -210,6 +265,43 @@ export default function QuickSetupPage() {
     setFetchMessage(null);
     setFetchSuccess(null);
     setSelectedClients(getSmartClients(preset.protocol, detectedClients));
+  };
+
+  /**
+   * Arm one of the two Agnes routes.
+   *
+   * Protocol is pinned to `openai` rather than `responses`. Agnes does serve
+   * `/v1/responses`, but only Chat Completions accepts tool types beyond plain
+   * `function`, and `openai` is what leaves the gateway free to bridge. The
+   * probe will offer to upgrade this to `responses` if the user runs it; that
+   * stays safe because the gateway forces the bridge for non-native tool types
+   * before consulting the protocol at all.
+   */
+  const handleSelectAgnesRoute = (route: AgnesRoute, model: string = agnesModel) => {
+    setAgnesRouteId(route.id);
+    setAgnesModel(model);
+    setBaseUrl(route.baseUrl);
+    setModel(model);
+    setProfileName("Agnes " + route.label + " 方案");
+    setCurrentProtocol("openai");
+    setCodexCompat("chat_function");
+    setGatewayEnabled(true);
+    setGatewayReason(
+      "Agnes 仅在 Chat Completions 上提供完整工具调用，Codex 的自定义工具需要本地网关桥接；Claude Code 经网关映射 Claude 名到 Agnes 模型（已启用）"
+    );
+    setTestResult(null);
+    setChatResult(null);
+    setSaveStatus("idle");
+    setAvailableModels([]);
+    setFetchMessage(null);
+    setFetchSuccess(null);
+    setSelectedClients(getSmartClients("openai", detectedClients));
+  };
+
+  const handleSelectAgnesModel = (modelId: string) => {
+    setAgnesModel(modelId);
+    setModel(modelId);
+    setSaveStatus("idle");
   };
 
   const handleSelectProtocol = (proto: ProtocolKind) => {
@@ -409,19 +501,37 @@ export default function QuickSetupPage() {
     try {
       const created = await backend.createProfile(targetName);
       if (created?.id) {
+        const armedAgnesRoute = AGNES_ROUTES.find((r) => r.id === agnesRouteId);
+        const chosenModel = model.trim() || "gpt-4o";
         const prov: ProviderConfig = {
           id: "prov_" + Date.now(),
           name: targetName + " 节点",
           baseUrl: baseUrl.trim(),
           protocol: currentProtocol,
-          defaultModel: model.trim() || "gpt-4o",
-          models: availableModels.length > 0 ? availableModels.map((m) => m.id) : [model.trim() || "gpt-4o"],
+          defaultModel: chosenModel,
+          models: availableModels.length > 0 ? availableModels.map((m) => m.id) : [chosenModel],
           isPrimary: true,
           codexCompat,
           reasoningConfidence: "validated",
           acceptInvalidCerts: false,
           maxPricePerRequest: null,
-          rateLimit: { enabled: true, rpm: 60, tpm: 100000, adaptive: true },
+          // Agnes exposes no RateLimit-* headers and its free tier 429s at 20
+          // RPM, so the generic 60 would sit three times over the real ceiling.
+          rateLimit: armedAgnesRoute
+            ? { enabled: true, rpm: AGNES_FREE_TIER_RPM, tpm: 100000, adaptive: true }
+            : { enabled: true, rpm: 60, tpm: 100000, adaptive: true },
+          // Claude Code's /model picker only lists ids starting with `claude-`,
+          // so pointing all three tiers at the Agnes model is what makes it
+          // reachable there. Display names stay unset so profile_switch writes
+          // its built-in Anthropic ids, which is what gives Claude Code a real
+          // context window and price.
+          ...(armedAgnesRoute
+            ? {
+                opusModel: chosenModel,
+                sonnetModel: chosenModel,
+                haikuModel: chosenModel,
+              }
+            : {}),
         };
 
         if (apiKey.trim()) {
@@ -518,6 +628,144 @@ export default function QuickSetupPage() {
                 </Button>
               ))}
             </div>
+          </div>
+
+          {/* Agnes dedicated panel */}
+          <div
+            className={
+              "rounded-xl border p-3.5 space-y-3 transition-all " +
+              (agnesRouteId
+                ? "border-primary/60 bg-primary/5 ring-1 ring-primary/30"
+                : "border-border bg-muted/10")
+            }
+            data-testid="agnes-panel"
+          >
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div className="space-y-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Boxes className="h-4 w-4 text-primary shrink-0" />
+                  <span className="text-sm font-semibold">Agnes AI 专区</span>
+                  <Badge variant="success" className="text-[10px] px-1.5 py-0">
+                    Flash 现价免费
+                  </Badge>
+                  <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                    三协议齐备
+                  </Badge>
+                </div>
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  一键完成 Claude Code 与 Codex 接入，无需 CC-Switch 或 Codex++。选择线路后网关自动启用并映射 Claude 三档模型。
+                </p>
+              </div>
+              <a
+                href={AGNES_CONSOLE_URL}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="text-[11px] text-primary hover:underline whitespace-nowrap shrink-0 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded"
+              >
+                获取 API Key ↗
+              </a>
+            </div>
+
+            {/* Route choice */}
+            <div>
+              <label className="text-[11px] text-muted-foreground mb-1.5 block">
+                接入线路（按你的网络环境选择）
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {AGNES_ROUTES.map((route) => {
+                  const isActive = agnesRouteId === route.id;
+                  return (
+                    <button
+                      key={route.id}
+                      type="button"
+                      onClick={() => handleSelectAgnesRoute(route)}
+                      aria-pressed={isActive}
+                      data-testid={"agnes-route-" + route.id}
+                      className={
+                        "p-2.5 rounded-lg border text-left transition-all " +
+                        (isActive
+                          ? "border-primary bg-primary/10 ring-1 ring-primary"
+                          : "border-border bg-card/60 hover:border-border/80 hover:bg-muted/30")
+                      }
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold">{route.label}</span>
+                        {isActive && <CheckCircle2 className="h-3.5 w-3.5 text-primary shrink-0" />}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground mt-0.5">{route.hint}</div>
+                      <div className="text-[10px] font-mono text-muted-foreground/80 truncate mt-0.5">
+                        {route.baseUrl}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="text-[11px] flex items-start gap-1.5 px-2.5 py-1.5 mt-2 rounded-md border bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400">
+                <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                <span className="leading-snug">{AGNES_ROUTE_KEY_SCOPE_NOTE}</span>
+              </div>
+            </div>
+
+            {/* Model choice, only once a route is armed */}
+            {agnesRouteId && (
+              <div className="space-y-2 animate-in fade-in duration-200">
+                <label className="text-[11px] text-muted-foreground block">模型</label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {AGNES_MODELS.map((m) => {
+                    const isActive = agnesModel === m.id;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => handleSelectAgnesModel(m.id)}
+                        aria-pressed={isActive}
+                        data-testid={"agnes-model-" + m.id}
+                        className={
+                          "p-2 rounded-lg border text-left transition-all " +
+                          (isActive
+                            ? "border-primary bg-primary/10 ring-1 ring-primary"
+                            : "border-border bg-card/60 hover:border-border/80 hover:bg-muted/30")
+                        }
+                      >
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-xs font-medium">{m.label}</span>
+                          {m.free ? (
+                            <Badge variant="success" className="text-[9px] px-1 py-0">
+                              免费
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-[9px] px-1 py-0">
+                              计费
+                            </Badge>
+                          )}
+                          {isActive && <CheckCircle2 className="h-3 w-3 text-primary shrink-0" />}
+                        </div>
+                        <div className="text-[10px] text-muted-foreground mt-0.5 leading-tight">
+                          {m.note}
+                        </div>
+                        <div className="text-[10px] font-mono text-muted-foreground/70 mt-0.5">
+                          {m.id}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {!AGNES_MODELS.find((m) => m.id === agnesModel)?.free && (
+                  <div className="text-[11px] flex items-start gap-1.5 px-2.5 py-1.5 rounded-md border bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400">
+                    <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                    <span className="leading-snug">{AGNES_PRO_BUDGET_WARNING}</span>
+                  </div>
+                )}
+
+                <div className="text-[11px] text-muted-foreground flex items-start gap-1.5 px-2.5 py-1.5 rounded-md bg-muted/40 border border-border/60">
+                  <Radio className="h-3.5 w-3.5 mt-0.5 shrink-0 text-muted-foreground" />
+                  <span className="leading-snug">
+                    限流已设为 {AGNES_FREE_TIER_RPM} RPM（免费档实测上限）。Agnes 不返回限流响应头，自动探测会给出偏高的 60，此处不采用。
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Manual Protocol Selector */}

@@ -9,6 +9,47 @@ import SettingsPage from "@/pages/SettingsPage";
 import { backend } from "@/services/backend";
 
 describe("Frontend Pages", () => {
+  it("arms an Agnes route from the dedicated panel and drives the form", async () => {
+    render(<QuickSetupPage />);
+
+    // Panel is present but no route armed, so no model choices yet.
+    expect(screen.getByTestId("agnes-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("agnes-model-agnes-2.5-flash")).not.toBeInTheDocument();
+
+    const baseUrlInput = screen.getByPlaceholderText("https://api.openai.com/v1") as HTMLInputElement;
+    const modelInput = screen.getByPlaceholderText("gpt-4o / claude-3-7-sonnet") as HTMLInputElement;
+
+    // Arming the CN route fills base URL and model, and opens the model picker.
+    fireEvent.click(screen.getByTestId("agnes-route-agnes-cn"));
+    await waitFor(() => {
+      expect(baseUrlInput.value).toBe("https://api.agnes-ai.cn/v1");
+    });
+    expect(modelInput.value).toBe("agnes-2.5-flash");
+    expect(screen.getByTestId("agnes-model-agnes-2.5-flash")).toBeInTheDocument();
+
+    // Switching to the international route only changes the host.
+    fireEvent.click(screen.getByTestId("agnes-route-agnes-global"));
+    await waitFor(() => {
+      expect(baseUrlInput.value).toBe("https://apihub.agnes-ai.com/v1");
+    });
+    expect(modelInput.value).toBe("agnes-2.5-flash");
+
+    // A paid model raises the output-budget warning; the free default does not.
+    expect(screen.queryByText(/先消耗输出预算做推理/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("agnes-model-agnes-2.5-pro"));
+    await waitFor(() => {
+      expect(modelInput.value).toBe("agnes-2.5-pro");
+    });
+    expect(screen.getByText(/先消耗输出预算做推理/)).toBeInTheDocument();
+
+    // Back to a free model clears it again.
+    fireEvent.click(screen.getByTestId("agnes-model-agnes-2.0-flash"));
+    await waitFor(() => {
+      expect(modelInput.value).toBe("agnes-2.0-flash");
+    });
+    expect(screen.queryByText(/先消耗输出预算做推理/)).not.toBeInTheDocument();
+  });
+
   it("renders QuickSetupPage successfully and handles model fetch and dropdown selection", async () => {
     render(<QuickSetupPage />);
     expect(screen.getByText("快速配置 PolyDeck")).toBeInTheDocument();

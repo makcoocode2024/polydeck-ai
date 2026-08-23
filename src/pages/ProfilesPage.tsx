@@ -1,5 +1,10 @@
 ﻿import { useEffect, useState, useCallback } from "react";
 import { useAtom } from "jotai";
+import {
+  AGNES_BASE_URL_CN,
+  AGNES_BASE_URL_GLOBAL,
+  AGNES_DEFAULT_MODEL,
+} from "@/domain/agnes";
 import { profilesAtom, templatesAtom, clientsAtom } from "@/state/profile";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -81,6 +86,22 @@ const PROVIDER_PRESETS = [
     defaultModel: "gpt-4o",
     codexCompat: "responses_custom" as CodexToolCompat,
     reasoningConfidence: "validated" as ReasoningConfidence,
+  },
+  {
+    name: "Agnes AI (国内站)",
+    baseUrl: AGNES_BASE_URL_CN,
+    protocol: "openai" as ProtocolKind,
+    defaultModel: AGNES_DEFAULT_MODEL,
+    codexCompat: "chat_function" as CodexToolCompat,
+    reasoningConfidence: "verified" as ReasoningConfidence,
+  },
+  {
+    name: "Agnes AI (国际站)",
+    baseUrl: AGNES_BASE_URL_GLOBAL,
+    protocol: "openai" as ProtocolKind,
+    defaultModel: AGNES_DEFAULT_MODEL,
+    codexCompat: "chat_function" as CodexToolCompat,
+    reasoningConfidence: "verified" as ReasoningConfidence,
   },
   {
     name: "OpenAI 官方 (Responses 原生)",
