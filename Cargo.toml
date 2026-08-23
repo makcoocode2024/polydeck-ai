@@ -65,8 +65,11 @@ tauri-plugin-dialog = "2"
 
 
 
+# Smaller debug artifacts than `debug = 1`, while panic backtraces keep their
+# file:line info. Debug builds of the Tauri dep tree are the bulk of target/,
+# and full debuginfo grew it past 40 GB.
 [profile.dev]
-debug = 1
+debug = "line-tables-only"
 
 [profile.test]
-debug = 1
+debug = "line-tables-only"
