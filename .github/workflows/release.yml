@@ -51,16 +51,42 @@ jobs:
       # glob pointed at src-tauri/target/release/bundle, a path that never
       # exists, so every release since the initial commit published with no
       # assets — the installers attached to earlier tags were uploaded by hand.
-      - name: List built bundles
+      # Per-platform check, because `fail_on_unmatched_files` cannot serve here:
+      # each runner produces only its own formats, so patterns for the other two
+      # platforms never match and would fail every job. This asserts that *this*
+      # platform produced at least one installer, which is the property that
+      # actually matters — it is what would have caught the empty v2.0.7 release.
+      - name: List installers to publish
         shell: bash
         run: |
-          echo "bundle tree:"
-          find target/release/bundle -type f -print | sed 's/^/  /'
+          echo "installers:"
+          found=$(find target/release/bundle -type f \
+            \( -name '*.msi' -o -name '*.exe' -o -name '*.dmg' \
+               -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) \
+            -print | tee /dev/stderr | wc -l)
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no installer produced under target/release/bundle" >&2
+            echo "tree was:" >&2
+            find target/release/bundle -type f -print | head -40 >&2
+            exit 1
+          fi
+          echo "  ($found installer(s))"
+      # Match installers by extension, never `**/*`. Tauri leaves its working
+      # trees beside the finished artifacts — the unpacked .app, deb/rpm control
+      # and data dirs, and an entire extracted AppImage filesystem. A recursive
+      # glob swept all of it up: 221 assets, of which 4 were installers, and the
+      # parallel uploads then raced each other into GitHub API 404s that failed
+      # the Linux job and cancelled Windows.
       - uses: softprops/action-gh-release@v2
         with:
           # A manual run has no tag ref of its own, so name the target release
           # explicitly; the action then updates it in place instead of failing.
           tag_name: ${{ inputs.tag || github.ref_name }}
           files: |
-            target/release/bundle/**/*
-          fail_on_unmatched_files: true
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/deb/*.deb
+            target/release/bundle/rpm/*.rpm
+            target/release/bundle/appimage/*.AppImage
+          fail_on_unmatched_files: false
