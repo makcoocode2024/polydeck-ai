@@ -1017,6 +1017,84 @@ mod tests {
         assert!(stream.contains("response.completed"));
     }
 
+    /// Chunk shape Agnes streams for a tool call: the first carries `id` and
+    /// `function.name` with empty arguments, later ones carry only an arguments
+    /// fragment and are tied to the first by `index`.
+    fn agnes_tool_call_chunks(chat_name: &str) -> Vec<Value> {
+        vec![
+            json!({"choices":[{"delta":{"tool_calls":[
+                {"index":0,"id":"call_abc","type":"function",
+                 "function":{"name":chat_name,"arguments":""}}]}}]}),
+            json!({"choices":[{"delta":{"tool_calls":[
+                {"index":0,"type":"function","function":{"arguments":"{"}}]}}]}),
+            json!({"choices":[{"delta":{"tool_calls":[
+                {"index":0,"type":"function","function":{"arguments":"\"cmd\": \"ls\""}}]}}]}),
+            json!({"choices":[{"delta":{"tool_calls":[
+                {"index":0,"type":"function","function":{"arguments":"}"}}]}}]}),
+            json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
+        ]
+    }
+
+    #[test]
+    fn streams_incremental_events_for_a_function_call() {
+        // Codex reads tool calls from the incremental events and ignores the
+        // closing `response.completed` snapshot. An adapter that only filled in
+        // that snapshot left every tool call invisible: the model asked to run
+        // `exec_command`, the client saw an empty text message, nothing ran.
+        let request = json!({
+            "model": "m", "input": "x",
+            "tools": [{ "type": "function", "name": "exec_command",
+                        "parameters": { "type": "object" } }]
+        });
+        let converted = responses_to_chat(&request, None).unwrap();
+        let mut adapter = StreamAdapter::new("m".into(), converted.tools);
+        let mut events = adapter.start();
+        for chunk in agnes_tool_call_chunks("exec_command") {
+            events.extend(adapter.push_chat_chunk(&chunk));
+        }
+        // Assert before `finish()`, so the snapshot cannot satisfy these.
+        let incremental = events.join("");
+        assert!(
+            incremental.contains("response.output_item.added"),
+            "no output_item.added for the tool call; client cannot see it"
+        );
+        assert!(
+            incremental.contains("response.function_call_arguments.delta"),
+            "no argument deltas emitted"
+        );
+        assert!(incremental.contains("exec_command"));
+        assert!(incremental.contains("call_abc"));
+
+        events.extend(adapter.finish());
+        let full = events.join("");
+        assert!(full.contains("response.output_item.done"));
+        assert!(full.contains("response.completed"));
+    }
+
+    #[test]
+    fn streams_a_bridged_custom_tool_under_its_original_name() {
+        // `apply_patch` is renamed for the Chat call; the stream has to hand the
+        // original name back or the client gets a tool it never registered.
+        let request = json!({
+            "model": "m", "input": "x",
+            "tools": [{ "type": "custom", "name": "apply_patch",
+                        "format": { "type": "text" } }]
+        });
+        let converted = responses_to_chat(&request, None).unwrap();
+        let chat_name = converted.tools.chat_name("apply_patch").to_string();
+        let mut adapter = StreamAdapter::new("m".into(), converted.tools);
+        let mut events = adapter.start();
+        for chunk in agnes_tool_call_chunks(&chat_name) {
+            events.extend(adapter.push_chat_chunk(&chunk));
+        }
+        let incremental = events.join("");
+        assert!(incremental.contains("custom_tool_call"));
+        assert!(
+            incremental.contains("apply_patch"),
+            "custom tool must stream under its original name, got: {incremental}"
+        );
+    }
+
     #[test]
     fn restores_custom_tools_when_chat_backend_echoes_original_name() {
         let request = json!({
