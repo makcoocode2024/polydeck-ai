@@ -32,7 +32,19 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - run: npm ci
       - run: npx tauri build
+      # Bundles land under the workspace-root target dir, not src-tauri/target:
+      # src-tauri is a member of the Cargo workspace defined in the root
+      # Cargo.toml, so cargo puts all build output at the workspace root. The
+      # glob pointed at src-tauri/target/release/bundle, a path that never
+      # exists, so every release since the initial commit published with no
+      # assets — the installers attached to earlier tags were uploaded by hand.
+      - name: List built bundles
+        shell: bash
+        run: |
+          echo "bundle tree:"
+          find target/release/bundle -type f -print | sed 's/^/  /'
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            src-tauri/target/release/bundle/**/*
+            target/release/bundle/**/*
+          fail_on_unmatched_files: true
