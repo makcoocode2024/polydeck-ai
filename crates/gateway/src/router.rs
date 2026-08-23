@@ -80,7 +80,25 @@ enum SendError {
 }
 
 impl SendError {
-    fn into_response(self) -> Response<Body> {
+    /// `is_stream` must reflect the client's request: a streaming client needs an
+    /// SSE-framed failure, or it is left waiting for a terminal event that never
+    /// arrives. The rate limiter's 90s queue timeout also lands here, so this is
+    /// not only an upstream-outage path.
+    fn into_response(self, is_stream: bool) -> Response<Body> {
+        if is_stream {
+            let message = match &self {
+                SendError::Unavailable(error) => format!("Upstream error: {error}"),
+                SendError::NotReplayable {
+                    provider_id,
+                    reason,
+                    error,
+                } => format!(
+                    "Provider '{provider_id}' failed ({error}) and the request was not replayed: {reason}"
+                ),
+            };
+            error!("{} (reported to the streaming client as SSE)", message);
+            return sse_error(StatusCode::BAD_GATEWAY, message, None);
+        }
         match self {
             SendError::Unavailable(error) => {
                 error!("Upstream request failed: {}", error);
@@ -595,7 +613,7 @@ async fn handle_messages(
     let start = std::time::Instant::now();
     let attempt = match send_upstream(&state, Endpoint::Messages, &headers, body).await {
         Ok(a) => a,
-        Err(e) => return e.into_response(),
+        Err(e) => return e.into_response(is_stream),
     };
     if let Some(p) = &attempt.switched_to {
         info!("Request retried on failover provider '{}'", p);
@@ -605,7 +623,7 @@ async fn handle_messages(
         .health
         .record_request(start.elapsed().as_millis() as u64);
     if !upstream_response.status().is_success() {
-        return passthrough_verbatim(upstream_response).await;
+        return passthrough_error(upstream_response, is_stream).await;
     }
     if is_stream {
         passthrough_raw_stream(upstream_response)
@@ -742,7 +760,7 @@ async fn handle_native_responses(
     let start = std::time::Instant::now();
     let attempt = match send_upstream(state, Endpoint::Responses, headers, body.clone()).await {
         Ok(a) => a,
-        Err(e) => return e.into_response(),
+        Err(e) => return e.into_response(is_stream),
     };
     if let Some(p) = &attempt.switched_to {
         info!("Request retried on failover provider '{}'", p);
@@ -769,6 +787,13 @@ async fn handle_native_responses(
         }
         if state.responses_mode == ResponsesMode::Auto {
             state.remember_responses_support(true);
+        }
+        // Same reasoning as passthrough_error: a streaming client must get a
+        // terminal SSE event rather than a JSON body it will never parse.
+        if is_stream {
+            let raw = String::from_utf8_lossy(&resp_body);
+            let framed = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            return sse_error(framed, format!("Upstream returned {status}"), Some(&raw));
         }
         return response_with_body(status, &resp_headers, resp_body);
     }
@@ -802,7 +827,7 @@ async fn handle_bridged_responses(
     let start = std::time::Instant::now();
     let attempt = match send_upstream(state, Endpoint::ChatCompletions, headers, chat_body).await {
         Ok(a) => a,
-        Err(e) => return e.into_response(),
+        Err(e) => return e.into_response(is_stream),
     };
     if let Some(p) = &attempt.switched_to {
         info!("Request retried on failover provider '{}'", p);
@@ -812,7 +837,7 @@ async fn handle_bridged_responses(
         .health
         .record_request(start.elapsed().as_millis() as u64);
     if !upstream_response.status().is_success() {
-        return passthrough_verbatim(upstream_response).await;
+        return passthrough_error(upstream_response, is_stream).await;
     }
     if is_stream {
         handle_responses_stream(upstream_response, client_model.unwrap_or_default(), tools).await
@@ -942,7 +967,7 @@ async fn handle_chat_completions(
     let start = std::time::Instant::now();
     let attempt = match send_upstream(&state, Endpoint::ChatCompletions, &headers, body).await {
         Ok(a) => a,
-        Err(e) => return e.into_response(),
+        Err(e) => return e.into_response(is_stream),
     };
     if let Some(p) = &attempt.switched_to {
         info!("Request retried on failover provider '{}'", p);
@@ -952,7 +977,7 @@ async fn handle_chat_completions(
         .health
         .record_request(start.elapsed().as_millis() as u64);
     if !upstream_response.status().is_success() {
-        return passthrough_verbatim(upstream_response).await;
+        return passthrough_error(upstream_response, is_stream).await;
     }
     if is_stream {
         passthrough_stream(upstream_response, client_model).await
@@ -1215,6 +1240,69 @@ fn json_error(status: StatusCode, message: impl Into<String>) -> Response<Body> 
         .unwrap()
 }
 
+/// Report a failure to a client that asked for `stream: true`.
+///
+/// A streaming client is reading an SSE body; handing it `application/json` with
+/// an error status means it never sees a terminal event. Codex treats that as a
+/// stream that died mid-turn and stops the session with nothing to show — which
+/// is what an upstream 403/429/503 arriving between tool calls looked like: the
+/// transcript simply ended after the tool output, no assistant message, no error.
+///
+/// So frame it: HTTP 200 with a `text/event-stream` body carrying `error` and a
+/// terminal `response.failed`. The client then has both a readable reason and an
+/// end to the stream.
+fn sse_error(
+    status: StatusCode,
+    message: impl Into<String>,
+    upstream_body: Option<&str>,
+) -> Response<Body> {
+    let message = message.into();
+    let mut detail = serde_json::json!({
+        "message": message,
+        "type": "gateway_error",
+        "code": status.as_u16(),
+    });
+    // Keep the upstream's own error verbatim when there is one, so the cause is
+    // not lost in translation.
+    if let Some(raw) = upstream_body {
+        let parsed: Option<Value> = serde_json::from_str(raw).ok();
+        detail["upstream"] =
+            parsed.unwrap_or_else(|| Value::String(raw.chars().take(2000).collect()));
+    }
+    let body = format!(
+        "event: error\ndata: {}\n\nevent: response.failed\ndata: {}\n\n",
+        serde_json::json!({ "type": "error", "error": detail.clone() }),
+        serde_json::json!({
+            "type": "response.failed",
+            "response": { "status": "failed", "error": detail }
+        })
+    );
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// Forward an upstream failure, framed as SSE when the client is streaming.
+async fn passthrough_error(
+    upstream_response: reqwest::Response,
+    is_stream: bool,
+) -> Response<Body> {
+    if !is_stream {
+        return passthrough_verbatim(upstream_response).await;
+    }
+    let status = StatusCode::from_u16(upstream_response.status().as_u16())
+        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let raw = upstream_response.text().await.unwrap_or_default();
+    warn!(
+        "Upstream returned {} on a streaming request; reporting it as SSE so the client sees a terminal event",
+        status
+    );
+    sse_error(status, format!("Upstream returned {status}"), Some(&raw))
+}
+
 struct ConnectionGuard<'a>(&'a HealthState);
 impl Drop for ConnectionGuard<'_> {
     fn drop(&mut self) {
@@ -1226,6 +1314,90 @@ impl Drop for ConnectionGuard<'_> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    async fn body_text(response: Response<Body>) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable");
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    #[tokio::test]
+    async fn stream_errors_are_sse_framed_with_a_terminal_event() {
+        // A streaming client reads an SSE body. Handing it application/json meant
+        // it never saw a terminal event, so an upstream 403/429/503 between tool
+        // calls ended the Codex session silently — no assistant message, no error.
+        let response = sse_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Upstream returned 503 Service Unavailable",
+            Some(r#"{"error":{"code":"model_not_found","message":"No available channel"}}"#),
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/event-stream")
+        );
+        // 200 on purpose: the transport succeeded, the turn failed, and the client
+        // has to read the body to learn that.
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_text(response).await;
+        assert!(body.contains("event: error"), "missing error event: {body}");
+        assert!(
+            body.contains("event: response.failed"),
+            "missing terminal event: {body}"
+        );
+        // The upstream's own reason must survive, or the cause is unknowable.
+        assert!(
+            body.contains("model_not_found"),
+            "upstream detail lost: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_stream_errors_stay_json() {
+        let response = json_error(StatusCode::BAD_GATEWAY, "boom");
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json")
+        );
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = body_text(response).await;
+        assert!(
+            !body.contains("event: "),
+            "json path must not be SSE: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_error_follows_the_client_stream_mode() {
+        let streaming = SendError::Unavailable("queue timeout".into()).into_response(true);
+        assert_eq!(
+            streaming
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/event-stream"),
+            "the rate limiter's 90s queue timeout also reaches a streaming client"
+        );
+        let body = body_text(streaming).await;
+        assert!(body.contains("queue timeout"), "reason lost: {body}");
+        assert!(body.contains("event: response.failed"));
+
+        let plain = SendError::Unavailable("queue timeout".into()).into_response(false);
+        assert_eq!(
+            plain
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json")
+        );
+    }
 
     fn state(responses_mode: ResponsesMode) -> AppState {
         AppState {
