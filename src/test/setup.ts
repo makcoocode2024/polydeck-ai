@@ -45,6 +45,24 @@ const mockResponses: Record<string, unknown> = {
       configPath: null,
       supportsAutoConfig: false,
     },
+    // Real ids, so client-selection logic can be exercised. `codex` above keeps
+    // its legacy id because tests assert on `clients[0].id`.
+    {
+      id: "codex-cli",
+      name: "Codex CLI (codex-cli)",
+      installed: true,
+      version: "0.1.0",
+      configPath: "C:\\Users\\admin\\.codex\\config.toml",
+      supportsAutoConfig: true,
+    },
+    {
+      id: "claude-code",
+      name: "Claude Code",
+      installed: true,
+      version: "2.1.0",
+      configPath: "C:\\Users\\admin\\.claude\\settings.json",
+      supportsAutoConfig: true,
+    },
   ],
   ad_list_profiles: [
     {

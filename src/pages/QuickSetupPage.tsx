@@ -13,6 +13,7 @@ import {
   AGNES_DEFAULT_MODEL,
   AGNES_FREE_TIER_RPM,
   AGNES_MODELS,
+  AGNES_MODEL_IDS,
   AGNES_PRO_BUDGET_WARNING,
   AGNES_ROUTE_KEY_SCOPE_NOTE,
   AGNES_ROUTES,
@@ -171,7 +172,43 @@ const PROTOCOLS: { id: ProtocolKind; name: string; desc: string; defaultModel: s
 
 const CORE_CLIENT_IDS = ["codex-cli", "claude-code", "claude-desktop", "hermes"];
 
-function getSmartClients(protocol: ProtocolKind, detected: DetectedClient[]): string[] {
+/**
+ * Whether Codex needs the gateway to reach this upstream at all.
+ *
+ * Codex sends `type: "custom"` tools (`apply_patch` among them). Two probe
+ * verdicts mean the upstream will reject those:
+ *
+ * - `chat_function` — no Responses endpoint, so everything needs bridging.
+ * - `responses_function` — serves Responses but refused a custom tool during
+ *   probing. This is the verdict Agnes returns, and it used to read as merely
+ *   "recommended", which let a user switch the gateway off and get
+ *   `tools[7].type: unknown variant \`custom\`` on the first Codex turn.
+ *
+ * `responses_custom` is the only verdict that genuinely makes the gateway
+ * optional for Codex; `none`/`unknown` are unproven, so they are not promoted.
+ */
+function codexNeedsGateway(compat: CodexToolCompat): boolean {
+  return compat === "chat_function" || compat === "responses_function";
+}
+
+/**
+ * Clients worth pre-selecting for a given upstream protocol.
+ *
+ * `viaGateway` matters because the gateway translates protocols: with it in the
+ * path, a Claude client can be served from an OpenAI-protocol upstream, which is
+ * the whole point of routing Claude Code at a relay. Without it, only clients
+ * that speak the upstream's own protocol can be configured — a Claude client
+ * pointed straight at an OpenAI endpoint would just fail.
+ *
+ * Before this took `viaGateway`, an OpenAI upstream never pre-selected
+ * `claude-code`, so tier slots mapping Claude names to the provider's model were
+ * written and then never reached any client.
+ */
+function getSmartClients(
+  protocol: ProtocolKind,
+  detected: DetectedClient[],
+  viaGateway: boolean = false
+): string[] {
   const installedIds = new Set(detected.filter((d) => d.installed).map((d) => d.id));
 
   const openaiCompatible = ["codex-cli", "hermes", "vscode", "cursor", "windsurf", "cherry-studio", "chatbox", "opencode"];
@@ -182,9 +219,17 @@ function getSmartClients(protocol: ProtocolKind, detected: DetectedClient[]): st
     return matched.length > 0 ? matched : ["claude-code"];
   }
 
-  // OpenAI protocol
-  const matched = openaiCompatible.filter((id) => installedIds.has(id));
-  return matched.length > 0 ? matched : ["codex-cli"];
+  // OpenAI-family upstream. Through the gateway the Claude clients are reachable
+  // too, so offer both families.
+  const candidates = viaGateway
+    ? [...openaiCompatible, ...anthropicCompatible]
+    : openaiCompatible;
+  const matched = candidates.filter((id) => installedIds.has(id));
+  if (matched.length > 0) {
+    // Preserve the candidate order rather than detection order.
+    return candidates.filter((id) => matched.includes(id));
+  }
+  return viaGateway ? ["codex-cli", "claude-code"] : ["codex-cli"];
 }
 
 export default function QuickSetupPage() {
@@ -222,13 +267,32 @@ export default function QuickSetupPage() {
   const [agnesRouteId, setAgnesRouteId] = useState<AgnesRoute["id"] | null>(null);
   const [agnesModel, setAgnesModel] = useState<string>(AGNES_DEFAULT_MODEL);
 
+  /**
+   * Detect clients once. This used to depend on `currentProtocol` and re-derive
+   * `selectedClients` on every change, which silently discarded the user's
+   * choice whenever a probe adjusted the protocol — an Agnes profile would come
+   * out with `claude-code` dropped and its tier slots therefore inert.
+   *
+   * The selection now changes only on an explicit action: picking a preset or an
+   * Agnes route, or using the selection buttons.
+   */
   useEffect(() => {
     backend.getVersion().then(setVersion).catch(() => {});
     backend.detectClients().then((clients) => {
       setDetectedClients(clients);
-      setSelectedClients(getSmartClients(currentProtocol, clients));
+      setSelectedClients(getSmartClients("openai", clients, true));
     }).catch(() => {});
-  }, [currentProtocol]);
+  }, []);
+
+  /**
+   * Probed models the user can actually pick as a chat model. For an armed Agnes
+   * route this drops the image and video entries `/v1/models` also returns,
+   * which answer on other endpoints and would 400 as a chat model.
+   */
+  const selectableModels = useMemo(() => {
+    if (!agnesRouteId) return availableModels;
+    return availableModels.filter((m) => AGNES_MODEL_IDS.includes(m.id));
+  }, [availableModels, agnesRouteId]);
 
   const detectedProviderType = useMemo(() => {
     const key = apiKey.trim();
@@ -264,7 +328,7 @@ export default function QuickSetupPage() {
     setAvailableModels([]);
     setFetchMessage(null);
     setFetchSuccess(null);
-    setSelectedClients(getSmartClients(preset.protocol, detectedClients));
+    setSelectedClients(getSmartClients(preset.protocol, detectedClients, gatewayEnabled));
   };
 
   /**
@@ -295,7 +359,8 @@ export default function QuickSetupPage() {
     setAvailableModels([]);
     setFetchMessage(null);
     setFetchSuccess(null);
-    setSelectedClients(getSmartClients("openai", detectedClients));
+    // Gateway is switched on just above, so the Claude clients are reachable.
+    setSelectedClients(getSmartClients("openai", detectedClients, true));
   };
 
   const handleSelectAgnesModel = (modelId: string) => {
@@ -337,7 +402,7 @@ export default function QuickSetupPage() {
   };
 
   const handleSelectSmartClients = () => {
-    setSelectedClients(getSmartClients(currentProtocol, detectedClients));
+    setSelectedClients(getSmartClients(currentProtocol, detectedClients, gatewayEnabled));
   };
 
   const handleClearClients = () => {
@@ -360,8 +425,10 @@ export default function QuickSetupPage() {
       const probeRes = await backend.probeProvider(baseUrl.trim(), apiKey.trim());
       if (probeRes) {
         if (probeRes.protocol && probeRes.protocol !== "unknown") {
+          // Deliberately does not re-derive `selectedClients`. Probing reports
+          // what the upstream speaks; it is not a signal that the user's client
+          // choice should be thrown away. Use the 智能推荐 button for that.
           setCurrentProtocol(probeRes.protocol);
-          setSelectedClients(getSmartClients(probeRes.protocol, detectedClients));
         }
         if (probeRes.codexCompat && probeRes.codexCompat !== "unknown") {
           setCodexCompat(probeRes.codexCompat);
@@ -371,8 +438,15 @@ export default function QuickSetupPage() {
         if (probeRes.codexCompat === "chat_function") {
           setGatewayEnabled(true);
           setGatewayReason("上游仅支持 Chat Completions 协议，Codex 需要本地网关进行 Responses 协议桥接（已自动开启）");
-        } else if (probeRes.codexCompat === "responses_custom" || probeRes.codexCompat === "responses_function") {
-          setGatewayReason("上游原生支持 Responses 与 Chat 协议，支持客户端原生直连或网关代理转发");
+        } else if (probeRes.codexCompat === "responses_function") {
+          // Serves Responses but refused a custom tool while probing, so Codex
+          // cannot reach it directly — `apply_patch` is a custom tool.
+          setGatewayEnabled(true);
+          setGatewayReason(
+            "上游支持 Responses，但拒绝 Codex 的 custom 类型工具（如 apply_patch）；网关会将这类请求桥接到 Chat Completions（已自动开启）"
+          );
+        } else if (probeRes.codexCompat === "responses_custom") {
+          setGatewayReason("上游原生支持 Responses 与 Chat 协议，含 custom 工具，支持客户端原生直连或网关代理转发");
         }
 
         if (Array.isArray(probeRes.models) && probeRes.models.length > 0) {
@@ -430,9 +504,13 @@ export default function QuickSetupPage() {
         setCodexCompat(probeRes.codexCompat);
       }
 
-      if (probeRes.codexCompat === "chat_function") {
+      if (codexNeedsGateway(probeRes.codexCompat)) {
         setGatewayEnabled(true);
-        setGatewayReason("上游仅支持 Chat Completions，Codex 必须通过网关桥接（已自动启用）");
+        setGatewayReason(
+          probeRes.codexCompat === "chat_function"
+            ? "上游仅支持 Chat Completions，Codex 必须通过网关桥接（已自动启用）"
+            : "上游支持 Responses，但拒绝 Codex 的 custom 类型工具（如 apply_patch）；网关会桥接这类请求（已自动启用）"
+        );
       }
 
       if (Array.isArray(probeRes.models) && probeRes.models.length > 0) {
@@ -503,13 +581,21 @@ export default function QuickSetupPage() {
       if (created?.id) {
         const armedAgnesRoute = AGNES_ROUTES.find((r) => r.id === agnesRouteId);
         const chosenModel = model.trim() || "gpt-4o";
+        // `/v1/models` is not a list of chat models. Agnes returns its image and
+        // video models there too, and they only answer on /v1/images/generations
+        // and /v1/videos — saving them verbatim put `agnes-video-2.5` in Codex's
+        // model catalogue as a selectable chat model, where it can only fail.
+        const probedIds = availableModels.map((m) => m.id);
+        const usableIds = armedAgnesRoute
+          ? probedIds.filter((id) => AGNES_MODEL_IDS.includes(id))
+          : probedIds;
         const prov: ProviderConfig = {
           id: "prov_" + Date.now(),
           name: targetName + " 节点",
           baseUrl: baseUrl.trim(),
           protocol: currentProtocol,
           defaultModel: chosenModel,
-          models: availableModels.length > 0 ? availableModels.map((m) => m.id) : [chosenModel],
+          models: usableIds.length > 0 ? usableIds : [chosenModel],
           isPrimary: true,
           codexCompat,
           reasoningConfidence: "validated",
@@ -849,7 +935,7 @@ export default function QuickSetupPage() {
                 />
 
                 {/* Dropdown if models are fetched */}
-                {availableModels.length > 0 && (
+                {selectableModels.length > 0 && (
                   <div className="space-y-1">
                     <label className="text-[11px] text-muted-foreground flex items-center gap-1">
                       <Sparkles className="h-3 w-3 text-sky-400" />
@@ -857,19 +943,24 @@ export default function QuickSetupPage() {
                     </label>
                     <select
                       aria-label="从已获取的模型列表中选择"
-                      value={availableModels.some((m) => m.id === model) ? model : ""}
+                      value={selectableModels.some((m) => m.id === model) ? model : ""}
                       onChange={(e) => handleSelectModelDropdown(e.target.value)}
                       className="w-full text-xs font-mono bg-background border border-input rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-ring text-foreground shadow-sm"
                     >
                       <option value="" disabled>
-                        -- 共获取到 {availableModels.length} 个模型，点击选择 --
+                        -- 共 {selectableModels.length} 个可用于对话的模型，点击选择 --
                       </option>
-                      {availableModels.map((m) => (
+                      {selectableModels.map((m) => (
                         <option key={m.id} value={m.id}>
                           {m.id} {m.name && m.name !== m.id ? ("(" + m.name + ")") : ""}
                         </option>
                       ))}
                     </select>
+                    {availableModels.length > selectableModels.length && (
+                      <p className="text-[10px] text-muted-foreground leading-snug">
+                        已隐藏 {availableModels.length - selectableModels.length} 个非对话模型(图像/视频),它们走独立端点,不能作为对话模型使用。
+                      </p>
+                    )}
                   </div>
                 )}
 
@@ -1053,13 +1144,34 @@ export default function QuickSetupPage() {
                   启用本地代理网关 (127.0.0.1:18888)
                 </label>
               </div>
-              <Badge variant="outline" className="text-[10px]">
-                {codexCompat === "chat_function" ? "必须开启桥接" : "推荐开启"}
+              <Badge
+                variant={codexNeedsGateway(codexCompat) ? "destructive" : "outline"}
+                className="text-[10px]"
+              >
+                {codexNeedsGateway(codexCompat) ? "Codex 必须开启桥接" : "推荐开启"}
               </Badge>
             </div>
             <p className="text-[11px] text-muted-foreground leading-relaxed pl-6">
               {gatewayReason}
             </p>
+
+            {/*
+              Turning the gateway off is legitimate when Codex is not a target,
+              so this warns rather than blocks — but it names the exact failure
+              instead of letting the user discover it as a 400 mid-session.
+            */}
+            {!gatewayEnabled && codexNeedsGateway(codexCompat) && selectedClients.includes("codex-cli") && (
+              <div
+                className="text-[11px] flex items-start gap-1.5 px-2.5 py-2 rounded-md border bg-destructive/10 border-destructive/30 text-destructive ml-6"
+                data-testid="codex-needs-gateway-warning"
+              >
+                <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                <span className="leading-snug">
+                  网关已关闭,但 Codex CLI 在同步列表中。该上游会拒绝 Codex 的 <code className="font-mono">custom</code> 类型工具(如 <code className="font-mono">apply_patch</code>),Codex 第一轮就会返回{" "}
+                  <code className="font-mono">400 unknown variant `custom`</code>。要么开启网关,要么在下方取消勾选 Codex CLI。
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Target clients checkboxes (Smart selected) */}
