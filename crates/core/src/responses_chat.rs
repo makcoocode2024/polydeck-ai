@@ -642,6 +642,17 @@ pub struct StreamAdapter {
     text_item_id: Option<String>,
     text_output_index: Option<usize>,
     text: String,
+    /// Accumulated `delta.reasoning_content`, emitted as a `reasoning` item.
+    ///
+    /// Reasoning models stream their thinking in this non-standard field
+    /// (DeepSeek's convention, also Agnes and QwQ). `chat_to_response` handled it
+    /// but this path did not, so on a streaming turn the reasoning was dropped:
+    /// the client stored an assistant message holding only the `"\n\n"` that
+    /// preceded it, and sent that back as history. Over a long session the model
+    /// kept losing its own chain of thought.
+    reasoning: String,
+    reasoning_item_id: Option<String>,
+    reasoning_output_index: Option<usize>,
     next_output_index: usize,
     tool_calls: HashMap<usize, StreamingTool>,
     usage: Value,
@@ -656,6 +667,9 @@ impl StreamAdapter {
             text_item_id: None,
             text_output_index: None,
             text: String::new(),
+            reasoning: String::new(),
+            reasoning_item_id: None,
+            reasoning_output_index: None,
             next_output_index: 0,
             tool_calls: HashMap::new(),
             usage: json!({ "input_tokens": 0, "output_tokens": 0, "total_tokens": 0 }),
@@ -679,6 +693,39 @@ impl StreamAdapter {
             return events;
         };
         let delta = choice.get("delta").cloned().unwrap_or_else(|| json!({}));
+        // Reasoning first, so the item order matches what a native Responses
+        // upstream produces: reasoning, then the message, then tool calls.
+        if let Some(reasoning) = delta
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            self.reasoning.push_str(reasoning);
+            if self.reasoning_item_id.is_none() {
+                let item_id = format!("rs_ad_{}", Uuid::new_v4().simple());
+                let output_index = self.next_output_index;
+                self.next_output_index += 1;
+                self.reasoning_item_id = Some(item_id.clone());
+                self.reasoning_output_index = Some(output_index);
+                events.push(sse_event(
+                    "response.output_item.added",
+                    json!({
+                        "type": "response.output_item.added", "output_index": output_index,
+                        "item": { "id": item_id, "type": "reasoning", "summary": [], "content": [] }
+                    }),
+                ));
+            }
+            events.push(sse_event(
+                "response.reasoning_text.delta",
+                json!({
+                    "type": "response.reasoning_text.delta",
+                    "output_index": self.reasoning_output_index,
+                    "content_index": 0,
+                    "item_id": self.reasoning_item_id,
+                    "delta": reasoning
+                }),
+            ));
+        }
         if let Some(content) = delta
             .get("content")
             .and_then(Value::as_str)
@@ -794,6 +841,25 @@ impl StreamAdapter {
     pub fn finish(mut self) -> Vec<String> {
         let mut events = Vec::new();
         let mut indexed_output = Vec::new();
+        // Close the reasoning item first so it keeps its place in the output.
+        if let (Some(item_id), Some(output_index)) =
+            (self.reasoning_item_id.take(), self.reasoning_output_index)
+        {
+            let reasoning = self.reasoning.clone();
+            events.push(sse_event(
+                "response.reasoning_text.done",
+                json!({
+                    "type": "response.reasoning_text.done", "output_index": output_index,
+                    "content_index": 0, "item_id": item_id, "text": reasoning
+                }),
+            ));
+            let item = json!({
+                "id": item_id, "type": "reasoning", "summary": [],
+                "content": [{ "type": "reasoning_text", "text": reasoning }]
+            });
+            events.push(sse_event("response.output_item.done", json!({ "type": "response.output_item.done", "output_index": output_index, "item": item })));
+            indexed_output.push((output_index, item));
+        }
         if let (Some(item_id), Some(output_index)) =
             (self.text_item_id.take(), self.text_output_index)
         {
@@ -1069,6 +1135,74 @@ mod tests {
         let full = events.join("");
         assert!(full.contains("response.output_item.done"));
         assert!(full.contains("response.completed"));
+    }
+
+    #[test]
+    fn streams_reasoning_content_as_a_reasoning_item() {
+        // Measured against Agnes with reasoning_effort=medium: 17 reasoning_content
+        // deltas, one content delta holding just "\n\n", then the tool call. This
+        // path ignored reasoning_content entirely, so the client stored an assistant
+        // message containing only that "\n\n" and fed it back as history — the model
+        // lost its own chain of thought turn after turn.
+        let request = json!({ "model": "m", "input": "x" });
+        let converted = responses_to_chat(&request, None).unwrap();
+        let mut adapter = StreamAdapter::new("m".into(), converted.tools);
+        let mut events = adapter.start();
+        for piece in ["Let me", " check", " the path"] {
+            events.extend(adapter.push_chat_chunk(&json!({
+                "choices": [{ "delta": { "reasoning_content": piece } }]
+            })));
+        }
+        events.extend(adapter.push_chat_chunk(&json!({
+            "choices": [{ "delta": { "content": "\n\n" } }]
+        })));
+
+        let incremental = events.join("");
+        assert!(
+            incremental.contains("response.reasoning_text.delta"),
+            "no reasoning deltas emitted: {incremental}"
+        );
+        assert!(
+            incremental.contains("\"type\":\"reasoning\""),
+            "no reasoning item announced: {incremental}"
+        );
+
+        events.extend(adapter.finish());
+        let full = events.join("");
+        assert!(full.contains("response.reasoning_text.done"));
+        // Reasoning must lead, matching a native Responses upstream's ordering.
+        let reasoning_at = full.find("\"type\":\"reasoning\"").expect("reasoning item");
+        let message_at = full.find("\"type\":\"message\"").expect("message item");
+        assert!(
+            reasoning_at < message_at,
+            "reasoning must precede the message"
+        );
+        // And the accumulated text has to survive intact.
+        assert!(
+            full.contains("Let me check the path"),
+            "reasoning text not reassembled: {full}"
+        );
+    }
+
+    #[test]
+    fn reasoning_only_stream_still_produces_output() {
+        // When the whole output budget goes to reasoning there is no content delta
+        // at all. Without the reasoning item the completed response carried an
+        // empty output array and the client had nothing to show.
+        let request = json!({ "model": "m", "input": "x" });
+        let converted = responses_to_chat(&request, None).unwrap();
+        let mut adapter = StreamAdapter::new("m".into(), converted.tools);
+        let mut events = adapter.start();
+        events.extend(adapter.push_chat_chunk(&json!({
+            "choices": [{ "delta": { "reasoning_content": "thinking hard" } }]
+        })));
+        events.extend(adapter.finish());
+        let full = events.join("");
+        assert!(full.contains("response.completed"));
+        assert!(
+            full.contains("\"type\":\"reasoning\""),
+            "reasoning-only turn produced no output item: {full}"
+        );
     }
 
     #[test]
