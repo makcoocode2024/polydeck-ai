@@ -451,6 +451,65 @@ fn fallback_reasoning_levels() -> serde_json::Value {
     ])
 }
 
+/// A model's documented token limits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ModelWindow {
+    /// Total window, input plus output.
+    context: u64,
+    /// Ceiling on a single response.
+    max_output: u64,
+}
+
+impl ModelWindow {
+    /// The whole-session window to hand Claude Code.
+    ///
+    /// Auto-compact fires in the low-90s percent of whatever number it is given,
+    /// so passing the full context leaves less than one max-length response
+    /// between the compaction point and the upstream's hard ceiling. Reserving
+    /// the output budget moves compaction early enough that a full-length reply
+    /// still fits.
+    fn claude_budget(self) -> u64 {
+        self.context.saturating_sub(self.max_output)
+    }
+}
+
+/// A model's published limits, or `None` when no rule here covers the name.
+///
+/// Only names with a documented figure belong here. A guess would be worse than
+/// the fallback: it travels into `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, and one that
+/// reads high lets a session run past what the upstream accepts.
+fn model_window(slug: &str) -> Option<ModelWindow> {
+    let lower = slug.to_ascii_lowercase();
+
+    // Agnes AI. The two families differ, so `supports_1m_context` cannot express
+    // this catalogue with one flag: the Pro pair is 1M, the Flash pair 512K.
+    if lower.starts_with("agnes-") {
+        if lower.contains("-pro") {
+            return Some(ModelWindow {
+                context: 1_000_000,
+                max_output: 65_536,
+            });
+        }
+        if lower.contains("-flash") {
+            return Some(ModelWindow {
+                context: 512_000,
+                max_output: 65_536,
+            });
+        }
+    }
+
+    None
+}
+
+/// The context window to advertise to Codex for `slug`.
+///
+/// Codex applies its own `effective_context_window_percent`, so it gets the full
+/// context rather than the reserved budget Claude Code needs.
+fn codex_context_window(slug: &str, supports_1m: bool) -> i64 {
+    let fallback = if supports_1m { 1_000_000 } else { 200_000 };
+    model_window(slug).map(|w| w.context).unwrap_or(fallback) as i64
+}
+
 fn get_model_reasoning_config(slug: &str) -> (serde_json::Value, serde_json::Value, bool) {
     let lower = slug.to_ascii_lowercase();
 
@@ -644,13 +703,12 @@ pub fn build_codex_catalog_with_1m(
         catalog_models.push("gpt-4o".to_string());
     }
 
-    let context_window = if supports_1m { 1000000 } else { 200000 };
-
     let models_json: Vec<serde_json::Value> = catalog_models
         .iter()
         .filter(|slug| *slug != "codex-auto-review" && !slug.ends_with("auto-review"))
         .enumerate()
         .map(|(i, slug)| {
+            let context_window = codex_context_window(slug, supports_1m);
             let (default_reasoning, supported_reasoning, supports_reasoning) = get_model_reasoning_config(slug);
             serde_json::json!({
                 "slug": slug,
@@ -768,7 +826,7 @@ async fn write_codex_config(
     doc["model"] = toml_edit::value(model_to_use);
     doc["model_provider"] = toml_edit::value(&provider_key);
     doc["model_catalog_json"] = toml_edit::value(catalog_path_str);
-    doc["model_context_window"] = toml_edit::value(if supports_1m { 1000000 } else { 200000 });
+    doc["model_context_window"] = toml_edit::value(codex_context_window(model_to_use, supports_1m));
     let (def_reasoning_level, _, supports_summaries) = get_model_reasoning_config(model_to_use);
     if let Some(level_str) = def_reasoning_level.as_str() {
         doc["model_reasoning_effort"] = toml_edit::value(level_str);
@@ -1144,6 +1202,44 @@ async fn write_claude_config(
             "CLAUDE_CODE_EFFORT_LEVEL".into(),
             serde_json::Value::String(effort_level),
         );
+
+        // Claude Code sizes a session from the model *name*, against a catalogue
+        // compiled into its binary. A name it does not know gets a flat 200K
+        // assumption — auto-compact then starts squeezing at 200K no matter how
+        // much window the upstream really serves. Model discovery does not help:
+        // its `/v1/models` reply carries no context field, and the catalogue is
+        // never filled from the network.
+        //
+        // This variable is the override, but it applies only to names that do
+        // not start with `claude-`, so it is dead weight for the synthetic tier
+        // names written above and useful for the provider's own model ids.
+        //
+        // One variable covers the whole session while the user can switch models
+        // within it, so it carries the *smallest* budget among the models they
+        // could select — too small only wastes window, too large overruns the
+        // upstream. An unknown name in the list means no floor can be trusted
+        // and nothing is written; Claude Code's own 200K assumption stands.
+        //
+        // Removed rather than skipped when unknown: this file is merged, so a
+        // leftover value from the previous profile would otherwise size a
+        // session against a model that is no longer configured.
+        let budget = std::iter::once(model_to_use)
+            .chain(provider.models.iter().map(|m| m.trim()))
+            .filter(|name| !name.is_empty())
+            .try_fold(u64::MAX, |floor, name| {
+                model_window(name).map(|w| floor.min(w.claude_budget()))
+            });
+        match budget {
+            Some(tokens) if tokens > 0 => {
+                env_obj.insert(
+                    "CLAUDE_CODE_MAX_CONTEXT_TOKENS".into(),
+                    serde_json::Value::String(tokens.to_string()),
+                );
+            }
+            _ => {
+                env_obj.remove("CLAUDE_CODE_MAX_CONTEXT_TOKENS");
+            }
+        }
     }
 
     let content = serde_json::to_string_pretty(&config)?;
@@ -2337,6 +2433,128 @@ mod tests {
         assert!(
             claude_json.get("oauthAccount").is_none(),
             "~/.claude.json 不应残留 oauthAccount"
+        );
+    }
+
+    #[test]
+    fn test_model_window_agnes_families_differ() {
+        let flash = model_window("agnes-2.5-flash").unwrap();
+        assert_eq!(flash.context, 512_000);
+        assert_eq!(flash.max_output, 65_536);
+        // 512K total minus one full-length reply.
+        assert_eq!(flash.claude_budget(), 446_464);
+
+        let pro = model_window("agnes-2.5-pro").unwrap();
+        assert_eq!(pro.context, 1_000_000);
+        assert_eq!(pro.claude_budget(), 934_464);
+
+        assert_eq!(model_window("agnes-2.0-flash"), Some(flash));
+        assert_eq!(model_window("agnes-2.5-pro-alpha"), Some(pro));
+
+        // No documented figure, so no guess.
+        assert_eq!(model_window("model-S"), None);
+        assert_eq!(model_window("claude-opus-5"), None);
+    }
+
+    #[test]
+    fn test_codex_context_window_falls_back_to_1m_flag() {
+        // A documented name wins over the flag, in both directions.
+        assert_eq!(codex_context_window("agnes-2.5-flash", true), 512_000);
+        assert_eq!(codex_context_window("agnes-2.5-pro", false), 1_000_000);
+        // An unknown name keeps the old flag-driven behaviour.
+        assert_eq!(codex_context_window("model-S", true), 1_000_000);
+        assert_eq!(codex_context_window("model-S", false), 200_000);
+    }
+
+    fn agnes_like_provider(
+        models: Vec<String>,
+        default_model: &str,
+    ) -> crate::profile::ProviderConfig {
+        crate::profile::ProviderConfig {
+            id: "agnes-cn".into(),
+            name: "Agnes AI".into(),
+            base_url: "https://api.agnes-ai.cn/v1".into(),
+            protocol: crate::types::ProtocolKind::OpenAI,
+            is_primary: true,
+            codex_compat: crate::types::CodexToolCompat::ChatFunction,
+            reasoning_confidence: crate::types::ReasoningConfidence::Verified,
+            thinking_support: crate::types::ThinkingSupport::Unsigned,
+            models,
+            default_model: default_model.into(),
+            accept_invalid_certs: false,
+            max_price_per_request: None,
+            rate_limit: crate::profile::RateLimitSettings::default(),
+            supports_1m_context: Some(false),
+            default_effort_level: None,
+            opus_model: Some(default_model.into()),
+            sonnet_model: Some(default_model.into()),
+            haiku_model: Some(default_model.into()),
+            opus_display_name: None,
+            sonnet_display_name: None,
+            haiku_display_name: None,
+        }
+    }
+
+    /// Reads `env.CLAUDE_CODE_MAX_CONTEXT_TOKENS` out of a freshly written
+    /// `settings.json`, seeding a stale value first so removal is observable.
+    async fn max_context_tokens_after_write(
+        provider: &crate::profile::ProviderConfig,
+    ) -> Option<String> {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
+        let claude_dir = temp_home.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("settings.json"),
+            r#"{"env":{"CLAUDE_CODE_MAX_CONTEXT_TOKENS":"999999"}}"#,
+        )
+        .unwrap();
+
+        write_claude_config(provider, "test-profile", false)
+            .await
+            .unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(claude_dir.join("settings.json")).unwrap(),
+        )
+        .unwrap();
+        parsed["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"]
+            .as_str()
+            .map(str::to_string)
+    }
+
+    #[tokio::test]
+    async fn test_claude_config_writes_context_budget() {
+        let _home_guard = lock_home_env();
+
+        // Every model documented: the floor across them is written. Both Flash
+        // and Pro are served here, so the Flash budget is the safe one.
+        let mixed = agnes_like_provider(
+            vec!["agnes-2.5-flash".into(), "agnes-2.5-pro".into()],
+            "agnes-2.5-flash",
+        );
+        assert_eq!(
+            max_context_tokens_after_write(&mixed).await.as_deref(),
+            Some("446464"),
+        );
+
+        // Pro only: nothing forces the budget down to the Flash figure.
+        let pro_only = agnes_like_provider(vec!["agnes-2.5-pro".into()], "agnes-2.5-pro");
+        assert_eq!(
+            max_context_tokens_after_write(&pro_only).await.as_deref(),
+            Some("934464"),
+        );
+
+        // One undocumented model is enough to void the floor, and the stale
+        // value from the previous profile must not survive.
+        let partly_unknown = agnes_like_provider(
+            vec!["agnes-2.5-flash".into(), "mystery-model-9".into()],
+            "agnes-2.5-flash",
+        );
+        assert_eq!(
+            max_context_tokens_after_write(&partly_unknown).await,
+            None,
+            "未知模型在列时不应写入窗口，且必须清掉上一个 profile 的残留值"
         );
     }
 }
