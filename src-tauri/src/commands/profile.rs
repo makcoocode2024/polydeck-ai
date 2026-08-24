@@ -195,3 +195,71 @@ pub async fn ad_probe_rate_limits(
     .await
     .map_err(|e| e.to_string())
 }
+
+/// Re-probe whether a provider returns *signed* thinking blocks, and persist it.
+///
+/// Persisting is the point: the gateway reads `thinking_support` when it builds
+/// its config, so an answer that only reached the UI would leave injection gated
+/// on a stale value.
+#[command]
+pub async fn ad_probe_thinking_support(
+    pm: State<'_, ProfileState>,
+    profile_id: String,
+    provider_id: String,
+) -> Result<polydeck_core::types::ThinkingSupport, String> {
+    let (base_url, model, accept_invalid_certs) = {
+        let pm = pm.lock().await;
+        let profile = pm
+            .list_profiles()
+            .into_iter()
+            .find(|p| p.id == profile_id)
+            .ok_or_else(|| format!("profile {profile_id} not found"))?;
+        let provider = profile
+            .providers
+            .iter()
+            .find(|p| p.id == provider_id)
+            .ok_or_else(|| format!("provider {provider_id} not found"))?;
+        (
+            provider.base_url.clone(),
+            provider.default_model.clone(),
+            provider.accept_invalid_certs,
+        )
+    };
+    let api_key =
+        polydeck_core::credentials::get_api_key(&profile_id).map_err(|e| e.to_string())?;
+
+    let support = polydeck_core::reasoning_verification::probe_anthropic_thinking(
+        &base_url,
+        &api_key,
+        &model,
+        accept_invalid_certs,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut pm = pm.lock().await;
+    let mut providers = pm
+        .list_profiles()
+        .into_iter()
+        .find(|p| p.id == profile_id)
+        .ok_or_else(|| format!("profile {profile_id} not found"))?
+        .providers;
+    for provider in providers.iter_mut() {
+        if provider.id == provider_id {
+            provider.thinking_support = support;
+        }
+    }
+    pm.update_profile(
+        &profile_id,
+        polydeck_core::profile::ProfileUpdate {
+            name: None,
+            providers: Some(providers),
+            clients: None,
+            gateway_enabled: None,
+            failover_enabled: None,
+        },
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(support)
+}

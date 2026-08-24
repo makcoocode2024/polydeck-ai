@@ -1,6 +1,18 @@
 ﻿export type ProtocolKind = "openai" | "responses" | "anthropic" | "gemini" | "azure" | "unknown";
 export type CodexToolCompat = "responses_custom" | "responses_function" | "chat_function" | "none" | "unknown";
+/**
+ * OpenAI-protocol reasoning signal, measured on `/v1/chat/completions`. It says
+ * nothing about whether Anthropic thinking blocks carry a signature — see
+ * `ThinkingSupport`.
+ */
 export type ReasoningConfidence = "unknown" | "declared" | "validated" | "verified";
+
+/**
+ * Whether an upstream returns Anthropic thinking blocks a client can use.
+ * Only `signed` permits the gateway to inject `thinking`; an unsigned block
+ * cannot be persisted or replayed, so the client fails the whole turn.
+ */
+export type ThinkingSupport = "unprobed" | "signed" | "unsigned" | "absent";
 export type Confidence = "unknown" | "low" | "medium" | "high" | "certain";
 
 export interface ModelInfo {
@@ -53,6 +65,7 @@ export interface ProviderConfig {
   isPrimary: boolean;
   codexCompat: CodexToolCompat;
   reasoningConfidence: ReasoningConfidence;
+  thinkingSupport?: ThinkingSupport;
   acceptInvalidCerts: boolean;
   maxPricePerRequest: number | null;
   rateLimit?: RateLimitSettings;
