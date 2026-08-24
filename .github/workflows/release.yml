@@ -23,10 +23,14 @@ jobs:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+          # Parked, not dropped. v2.0.7 built only on Windows for this reason and
+          # shipped with no assets attached; leaving these enabled would produce
+          # another release whose macOS and Linux jobs fail and attach nothing.
+          # Restore once the plugin-shell type resolution is fixed on those two.
+          # - os: macos-latest
+          #   target: aarch64-apple-darwin
+          # - os: ubuntu-latest
+          #   target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
       # On a manual run, build the tag the user named rather than the default
