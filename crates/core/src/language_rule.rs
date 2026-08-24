@@ -421,13 +421,9 @@ mod tests {
         assert_ne!(claude, codex);
     }
 
-    /// `AI_DECK_HOME_OVERRIDE` is process-global, so tests that repoint HOME must
-    /// not run concurrently.
-    static HOME_ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn apply_writes_both_files_then_cleans_up_after_itself() {
-        let _guard = HOME_ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::lock_home_env();
         let home = tempfile::tempdir().unwrap();
         std::env::set_var("AI_DECK_HOME_OVERRIDE", home.path());
 
@@ -469,7 +465,7 @@ mod tests {
 
     #[test]
     fn codex_override_file_is_reported_as_shadowing() {
-        let _guard = HOME_ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::lock_home_env();
         let home = tempfile::tempdir().unwrap();
         std::env::set_var("AI_DECK_HOME_OVERRIDE", home.path());
         let codex_dir = home.path().join(".codex");

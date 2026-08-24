@@ -1506,14 +1506,10 @@ mod tests {
     use super::*;
     use crate::profile::ProfileUpdate;
 
-    /// `AI_DECK_HOME_OVERRIDE` is process-global, so tests that repoint HOME
-    /// must not run concurrently or they will read each other's temp dirs.
-    static HOME_ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Acquire the HOME guard, ignoring poisoning from an unrelated failed test.
-    fn lock_home_env() -> std::sync::MutexGuard<'static, ()> {
-        HOME_ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner())
-    }
+    /// The crate-wide guard, not a local one: `AI_DECK_HOME_OVERRIDE` is
+    /// process-global, so a mutex private to this module cannot exclude a test in
+    /// another module that touches the same variable.
+    use crate::lock_home_env;
 
     #[test]
     fn test_build_codex_catalog_structure() {

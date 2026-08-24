@@ -115,3 +115,19 @@ impl Default for AppState {
         Self::new()
     }
 }
+
+/// Serializes every test that repoints `AI_DECK_HOME_OVERRIDE`.
+///
+/// One guard for the whole crate, deliberately: the variable is process-global,
+/// so a per-module mutex guards nothing against a test in another module. Two
+/// such mutexes existed before this and let `language_rule` tests clear the
+/// variable while a `profile_switch` test was mid-write, which sent that test at
+/// the real `~/.claude/settings.json`. It failed only under CI timing.
+#[cfg(test)]
+pub(crate) static HOME_ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Acquire [`HOME_ENV_GUARD`], ignoring poisoning from an unrelated failed test.
+#[cfg(test)]
+pub(crate) fn lock_home_env() -> std::sync::MutexGuard<'static, ()> {
+    HOME_ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner())
+}
