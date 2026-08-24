@@ -17,6 +17,7 @@ import type {
   ProtocolKind,
   CodexToolCompat,
   ReasoningConfidence,
+  ThinkingSupport,
   ModelInfo,
   ChatTestResult,
   RateLimitSettings,
@@ -219,6 +220,10 @@ export default function ProfilesPage() {
   const [nodeChatStates, setNodeChatStates] = useState<Record<number, {
     loading: boolean;
     result?: ChatTestResult | { success: boolean; message: string; latencyMs?: number };
+  }>>({});
+  const [thinkingProbeStates, setThinkingProbeStates] = useState<Record<number, {
+    loading: boolean;
+    message?: string;
   }>>({});
 
   const loadData = useCallback(async (isManual = false) => {
@@ -572,6 +577,41 @@ export default function ProfilesPage() {
         };
       })
     );
+  };
+
+  const THINKING_SUPPORT_LABELS: Record<ThinkingSupport, string> = {
+    unprobed: "尚未探测 — 不会注入思考",
+    signed: "支持带签名思考 — 可以注入",
+    unsigned: "返回思考但缺签名 — 不能注入",
+    absent: "不返回思考块 — 不会注入",
+  };
+
+  const handleProbeThinkingSupport = async (index: number) => {
+    const prov = editProviders[index];
+    if (!editingProfile || !prov) return;
+
+    setThinkingProbeStates((prev) => ({
+      ...prev,
+      [index]: { loading: true, message: "正在向上游发送带 thinking 的请求，检查返回的思考块是否带 signature..." },
+    }));
+
+    try {
+      const support = await backend.probeThinkingSupport(editingProfile.id, prov.id);
+      // The command already persisted this; mirror it into the open editor so the
+      // form does not overwrite it when saved.
+      setEditProviders((prev) =>
+        prev.map((p, i) => (i === index ? { ...p, thinkingSupport: support } : p))
+      );
+      setThinkingProbeStates((prev) => ({
+        ...prev,
+        [index]: { loading: false, message: THINKING_SUPPORT_LABELS[support] },
+      }));
+    } catch (e) {
+      setThinkingProbeStates((prev) => ({
+        ...prev,
+        [index]: { loading: false, message: `探测失败: ${String(e)}` },
+      }));
+    }
   };
 
   const handleProbeRateLimits = async (index: number) => {
@@ -1867,7 +1907,7 @@ export default function ProfilesPage() {
                                     }
                                     className="w-full h-8 text-xs rounded-md border border-input bg-background px-2.5 py-1 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                                   >
-                                    <option value="">自动推断 (默认)</option>
+                                    <option value="">不注入思考 (默认)</option>
                                     <option value="none">关闭推理思考 (none)</option>
                                     <option value="low">快速轻度推理 (low - 2048 tokens)</option>
                                     <option value="medium">平衡推理模式 (medium - 8192 tokens)</option>
@@ -1875,6 +1915,33 @@ export default function ProfilesPage() {
                                     <option value="xhigh">极限深度推理 (xhigh - 32768 tokens)</option>
                                     <option value="max">最大极限推理 (max - 63999 tokens)</option>
                                   </select>
+                                  <p className="text-[10px] text-muted-foreground">
+                                    仅在下方「思考块签名」为“支持”时才会实际注入。
+                                  </p>
+                                </div>
+
+                                <div className="space-y-1">
+                                  <label className="text-[11px] font-medium text-muted-foreground">思考块签名 (Thinking Signature)</label>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs text-foreground flex-1 truncate">
+                                      {THINKING_SUPPORT_LABELS[prov.thinkingSupport || "unprobed"]}
+                                    </span>
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-8 text-xs shrink-0"
+                                      disabled={thinkingProbeStates[index]?.loading || !prov.baseUrl.trim()}
+                                      onClick={() => handleProbeThinkingSupport(index)}
+                                    >
+                                      重新探测
+                                    </Button>
+                                  </div>
+                                  {thinkingProbeStates[index]?.message && (
+                                    <p className="text-[10px] text-muted-foreground">
+                                      {thinkingProbeStates[index]?.message}
+                                    </p>
+                                  )}
                                 </div>
 
                                 <div className="space-y-1">

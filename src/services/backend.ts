@@ -1,6 +1,6 @@
 ﻿import { invoke } from "@tauri-apps/api/core";
 import type { DetectedClient } from "@/domain/client";
-import type { Profile, ProfileTemplate, ProbeResult, ProfileUpdate, ChatTestResult, ProtocolKind, RateLimitRecommendation } from "@/domain/profile";
+import type { Profile, ProfileTemplate, ProbeResult, ProfileUpdate, ChatTestResult, ProtocolKind, RateLimitRecommendation, ThinkingSupport } from "@/domain/profile";
 import type { McpServer, ManagedSkill, PromptTemplate } from "@/domain/extensions";
 import type { SessionSummary } from "@/domain/history";
 import type { DiagnosticReport, UpdateInfo, AutoLaunchStatus } from "@/domain/ops";
@@ -81,6 +81,12 @@ export const backend = {
     invoke<ProbeResult>("ad_probe_provider", { baseUrl, apiKey, acceptInvalidCerts }),
     probeRateLimits: (baseUrl: string, apiKey: string, model?: string, acceptInvalidCerts?: boolean) =>
     invoke<RateLimitRecommendation>("ad_probe_rate_limits", { baseUrl, apiKey, model, acceptInvalidCerts }),
+  // Writes the result into the profile, so the profile list is now stale.
+  probeThinkingSupport: (profileId: string, providerId: string) =>
+    invoke<ThinkingSupport>("ad_probe_thinking_support", { profileId, providerId }).then((value) => {
+      invalidateReads("profiles", "active-profile");
+      return value;
+    }),
   testProviderChat: (
     baseUrl: string,
     apiKey: string,
