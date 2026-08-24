@@ -1,8 +1,10 @@
+import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { Zap, UserCheck, Monitor, Puzzle, History, Settings, Cpu } from "lucide-react";
 import { ThemeToggle } from "./ThemeToggle";
 import { preloadPage } from "@/lib/page-preload";
+import { backend } from "@/services/backend";
 
 const navItems = [
   { to: "/quick-setup", preload: "quickSetup", label: "快速配置", icon: Zap },
@@ -14,6 +16,15 @@ const navItems = [
 ] as const;
 
 export function Sidebar() {
+  // Read from the binary rather than hardcoding: a literal here is a second copy
+  // of the version that has to be remembered on every release, and it was
+  // already a release behind.
+  const [version, setVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    backend.getVersion().then(setVersion).catch(() => {});
+  }, []);
+
   return (
     <aside className="w-[var(--sidebar-width)] border-r bg-card/60 backdrop-blur flex flex-col shrink-0 select-none">
       <div className="p-4 border-b flex items-center justify-between">
@@ -23,7 +34,9 @@ export function Sidebar() {
           </div>
           <div>
             <h1 className="text-base font-bold tracking-tight">PolyDeck</h1>
-            <p className="text-[11px] text-muted-foreground">v2.0.6 · Polymorphic Gateway</p>
+            <p className="text-[11px] text-muted-foreground">
+              {version ? `v${version} · ` : ""}Polymorphic Gateway
+            </p>
           </div>
         </div>
         <ThemeToggle />

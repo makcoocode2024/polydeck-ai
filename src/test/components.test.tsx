@@ -7,6 +7,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { BrowserRouter } from "react-router-dom";
 import { Sidebar } from "@/components/sidebar";
 import { StatusBar } from "@/components/status-bar";
+import { invalidateBackendReadCache } from "@/services/backend";
 
 describe("UI Components", () => {
   it("renders Button correctly with variant and size", () => {
@@ -55,6 +56,22 @@ describe("UI Components", () => {
     expect(screen.getByText("扩展管理")).toBeInTheDocument();
     expect(screen.getByText("会话历史")).toBeInTheDocument();
     expect(screen.getByText("系统设置")).toBeInTheDocument();
+  });
+
+  it("shows the version the backend reports rather than a hardcoded one", async () => {
+    // The mock answers ad_get_version with "2.0.0". A literal in the component
+    // would show something else here, which is how the sidebar fell a release
+    // behind the workspace version.
+    invalidateBackendReadCache("version");
+    render(
+      <BrowserRouter>
+        <Sidebar />
+      </BrowserRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/v2\.0\.0 · Polymorphic Gateway/)).toBeInTheDocument();
+    });
   });
 
   it("renders StatusBar gateway state", async () => {
