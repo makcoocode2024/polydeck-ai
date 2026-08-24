@@ -3,7 +3,7 @@ import type { DetectedClient } from "@/domain/client";
 import type { Profile, ProfileTemplate, ProbeResult, ProfileUpdate, ChatTestResult, ProtocolKind, RateLimitRecommendation, ThinkingSupport } from "@/domain/profile";
 import type { McpServer, ManagedSkill, PromptTemplate } from "@/domain/extensions";
 import type { SessionSummary } from "@/domain/history";
-import type { DiagnosticReport, UpdateInfo, AutoLaunchStatus } from "@/domain/ops";
+import type { DiagnosticReport, UpdateInfo, AutoLaunchStatus, ForceChineseStatus } from "@/domain/ops";
 import type { ProxyStatus } from "@/domain/proxy";
 import type { FailoverStatus } from "@/domain/failover";
 import type { InjectStatus } from "@/domain/injection";
@@ -145,6 +145,13 @@ export const backend = {
   setAutolaunch: (enabled: boolean) =>
     invoke<void>("ad_set_autolaunch", { enabled }).then((value) => {
       invalidateReads("autolaunch");
+      return value;
+    }),
+  forceChineseStatus: () =>
+    cachedRead("forceChinese", () => invoke<ForceChineseStatus>("ad_force_chinese_status")),
+  setForceChinese: (enabled: boolean) =>
+    invoke<ForceChineseStatus>("ad_set_force_chinese", { enabled }).then((value) => {
+      invalidateReads("forceChinese");
       return value;
     }),
 

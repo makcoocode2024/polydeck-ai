@@ -16,6 +16,7 @@ pub mod error;
 pub mod extension_sync;
 pub mod history_watcher;
 pub mod importer;
+pub mod language_rule;
 pub mod logging;
 pub mod mcp;
 pub mod messages_stream;

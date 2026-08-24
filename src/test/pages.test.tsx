@@ -6,7 +6,8 @@ import ClientsPage from "@/pages/ClientsPage";
 import ExtensionsPage from "@/pages/ExtensionsPage";
 import HistoryPage from "@/pages/HistoryPage";
 import SettingsPage from "@/pages/SettingsPage";
-import { backend } from "@/services/backend";
+import { backend, invalidateBackendReadCache } from "@/services/backend";
+import { setMockResponse } from "./setup";
 
 describe("Frontend Pages", () => {
   it("arms an Agnes route from the dedicated panel and drives the form", async () => {
@@ -498,6 +499,53 @@ describe("Frontend Pages", () => {
       expect(screen.getByText("Provider Doctor 智能诊断体系")).toBeInTheDocument();
       expect(screen.getByText("Clash Verge")).toBeInTheDocument();
     });
+  });
+
+  it("toggles the forced-Chinese rule and surfaces a shadowed Codex file", async () => {
+    render(<SettingsPage />);
+
+    const toggle = await waitFor(() => {
+      const el = screen.getByTestId("force-chinese-toggle") as HTMLInputElement;
+      expect(el.disabled).toBe(false);
+      return el;
+    });
+    expect(toggle.checked).toBe(false);
+    expect(screen.getAllByText("未写入").length).toBe(2);
+
+    // AGENTS.override.md wins over AGENTS.md, so the rule would not be read.
+    expect(screen.getByText(/抢先读取，规则不会生效/)).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("规则已写入").length).toBe(2);
+    });
+    expect((screen.getByTestId("force-chinese-toggle") as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("explains why the forced-Chinese toggle is unavailable instead of silently disabling it", async () => {
+    // What a stale build does: the command is not registered, so invoke rejects.
+    const restore = setMockResponse("ad_force_chinese_status", () => {
+      throw new Error("Command ad_force_chinese_status not found");
+    });
+    // The earlier test's success is still within the read cache TTL.
+    invalidateBackendReadCache("forceChinese");
+    try {
+      render(<SettingsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId("force-chinese-error")).toBeInTheDocument();
+      });
+      expect(screen.getByText(/读取失败/)).toBeInTheDocument();
+      expect(screen.getByText(/build_release.bat/)).toBeInTheDocument();
+      expect(screen.getByText("不可用")).toBeInTheDocument();
+
+      const toggle = screen.getByTestId("force-chinese-toggle") as HTMLInputElement;
+      expect(toggle.disabled).toBe(true);
+    } finally {
+      restore();
+      invalidateBackendReadCache("forceChinese");
+    }
   });
 
       it("pre-fills saved API key in edit profile modal with masked password and allows reveal toggle", async () => {

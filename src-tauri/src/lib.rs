@@ -125,6 +125,8 @@ pub fn run() {
             commands::system::ad_handle_deep_link,
             commands::system::ad_autolaunch_status,
             commands::system::ad_set_autolaunch,
+            commands::system::ad_force_chinese_status,
+            commands::system::ad_set_force_chinese,
             // proxy
             commands::proxy::ad_detect_proxy,
             // ops
