@@ -2,5 +2,11 @@
 
 /**
  * Reasoning confidence level (4-tier from AI Deck).
+ *
+ * This scale is an OpenAI-protocol signal: every level is set by probing
+ * `/v1/chat/completions` with `reasoning_effort` and counting `reasoning_tokens`.
+ * It says nothing about whether the upstream returns *signed* Anthropic thinking
+ * blocks — see [`ThinkingSupport`] for that, and do not gate Anthropic behaviour
+ * on this enum.
  */
 export type ReasoningConfidence = "unknown" | "declared" | "validated" | "verified";

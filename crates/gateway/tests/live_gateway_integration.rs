@@ -54,6 +54,7 @@ async fn test_full_gateway_and_clients_flow() {
             max_price_per_request: Some(5.0),
             rate_limit: polydeck_core::profile::RateLimitSettings::default(),
             default_effort_level: None,
+            thinking_support: polydeck_core::types::ThinkingSupport::Unprobed,
         },
         model_rewrites: rules,
     };

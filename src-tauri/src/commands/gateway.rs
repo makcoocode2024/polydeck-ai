@@ -42,6 +42,7 @@ pub fn build_gateway_config(
             responses_mode,
             rate_limit: primary.rate_limit.clone(),
             default_effort_level: primary.default_effort_level.clone(),
+            thinking_support: primary.thinking_support,
         },
         model_rewrites:
             polydeck_gateway::model_rewrite::generate_provider_model_rewrites_with_overrides(

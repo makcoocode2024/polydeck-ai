@@ -20,7 +20,9 @@ use axum::{
 use bytes::Bytes;
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
+use polydeck_core::messages_stream::{Emit, MessagesStreamRepair};
 use polydeck_core::responses_chat::{chat_to_response, responses_to_chat, StreamAdapter, ToolMap};
+use polydeck_core::types::ThinkingSupport;
 use serde_json::Value;
 use std::{
     convert::Infallible,
@@ -44,6 +46,8 @@ pub struct AppState {
     pub rate_limit_settings: polydeck_core::profile::RateLimitSettings,
     pub max_retries: u32,
     pub default_effort_level: Option<String>,
+    /// Whether the upstream returns *signed* thinking blocks. Gates injection.
+    pub thinking_support: ThinkingSupport,
 }
 
 impl AppState {
@@ -325,12 +329,33 @@ pub fn effort_to_budget_tokens(effort: &str) -> Option<u64> {
     }
 }
 
-pub fn inject_thinking_if_needed(body: &mut Value, default_effort_level: Option<&str>) {
+/// Turn on extended thinking, but only when the upstream is known to support it.
+///
+/// Both gates must pass. Injecting against an upstream that returns thinking
+/// blocks without a `signature` breaks the client outright: it cannot persist an
+/// unsigned block, so the turn never finalizes, its `tool_use` never gets a
+/// `tool_result`, and every later request in that session carries an orphaned
+/// `tool_use` the upstream rejects. Not injecting only costs reasoning depth, so
+/// missing information must mean off.
+pub fn inject_thinking_if_needed(
+    body: &mut Value,
+    default_effort_level: Option<&str>,
+    thinking_support: ThinkingSupport,
+) {
     if body.get("thinking").is_some() {
         return;
     }
 
-    let effort = default_effort_level.unwrap_or("high");
+    let Some(effort) = default_effort_level else {
+        return;
+    };
+    if !thinking_support.is_injectable() {
+        debug!(
+            "thinking injection skipped: upstream thinking support is {:?}",
+            thinking_support
+        );
+        return;
+    }
     let Some(budget_tokens) = effort_to_budget_tokens(effort) else {
         return;
     };
@@ -600,7 +625,11 @@ async fn handle_messages(
     let _guard = ConnectionGuard(&state.health);
     debug!("Processing /messages request");
     let client_model = rewrite_model_in_place(&mut body, &state.rewriter);
-    inject_thinking_if_needed(&mut body, state.default_effort_level.as_deref());
+    inject_thinking_if_needed(
+        &mut body,
+        state.default_effort_level.as_deref(),
+        state.thinking_support,
+    );
     let upstream_model = body
         .get("model")
         .and_then(Value::as_str)
@@ -624,10 +653,21 @@ async fn handle_messages(
         .health
         .record_request(start.elapsed().as_millis() as u64);
     if !upstream_response.status().is_success() {
-        return passthrough_error(upstream_response, is_stream).await;
+        // The upstream's own error text used to reach nothing but the client, which
+        // made a 400 invisible here and cost a whole diagnostic session. Truncated
+        // because error bodies can carry an echo of the entire request.
+        let status = upstream_response.status();
+        let raw = upstream_response.text().await.unwrap_or_default();
+        warn!(
+            "upstream-error status={} is_stream={} body={}",
+            status,
+            is_stream,
+            raw.chars().take(600).collect::<String>()
+        );
+        return error_from_body(status, raw, is_stream);
     }
     if is_stream {
-        passthrough_raw_stream(upstream_response)
+        passthrough_messages_stream(upstream_response)
     } else {
         passthrough_nonstream(upstream_response, client_model).await
     }
@@ -948,6 +988,182 @@ fn passthrough_raw_stream(upstream_response: reqwest::Response) -> Response<Body
         .header(header::CACHE_CONTROL, "no-cache")
         .header(header::CONNECTION, "keep-alive");
     builder
+        .body(Body::from_stream(ReceiverStream::new(rx)))
+        .unwrap()
+}
+
+/// Split off the first complete SSE block in `buf`, returning its bytes.
+///
+/// A block ends at the first blank line. Both `\n\n` and `\r\n\r\n` terminate
+/// one, so whichever *ends* earlier wins — testing `\n\n` first would split a
+/// CRLF block through its own middle.
+fn take_sse_block(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
+    let lf = buf.windows(2).position(|w| w == b"\n\n").map(|i| i + 2);
+    let crlf = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|i| i + 4);
+    let end = match (lf, crlf) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => return None,
+    };
+    Some(buf.drain(..end).collect())
+}
+
+/// Read the `event:` name and `data:` payload out of one raw SSE block.
+///
+/// The event name is optional in SSE; Anthropic also carries a `type` in the
+/// payload, so fall back to that when the field is absent.
+fn parse_sse_block(block: &[u8]) -> Option<(String, Value)> {
+    let text = std::str::from_utf8(block).ok()?;
+    let mut name: Option<&str> = None;
+    let mut data = String::new();
+    for line in text.lines() {
+        if let Some(v) = line.strip_prefix("event:") {
+            name = Some(v.trim());
+        } else if let Some(v) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(v.trim_start());
+        }
+    }
+    let parsed: Value = serde_json::from_str(&data).ok()?;
+    let resolved = name
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
+        .or_else(|| parsed.get("type").and_then(Value::as_str).map(str::to_string))?;
+    Some((resolved, parsed))
+}
+
+/// Feed one raw SSE block through the repair, returning the bytes to write.
+///
+/// The original block is always forwarded verbatim, so a conforming upstream —
+/// and any block that does not parse — reaches the client byte-for-byte.
+fn repair_sse_block(repair: &mut MessagesStreamRepair, block: Vec<u8>) -> Vec<Vec<u8>> {
+    let Some((name, data)) = parse_sse_block(&block) else {
+        // Distinguishes "the upstream omitted an event" from "this gateway split a
+        // block through its middle". Both end as an unopened index at the client,
+        // but only the second is ours to fix, so the raw bytes have to be visible.
+        warn!(
+            "unparseable SSE block, {} bytes: {:?}",
+            block.len(),
+            String::from_utf8_lossy(&block[..block.len().min(200)])
+        );
+        return vec![block];
+    };
+    match repair.observe(&name, &data) {
+        Emit::Passthrough => vec![block],
+        Emit::InsertBefore(inserts) => {
+            let mut out: Vec<Vec<u8>> = inserts.into_iter().map(String::into_bytes).collect();
+            out.push(block);
+            out
+        }
+    }
+}
+
+/// Stream `/v1/messages` while supplying the `message_delta` Agnes omits.
+///
+/// Same passthrough as [`passthrough_raw_stream`], except the bytes are split on
+/// SSE boundaries so [`MessagesStreamRepair`] can see the events. Without the
+/// synthesised `message_delta` the client has no `stop_reason` and fails the turn
+/// with `API Error: Content block not found`.
+fn passthrough_messages_stream(upstream_response: reqwest::Response) -> Response<Body> {
+    let status = StatusCode::from_u16(upstream_response.status().as_u16())
+        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let content_type = upstream_response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .cloned();
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(100);
+    tokio::spawn(async move {
+        let mut byte_stream = upstream_response.bytes_stream();
+        let mut repair = MessagesStreamRepair::new();
+        let mut buf: Vec<u8> = Vec::new();
+        loop {
+            let next_item = tokio::time::timeout(SSE_STREAM_IDLE_TIMEOUT, byte_stream.next()).await;
+            match next_item {
+                Ok(Some(Ok(bytes))) => {
+                    buf.extend_from_slice(&bytes);
+                    while let Some(block) = take_sse_block(&mut buf) {
+                        for out in repair_sse_block(&mut repair, block) {
+                            if tx.send(Ok(Bytes::from(out))).await.is_err() {
+                                // The client hung up mid-stream. That is what a
+                                // client-side turn failure looks like from here, so
+                                // the index state at that moment is the evidence.
+                                warn!(
+                                    "client disconnected mid-stream; orphans {:?}; opened {:?}; blocks {:?}",
+                                    repair.orphan_indices(),
+                                    repair.open_indices(),
+                                    repair.block_types()
+                                );
+                                return;
+                            }
+                        }
+                    }
+                }
+                Ok(Some(Err(e))) => {
+                    let err_msg =
+                        serde_json::json!({"error": format!("Stream read error: {e}")}).to_string();
+                    let _ = tx
+                        .send(Ok(Bytes::from(format!("data: {err_msg}\n\n"))))
+                        .await;
+                    return;
+                }
+                Ok(None) => break,
+                Err(_elapsed) => {
+                    warn!(
+                        "Upstream messages stream idle timeout (25s without data); closing connection"
+                    );
+                    let err_msg = serde_json::json!({
+                        "error": {
+                            "message": "Upstream stream idle timeout: no data chunk received for 25s",
+                            "type": "timeout_error",
+                            "code": 504
+                        }
+                    })
+                    .to_string();
+                    let _ = tx
+                        .send(Ok(Bytes::from(format!("data: {err_msg}\n\n"))))
+                        .await;
+                    return;
+                }
+            }
+        }
+        // A final block without its blank line still has to reach the client.
+        if !buf.is_empty() {
+            for out in repair_sse_block(&mut repair, std::mem::take(&mut buf)) {
+                if tx.send(Ok(Bytes::from(out))).await.is_err() {
+                    return;
+                }
+            }
+        }
+        if repair.repaired() {
+            debug!("Supplied a message_delta the upstream omitted");
+        }
+        // An orphan index is the client's `Content block not found` condition, seen
+        // from this side. Logged at warn because the client fails the whole turn.
+        if !repair.orphan_indices().is_empty() {
+            warn!(
+                "orphan content_block indices {:?}; opened {:?}; blocks {:?}",
+                repair.orphan_indices(),
+                repair.open_indices(),
+                repair.block_types()
+            );
+        } else {
+            debug!("content_block indices paired; opened {:?}", repair.open_indices());
+        }
+    });
+    Response::builder()
+        .status(status)
+        .header(
+            header::CONTENT_TYPE,
+            content_type.unwrap_or(header::HeaderValue::from_static("text/event-stream")),
+        )
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header(header::CONNECTION, "keep-alive")
         .body(Body::from_stream(ReceiverStream::new(rx)))
         .unwrap()
 }
@@ -1325,6 +1541,25 @@ fn sse_error(
 }
 
 /// Forward an upstream failure, framed as SSE when the client is streaming.
+///
+/// Same behaviour as [`passthrough_error`], but takes an already-read body so the
+/// caller can log the upstream's error text before it is turned into a response.
+fn error_from_body(status: reqwest::StatusCode, raw: String, is_stream: bool) -> Response<Body> {
+    let status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    if !is_stream {
+        return Response::builder()
+            .status(status)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(raw))
+            .unwrap();
+    }
+    warn!(
+        "Upstream returned {} on a streaming request; reporting it as SSE so the client sees a terminal event",
+        status
+    );
+    sse_error(status, format!("Upstream returned {status}"), Some(&raw))
+}
+
 async fn passthrough_error(
     upstream_response: reqwest::Response,
     is_stream: bool,
@@ -1502,6 +1737,7 @@ mod tests {
             rate_limit_settings: polydeck_core::profile::RateLimitSettings::default(),
             max_retries: 3,
             default_effort_level: None,
+            thinking_support: ThinkingSupport::Signed,
         }
     }
 
@@ -1689,7 +1925,7 @@ mod tests {
             "max_tokens": 32000,
             "temperature": 0.7
         });
-        inject_thinking_if_needed(&mut body1, Some("high"));
+        inject_thinking_if_needed(&mut body1, Some("high"), ThinkingSupport::Signed);
         assert_eq!(body1["thinking"]["type"], "enabled");
         assert_eq!(body1["thinking"]["budget_tokens"], 16384);
         assert_eq!(body1["temperature"], 1.0);
@@ -1699,7 +1935,7 @@ mod tests {
             "messages": [{"role": "user", "content": "hello"}],
             "max_tokens": 2000
         });
-        inject_thinking_if_needed(&mut body2, Some("max"));
+        inject_thinking_if_needed(&mut body2, Some("max"), ThinkingSupport::Signed);
         assert_eq!(body2["thinking"]["type"], "enabled");
         assert_eq!(body2["thinking"]["budget_tokens"], 1999);
 
@@ -1708,7 +1944,7 @@ mod tests {
             "messages": [{"role": "user", "content": "hello"}],
             "max_tokens": 500
         });
-        inject_thinking_if_needed(&mut body3, Some("high"));
+        inject_thinking_if_needed(&mut body3, Some("high"), ThinkingSupport::Signed);
         assert!(body3.get("thinking").is_none());
 
         let mut body4 = serde_json::json!({
@@ -1716,7 +1952,7 @@ mod tests {
             "messages": [{"role": "user", "content": "hello"}],
             "max_tokens": 4000
         });
-        inject_thinking_if_needed(&mut body4, Some("none"));
+        inject_thinking_if_needed(&mut body4, Some("none"), ThinkingSupport::Signed);
         assert!(body4.get("thinking").is_none());
 
         let mut body5 = serde_json::json!({
@@ -1724,8 +1960,55 @@ mod tests {
             "messages": [{"role": "user", "content": "hello"}],
             "thinking": { "type": "enabled", "budget_tokens": 4000 }
         });
-        inject_thinking_if_needed(&mut body5, Some("high"));
+        inject_thinking_if_needed(&mut body5, Some("high"), ThinkingSupport::Signed);
         assert_eq!(body5["thinking"]["budget_tokens"], 4000);
+    }
+
+    fn injectable_body() -> Value {
+        serde_json::json!({
+            "model": "claude-opus-5",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 32000
+        })
+    }
+
+    #[test]
+    fn no_effort_level_means_no_injection() {
+        // Every profile ships with `defaultEffortLevel: null`. The old code read
+        // that as "high", so injection fired on upstreams nobody had vetted.
+        let mut body = injectable_body();
+        inject_thinking_if_needed(&mut body, None, ThinkingSupport::Signed);
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn unsigned_upstream_never_gets_injection() {
+        // The Agnes case. Injecting here is what stranded the turn's tool_use and
+        // poisoned every later request in the session.
+        let mut body = injectable_body();
+        inject_thinking_if_needed(&mut body, Some("high"), ThinkingSupport::Unsigned);
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn unprobed_upstream_never_gets_injection() {
+        let mut body = injectable_body();
+        inject_thinking_if_needed(&mut body, Some("high"), ThinkingSupport::Unprobed);
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn absent_thinking_upstream_never_gets_injection() {
+        let mut body = injectable_body();
+        inject_thinking_if_needed(&mut body, Some("high"), ThinkingSupport::Absent);
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn both_gates_open_injects() {
+        let mut body = injectable_body();
+        inject_thinking_if_needed(&mut body, Some("low"), ThinkingSupport::Signed);
+        assert_eq!(body["thinking"]["budget_tokens"], 2048);
     }
 
     #[test]
@@ -1959,5 +2242,184 @@ mod tests {
         assert_eq!(strip_claude_code_prefix("gpt-5.6-luna").0, "gpt-5.6-luna");
         assert!(!strip_claude_code_prefix("gpt-5.6-luna").1);
         assert_eq!(strip_claude_code_prefix("claude-code/").0, "claude-code/");
+    }
+
+    fn s(block: &[u8]) -> String {
+        String::from_utf8(block.to_vec()).unwrap()
+    }
+
+    #[test]
+    fn take_sse_block_waits_for_a_complete_block() {
+        // A block split across chunks must not be emitted early.
+        let mut buf = b"event: message_stop\nda".to_vec();
+        assert!(take_sse_block(&mut buf).is_none());
+        buf.extend_from_slice(b"ta: {}\n\nevent: next\ndata: {}\n\n");
+        assert_eq!(s(&take_sse_block(&mut buf).unwrap()), "event: message_stop\ndata: {}\n\n");
+        assert_eq!(s(&take_sse_block(&mut buf).unwrap()), "event: next\ndata: {}\n\n");
+        assert!(take_sse_block(&mut buf).is_none());
+    }
+
+    #[test]
+    fn take_sse_block_does_not_split_a_crlf_block_through_its_middle() {
+        // `\r\n\r\n` contains no `\n\n`, but a naive scan that checks LF first
+        // across two CRLF blocks would cut at the wrong offset.
+        let mut buf = b"event: a\r\ndata: {}\r\n\r\nevent: b\r\ndata: {}\r\n\r\n".to_vec();
+        assert_eq!(s(&take_sse_block(&mut buf).unwrap()), "event: a\r\ndata: {}\r\n\r\n");
+        assert_eq!(s(&take_sse_block(&mut buf).unwrap()), "event: b\r\ndata: {}\r\n\r\n");
+    }
+
+    #[test]
+    fn parse_sse_block_falls_back_to_the_payload_type() {
+        let (name, _) = parse_sse_block(b"data: {\"type\":\"message_stop\"}\n\n").unwrap();
+        assert_eq!(name, "message_stop");
+    }
+
+    /// The Agnes sequence: no `message_delta`, so one is inserted before
+    /// `message_stop` and the original block still follows it verbatim.
+    #[test]
+    fn repair_inserts_a_delta_before_message_stop() {
+        let mut r = MessagesStreamRepair::new();
+        let start = b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":7}}}\n\n";
+        assert_eq!(repair_sse_block(&mut r, start.to_vec()).len(), 1);
+        let tool = b"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\"}}\n\n";
+        assert_eq!(repair_sse_block(&mut r, tool.to_vec()).len(), 1);
+
+        let out = repair_sse_block(&mut r, b"event: message_stop\ndata: {}\n\n".to_vec());
+        assert_eq!(out.len(), 2, "expected an inserted delta plus the original");
+        assert!(s(&out[0]).starts_with("event: message_delta\n"));
+        assert!(s(&out[0]).contains("\"stop_reason\":\"tool_use\""));
+        assert!(s(&out[0]).contains("\"input_tokens\":7"));
+        assert_eq!(s(&out[1]), "event: message_stop\ndata: {}\n\n");
+        assert!(r.repaired());
+    }
+
+    #[test]
+    fn a_conforming_stream_is_passed_through_untouched() {
+        let mut r = MessagesStreamRepair::new();
+        let blocks: Vec<Vec<u8>> = vec![
+            b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\n".to_vec(),
+            b"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n".to_vec(),
+            b"event: message_stop\ndata: {}\n\n".to_vec(),
+        ];
+        let mut emitted = Vec::new();
+        for b in blocks.clone() {
+            emitted.extend(repair_sse_block(&mut r, b));
+        }
+        assert_eq!(emitted, blocks);
+        assert!(!r.repaired());
+    }
+
+    #[test]
+    fn an_unparseable_block_is_never_dropped() {
+        let mut r = MessagesStreamRepair::new();
+        let junk = b": keep-alive comment\n\n".to_vec();
+        assert_eq!(repair_sse_block(&mut r, junk.clone()), vec![junk]);
+    }
+
+    /// Build a `reqwest::Response` whose body arrives as the given chunks, so the
+    /// function under test sees real chunk boundaries rather than one blob.
+    fn upstream_streaming(chunks: Vec<&'static str>) -> reqwest::Response {
+        let stream = futures_util::stream::iter(
+            chunks
+                .into_iter()
+                .map(|c| Ok::<Bytes, std::io::Error>(Bytes::from(c))),
+        );
+        let inner = axum::http::Response::builder()
+            .status(200)
+            .header(header::CONTENT_TYPE, "text/event-stream")
+            .body(reqwest::Body::wrap_stream(stream))
+            .unwrap();
+        reqwest::Response::from(inner)
+    }
+
+    async fn collect_body(resp: Response<Body>) -> String {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    /// End-to-end over the real streaming function: the measured Agnes sequence
+    /// in, a client-parseable turn out.
+    #[tokio::test]
+    async fn messages_stream_repairs_the_agnes_sequence_end_to_end() {
+        // Chunk splits fall mid-event on purpose: one block is cut inside its
+        // `data:` line, and two blocks share a chunk.
+        let upstream = upstream_streaming(vec![
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":42,\"output_tokens\":0}}}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_st",
+            "art\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        ]);
+
+        let body = collect_body(passthrough_messages_stream(upstream)).await;
+
+        // The delta must land before message_stop, or the client still cannot
+        // finalise the turn.
+        let delta_at = body.find("event: message_delta").expect("no delta supplied");
+        let stop_at = body.find("event: message_stop").expect("no message_stop");
+        assert!(delta_at < stop_at, "delta must precede message_stop:\n{body}");
+
+        // A tool_use block was opened, so the turn stopped to call the tool.
+        assert!(body.contains("\"stop_reason\":\"tool_use\""), "body:\n{body}");
+        assert!(body.contains("\"input_tokens\":42"), "usage not carried:\n{body}");
+
+        // Every upstream event survives, and the reassembled block is intact.
+        for expected in [
+            "event: message_start",
+            "event: content_block_start",
+            "event: content_block_delta",
+            "event: content_block_stop",
+            "event: message_stop",
+        ] {
+            assert!(body.contains(expected), "dropped {expected}:\n{body}");
+        }
+        assert!(
+            body.contains("\"type\":\"content_block_start\",\"index\":0"),
+            "split block was not reassembled:\n{body}"
+        );
+        assert_eq!(body.matches("event: message_delta").count(), 1);
+
+        // Every block is well-formed SSE: parses as JSON, ends blank-line.
+        assert!(body.ends_with("\n\n"), "stream must end blank-line");
+        for block in body.split("\n\n").filter(|b| !b.trim().is_empty()) {
+            let data = block
+                .lines()
+                .find_map(|l| l.strip_prefix("data: "))
+                .unwrap_or_else(|| panic!("block has no data line: {block}"));
+            serde_json::from_str::<Value>(data)
+                .unwrap_or_else(|e| panic!("block payload not JSON ({e}): {block}"));
+        }
+    }
+
+    /// A conforming upstream must come out byte-for-byte, chunking aside.
+    #[tokio::test]
+    async fn messages_stream_leaves_a_conforming_upstream_alone() {
+        let events = concat!(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":9}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        );
+        let upstream = upstream_streaming(vec![events]);
+        let body = collect_body(passthrough_messages_stream(upstream)).await;
+        assert_eq!(body, events);
+        assert_eq!(body.matches("event: message_delta").count(), 1);
+    }
+
+    /// A stream cut off before its blank line must still reach the client.
+    #[tokio::test]
+    async fn messages_stream_flushes_a_trailing_partial_block() {
+        let upstream = upstream_streaming(vec![
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0}",
+        ]);
+        let body = collect_body(passthrough_messages_stream(upstream)).await;
+        assert!(
+            body.contains("event: content_block_delta"),
+            "trailing partial block was dropped:\n{body}"
+        );
     }
 }

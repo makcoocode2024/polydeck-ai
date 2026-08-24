@@ -41,6 +41,16 @@ pub struct MessagesStreamRepair {
     /// Set once `message_stop` has been handled, so a repeated or trailing
     /// `message_stop` cannot emit a second delta.
     finished: bool,
+    /// Indices opened by `content_block_start` in this stream.
+    open_indices: Vec<u64>,
+    /// Indices that received a `content_block_delta`/`_stop` without ever being
+    /// opened. That is precisely the client's `Content block not found`
+    /// condition, so recording it turns a client-side symptom into a
+    /// gateway-side observation.
+    orphan_indices: Vec<u64>,
+    /// `(index, content_block.type)` per opened block, so a broken stream can be
+    /// read back as a sequence rather than a set.
+    block_types: Vec<(u64, String)>,
 }
 
 /// What the caller should write for one inbound SSE event.
@@ -75,6 +85,37 @@ impl MessagesStreamRepair {
             "content_block_start" => {
                 if data.pointer("/content_block/type").and_then(Value::as_str) == Some("tool_use") {
                     self.saw_tool_use = true;
+                }
+                if let Some(i) = data.get("index").and_then(Value::as_u64) {
+                    if !self.open_indices.contains(&i) {
+                        self.open_indices.push(i);
+                    }
+                    self.block_types.push((
+                        i,
+                        data.pointer("/content_block/type")
+                            .and_then(Value::as_str)
+                            .unwrap_or("?")
+                            .to_string(),
+                    ));
+                }
+                Emit::Passthrough
+            }
+            "content_block_delta" | "content_block_stop" => {
+                if let Some(i) = data.get("index").and_then(Value::as_u64) {
+                    if !self.open_indices.contains(&i) {
+                        // The upstream sent a delta or stop for an index it never
+                        // opened, which is exactly what the client reports as
+                        // `Content block not found` before failing the whole turn.
+                        // Opening it here lets the rest of the stream through.
+                        self.orphan_indices.push(i);
+                        // Must be marked open, or every later delta on this index
+                        // synthesises another start and the client gets a stream of
+                        // duplicate `content_block_start` events instead.
+                        self.open_indices.push(i);
+                        let kind = infer_block_type(data);
+                        self.block_types.push((i, format!("{kind}(synthetic)")));
+                        return Emit::InsertBefore(vec![synthetic_start(i, kind)]);
+                    }
                 }
                 Emit::Passthrough
             }
@@ -125,6 +166,52 @@ impl MessagesStreamRepair {
     pub fn repaired(&self) -> bool {
         self.finished && !self.saw_message_delta
     }
+
+    /// Indices that got a delta or stop without a matching `content_block_start`.
+    pub fn orphan_indices(&self) -> &[u64] {
+        &self.orphan_indices
+    }
+
+    /// Indices opened in this stream, in the order they were opened.
+    pub fn open_indices(&self) -> &[u64] {
+        &self.open_indices
+    }
+
+    /// `(index, type)` per opened block, in order.
+    pub fn block_types(&self) -> &[(u64, String)] {
+        &self.block_types
+    }
+}
+
+/// Infer a block's type from the first event seen for it.
+///
+/// The delta names the content it carries, so this reads the answer rather than
+/// guessing it: mislabelling a `tool_use` block as `text` would hand the client
+/// partial JSON as prose. A bare `content_block_stop` carries no delta, and an
+/// empty text block is the harmless reading of a block that produced nothing.
+fn infer_block_type(data: &Value) -> &'static str {
+    match data.pointer("/delta/type").and_then(Value::as_str) {
+        Some("input_json_delta") => "tool_use",
+        Some("thinking_delta") | Some("signature_delta") => "thinking",
+        _ => "text",
+    }
+}
+
+/// Build the `content_block_start` the upstream should have sent for `index`.
+fn synthetic_start(index: u64, kind: &str) -> String {
+    let block = match kind {
+        // `tool_use` requires id and name; the deltas only carry the arguments, so
+        // these are placeholders that keep the block well-formed.
+        "tool_use" => json!({ "type": "tool_use", "id": format!("synthetic_{index}"), "name": "unknown", "input": {} }),
+        "thinking" => json!({ "type": "thinking", "thinking": "" }),
+        _ => json!({ "type": "text", "text": "" }),
+    };
+    let payload = json!({
+        "type": "content_block_start",
+        "index": index,
+        "content_block": block,
+    });
+    format!("event: content_block_start\ndata: {payload}\n\n")
 }
 
 #[cfg(test)]
@@ -133,6 +220,100 @@ mod tests {
 
     fn ev(repair: &mut MessagesStreamRepair, name: &str, data: Value) -> Emit {
         repair.observe(name, &data)
+    }
+
+    #[test]
+    fn paired_indices_produce_no_orphans() {
+        let mut r = MessagesStreamRepair::new();
+        for i in [0u64, 1] {
+            ev(&mut r, "content_block_start", json!({"index": i, "content_block": {"type": "text"}}));
+            ev(&mut r, "content_block_delta", json!({"index": i, "delta": {"type": "text_delta"}}));
+            ev(&mut r, "content_block_stop", json!({"index": i}));
+        }
+        assert!(r.orphan_indices().is_empty());
+        assert_eq!(r.open_indices(), &[0, 1]);
+    }
+
+    #[test]
+    fn a_delta_on_an_unopened_index_is_an_orphan() {
+        // The client's `Content block not found` condition, stated directly.
+        let mut r = MessagesStreamRepair::new();
+        ev(&mut r, "content_block_start", json!({"index": 0, "content_block": {"type": "text"}}));
+        ev(&mut r, "content_block_delta", json!({"index": 1, "delta": {"type": "text_delta"}}));
+        assert_eq!(r.orphan_indices(), &[1]);
+    }
+
+    #[test]
+    fn an_orphan_index_is_opened_once_not_per_delta() {
+        // The bug this guards: without marking the index open, every later delta
+        // synthesises another start and the client gets duplicates instead of one.
+        let mut r = MessagesStreamRepair::new();
+        let first = ev(&mut r, "content_block_delta", json!({"index": 3, "delta": {"type": "text_delta"}}));
+        assert!(matches!(first, Emit::InsertBefore(_)));
+        assert_eq!(
+            ev(&mut r, "content_block_delta", json!({"index": 3, "delta": {"type": "text_delta"}})),
+            Emit::Passthrough
+        );
+        assert_eq!(ev(&mut r, "content_block_stop", json!({"index": 3})), Emit::Passthrough);
+        assert_eq!(r.orphan_indices(), &[3]);
+    }
+
+    #[test]
+    fn an_orphan_delta_gets_a_synthetic_start_before_it() {
+        let mut r = MessagesStreamRepair::new();
+        let out = ev(&mut r, "content_block_delta", json!({"index": 4, "delta": {"type": "text_delta"}}));
+        let Emit::InsertBefore(blocks) = out else {
+            panic!("expected a synthetic start");
+        };
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].starts_with("event: content_block_start\n"));
+        assert!(blocks[0].contains("\"index\":4"));
+        assert!(blocks[0].ends_with("\n\n"));
+    }
+
+    #[test]
+    fn a_synthetic_start_takes_its_type_from_the_delta() {
+        // Labelling a tool_use block as text would hand the client partial JSON as
+        // prose, so the delta's own type has to drive this.
+        let mut r = MessagesStreamRepair::new();
+        let out = ev(&mut r, "content_block_delta", json!({"index": 4, "delta": {"type": "input_json_delta"}}));
+        let Emit::InsertBefore(blocks) = out else {
+            panic!("expected a synthetic start");
+        };
+        assert!(blocks[0].contains("\"type\":\"tool_use\""));
+        assert!(blocks[0].contains("\"id\":\"synthetic_4\""));
+
+        let mut r2 = MessagesStreamRepair::new();
+        let out2 = ev(&mut r2, "content_block_delta", json!({"index": 0, "delta": {"type": "thinking_delta"}}));
+        let Emit::InsertBefore(b2) = out2 else {
+            panic!("expected a synthetic start");
+        };
+        assert!(b2[0].contains("\"type\":\"thinking\""));
+    }
+
+    #[test]
+    fn a_bare_stop_on_an_unopened_index_still_opens_it() {
+        let mut r = MessagesStreamRepair::new();
+        let out = ev(&mut r, "content_block_stop", json!({"index": 2}));
+        let Emit::InsertBefore(blocks) = out else {
+            panic!("expected a synthetic start");
+        };
+        assert!(blocks[0].contains("\"type\":\"text\""));
+    }
+
+    /// The exact broken sequence measured from Agnes: index 4 skipped entirely.
+    #[test]
+    fn the_measured_agnes_gap_is_repaired() {
+        let mut r = MessagesStreamRepair::new();
+        for (i, kind) in [(0u64, "thinking"), (1, "text"), (2, "tool_use"), (3, "text")] {
+            ev(&mut r, "content_block_start", json!({"index": i, "content_block": {"type": kind}}));
+        }
+        // Agnes jumps to 5 without ever opening 4, then sends 4's delta.
+        ev(&mut r, "content_block_start", json!({"index": 5, "content_block": {"type": "tool_use"}}));
+        let out = ev(&mut r, "content_block_delta", json!({"index": 4, "delta": {"type": "input_json_delta"}}));
+        assert!(matches!(out, Emit::InsertBefore(_)), "index 4 must be opened");
+        assert_eq!(r.orphan_indices(), &[4]);
+        assert!(r.open_indices().contains(&4));
     }
 
     /// The exact sequence measured from Agnes.

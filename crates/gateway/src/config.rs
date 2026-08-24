@@ -57,6 +57,11 @@ pub struct UpstreamConfig {
     pub rate_limit: polydeck_core::profile::RateLimitSettings,
     #[serde(default)]
     pub default_effort_level: Option<String>,
+    /// Whether the upstream returns signed Anthropic thinking blocks. Injection
+    /// requires this; `reasoning_confidence` must not be used, since it only
+    /// measures the OpenAI `reasoning_effort` path.
+    #[serde(default)]
+    pub thinking_support: polydeck_core::types::ThinkingSupport,
 }
 
 /// How `ModelRewriteRule::from` should be interpreted.

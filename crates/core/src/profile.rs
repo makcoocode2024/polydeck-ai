@@ -7,7 +7,7 @@
 use crate::credentials;
 use crate::error::{AppError, AppResult};
 use crate::storage;
-use crate::types::{CodexToolCompat, ProtocolKind, ReasoningConfidence};
+use crate::types::{CodexToolCompat, ProtocolKind, ReasoningConfidence, ThinkingSupport};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -81,6 +81,11 @@ pub struct ProviderConfig {
     pub is_primary: bool,
     pub codex_compat: CodexToolCompat,
     pub reasoning_confidence: ReasoningConfidence,
+    /// Whether this upstream returns *signed* Anthropic thinking blocks. Gates
+    /// thinking injection in the gateway; `reasoning_confidence` must not, since
+    /// it only measures the OpenAI `reasoning_effort` path.
+    #[serde(default)]
+    pub thinking_support: ThinkingSupport,
     pub accept_invalid_certs: bool,
     pub max_price_per_request: Option<f64>,
     #[serde(default)]
@@ -447,6 +452,7 @@ impl ProfileManager {
             is_primary: true,
             codex_compat: CodexToolCompat::ResponsesCustom,
             reasoning_confidence: ReasoningConfidence::Validated,
+            thinking_support: ThinkingSupport::Unprobed,
             accept_invalid_certs: false,
             max_price_per_request: None,
             rate_limit: RateLimitSettings::default(),
@@ -536,6 +542,7 @@ mod tests {
                         is_primary: true,
                         codex_compat: CodexToolCompat::ResponsesCustom,
                         reasoning_confidence: ReasoningConfidence::Validated,
+                        thinking_support: ThinkingSupport::Unprobed,
                         accept_invalid_certs: false,
                         max_price_per_request: None,
                         rate_limit: RateLimitSettings::default(),
