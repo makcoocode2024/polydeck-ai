@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { backend } from "@/services/backend";
 import { useAtom } from "jotai";
 import { themeAtom } from "@/state/theme";
-import type { DiagnosticReport, UpdateInfo, AutoLaunchStatus } from "@/domain/ops";
+import type { DiagnosticReport, UpdateInfo, AutoLaunchStatus, ForceChineseStatus } from "@/domain/ops";
 import type { ProxyStatus } from "@/domain/proxy";
 import {
   Settings,
@@ -24,6 +24,7 @@ import {
   DownloadCloud,
   ArrowDownToLine,
   Check,
+  Languages,
 } from "lucide-react";
 
 export default function SettingsPage() {
@@ -41,13 +42,39 @@ export default function SettingsPage() {
   const [importable, setImportable] = useState<string[]>([]);
   const [importing, setImporting] = useState(false);
   const [importSuccess, setImportSuccess] = useState(false);
+  const [forceChinese, setForceChinese] = useState<ForceChineseStatus | null>(null);
+  const [forceChineseError, setForceChineseError] = useState<string | null>(null);
+  const [savingForceChinese, setSavingForceChinese] = useState(false);
 
   useEffect(() => {
     backend.getVersion().then(setVersion).catch(() => {});
     backend.autolaunchStatus().then(setAutolaunch).catch(() => {});
     backend.detectProxy().then(setProxyStatus).catch(() => {});
     backend.detectImportable().then(setImportable).catch(() => []);
+    // The toggle stays disabled until this resolves, so a swallowed failure
+    // would leave it dead with nothing on screen to explain why.
+    backend
+      .forceChineseStatus()
+      .then((status) => {
+        setForceChinese(status);
+        setForceChineseError(null);
+      })
+      .catch((err) =>
+        setForceChineseError(err instanceof Error ? err.message : String(err)),
+      );
   }, []);
+
+  const handleToggleForceChinese = async (next: boolean) => {
+    setSavingForceChinese(true);
+    try {
+      setForceChinese(await backend.setForceChinese(next));
+      setForceChineseError(null);
+    } catch (err) {
+      setForceChineseError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingForceChinese(false);
+    }
+  };
 
   const handleToggleAutolaunch = async () => {
     if (!autolaunch) return;
@@ -198,6 +225,98 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
+        {/* Forced Chinese Output Card */}
+        <Card className="border-border/60 shadow-sm">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Languages className="h-4 w-4 text-primary" />
+                <CardTitle className="text-base font-semibold">强制中文输出</CardTitle>
+              </div>
+              {forceChineseError ? (
+                <Badge variant="destructive">不可用</Badge>
+              ) : forceChinese ? (
+                <Badge variant={forceChinese.enabled ? "success" : "secondary"}>
+                  {forceChinese.enabled ? "已启用" : "已关闭"}
+                </Badge>
+              ) : (
+                <Badge variant="secondary">读取中</Badge>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3 text-xs">
+            <label className="flex items-start gap-3 p-3.5 rounded-lg border bg-muted/10 hover:bg-muted/20 cursor-pointer transition-all">
+              <input
+                type="checkbox"
+                checked={forceChinese?.enabled ?? false}
+                disabled={!forceChinese || savingForceChinese}
+                onChange={(e) => handleToggleForceChinese(e.target.checked)}
+                className="mt-0.5 rounded border-input text-primary focus:ring-primary h-4 w-4"
+                data-testid="force-chinese-toggle"
+              />
+              <div className="space-y-0.5 flex-1">
+                <div className="text-xs font-medium text-foreground">
+                  向客户端全局指令文件写入中文输出约束
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  规则写在标记块内，块外的内容不会被改动；关闭时只移除该块。代码、报错和标识符仍保留英文。
+                </p>
+              </div>
+            </label>
+
+            {forceChineseError && (
+              <div
+                className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 space-y-1"
+                data-testid="force-chinese-error"
+              >
+                <p className="text-[11px] text-destructive flex items-start gap-1">
+                  <XCircle className="h-3 w-3 mt-0.5 shrink-0" />
+                  <span>读取失败：{forceChineseError}</span>
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  若提示命令不存在，说明当前运行的是旧构建。执行 build_release.bat
+                  重新生成生产构建后重启即可。
+                </p>
+              </div>
+            )}
+
+            {forceChinese?.targets.map((t) => (
+              <div key={t.path} className="space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium text-foreground">{t.target}</span>
+                  {t.error ? (
+                    <Badge variant="destructive">写入失败</Badge>
+                  ) : (
+                    <Badge variant={t.rulePresent ? "success" : "secondary"}>
+                      {t.rulePresent ? "规则已写入" : "未写入"}
+                    </Badge>
+                  )}
+                </div>
+                <p className="text-[11px] text-muted-foreground font-mono break-all">{t.path}</p>
+                {t.error && (
+                  <p className="text-[11px] text-destructive flex items-start gap-1">
+                    <XCircle className="h-3 w-3 mt-0.5 shrink-0" />
+                    {t.error}
+                  </p>
+                )}
+                {t.shadowedBy && (
+                  <p className="text-[11px] text-amber-600 dark:text-amber-500 flex items-start gap-1">
+                    <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+                    <span>
+                      该文件被 <span className="font-mono break-all">{t.shadowedBy}</span>{" "}
+                      抢先读取，规则不会生效。删除或清空该文件后才会读到这里。
+                    </span>
+                  </p>
+                )}
+              </div>
+            ))}
+
+            <p className="text-[11px] text-muted-foreground">
+              客户端每次新开会话才读取指令文件，已经打开的会话需要重启才会生效。
+            </p>
+          </CardContent>
+        </Card>
+
         {/* Proxy Manager Card */}
         <Card className="border-border/60 shadow-sm">
           <CardHeader className="pb-3">
@@ -310,7 +429,7 @@ export default function SettingsPage() {
           </CardHeader>
           <CardContent className="space-y-3 text-xs">
             <p className="text-muted-foreground">
-              检测到本地存在旧版配置，支持一键无缝导入至 PolyDeck v2.0.6。
+              检测到本地存在旧版配置，支持一键无缝导入至 PolyDeck。
             </p>
             <div className="flex items-center gap-3">
               <Button

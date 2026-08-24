@@ -360,6 +360,51 @@ const mockResponses: Record<string, unknown> = {
   ad_get_logs: ["[INFO] PolyDeck core initialized", "[INFO] Gateway listening on 127.0.0.1:18888"],
   ad_detect_importable: [],
   ad_import_from_provider_deck: null,
+  ad_force_chinese_status: {
+    enabled: false,
+    targets: [
+      {
+        target: "Claude Code",
+        path: "C:\\Users\\admin\\.claude\\CLAUDE.md",
+        rulePresent: false,
+        changed: false,
+        shadowedBy: null,
+        error: null,
+      },
+      {
+        target: "Codex",
+        path: "C:\\Users\\admin\\.codex\\AGENTS.md",
+        rulePresent: false,
+        changed: false,
+        shadowedBy: "C:\\Users\\admin\\.codex\\AGENTS.override.md",
+        error: null,
+      },
+    ],
+  },
+  ad_set_force_chinese: (args?: Record<string, unknown>) => {
+    const enabled = Boolean(args?.enabled);
+    return {
+      enabled,
+      targets: [
+        {
+          target: "Claude Code",
+          path: "C:\\Users\\admin\\.claude\\CLAUDE.md",
+          rulePresent: enabled,
+          changed: true,
+          shadowedBy: null,
+          error: null,
+        },
+        {
+          target: "Codex",
+          path: "C:\\Users\\admin\\.codex\\AGENTS.md",
+          rulePresent: enabled,
+          changed: true,
+          shadowedBy: "C:\\Users\\admin\\.codex\\AGENTS.override.md",
+          error: null,
+        },
+      ],
+    };
+  },
 };
 
 const mockInvoke = async (cmd: string, args?: Record<string, unknown>) => {
@@ -374,4 +419,19 @@ const mockInvoke = async (cmd: string, args?: Record<string, unknown>) => {
 };
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
+
+/// Override one command's mock for a single test. Returns a restore function;
+/// call it in a `finally` or the override leaks into every later test.
+export function setMockResponse(cmd: string, value: unknown): () => void {
+  const had = cmd in mockResponses;
+  const previous = mockResponses[cmd];
+  mockResponses[cmd] = value;
+  return () => {
+    if (had) {
+      mockResponses[cmd] = previous;
+    } else {
+      delete mockResponses[cmd];
+    }
+  };
+}
 

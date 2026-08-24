@@ -52,3 +52,7 @@ playwright/.cache/
 *.tmp
 *.bak
 _gen*.py
+
+# Local investigation scratch: captured requests, vendored upstream docs,
+# repro scripts. Useful locally, not part of the source tree.
+.scratch/

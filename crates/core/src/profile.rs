@@ -191,6 +191,15 @@ pub struct AppSettings {
     pub generate_only: bool,
     pub injection: InjectionSettings,
     pub stepwise: StepwiseSettings,
+    /// Write the forced-Chinese-output rule into each client's global
+    /// instructions file. See `crate::language_rule`.
+    ///
+    /// `serde(default)` is load-bearing, not habit: a state document written
+    /// before this field existed has to keep deserializing. Without it the whole
+    /// document fails to parse, and `with_state_path`'s `unwrap_or_default()`
+    /// would silently discard every profile the user has.
+    #[serde(default)]
+    pub force_chinese_output: bool,
 }
 
 impl Default for AppSettings {
@@ -215,6 +224,7 @@ impl Default for AppSettings {
                 temperature: 0.7,
                 timeout_secs: 30,
             },
+            force_chinese_output: false,
         }
     }
 }
