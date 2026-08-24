@@ -12,6 +12,9 @@ env:
 jobs:
   check:
     strategy:
+      # A lint failure is platform-independent; without this it cancels the
+      # other two jobs and hides whether the build works on them.
+      fail-fast: false
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
@@ -33,8 +36,13 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: npm run lint
+      # Guarded so the lint step above, which cannot run at all until the repo
+      # gains an eslint flat config, stops skipping everything after it. The job
+      # still reports failure; these just stop being invisible.
       - run: npm run test
+        if: ${{ !cancelled() }}
       - name: Tauri build check
+        if: ${{ !cancelled() }}
         run: npx tauri build --debug
         env:
           TAURI_SIGNING_PRIVATE_KEY: ""
