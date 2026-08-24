@@ -548,6 +548,52 @@ describe("Frontend Pages", () => {
     }
   });
 
+  it("switches the provider protocol back to either of the first two options", async () => {
+    // The protocol select also writes codexCompat for exactly "responses" and
+    // "openai", so those two paths issue two state updates in one event. Reading
+    // the array from the closure made the second discard the first, which left
+    // those two options unselectable once a later one had been picked.
+    render(<ProfilesPage />);
+    await waitFor(() => {
+      expect(screen.getAllByText("Default Profile").length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(screen.getAllByRole("button", { name: /编辑/i })[0]);
+    await waitFor(() => {
+      expect(screen.getByText("编辑配置方案")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Provider 节点/i }));
+
+    const protocol = (await waitFor(() =>
+      screen.getByTestId("protocol-select-0")
+    )) as HTMLSelectElement;
+
+    // The compat select only renders once a probe has returned models, and it is
+    // the field that proves both writes of the pair landed.
+    fireEvent.click(screen.getByRole("button", { name: /探测连通与模型/i }));
+    const codexCompat = (await waitFor(() =>
+      screen.getByTestId("codex-compat-select-0")
+    )) as HTMLSelectElement;
+
+    // Away from the first two: a single write, which always worked.
+    fireEvent.change(protocol, { target: { value: "anthropic" } });
+    await waitFor(() => expect(protocol.value).toBe("anthropic"));
+
+    // Back to the first option: two writes in one event. This is the regression.
+    fireEvent.change(protocol, { target: { value: "responses" } });
+    await waitFor(() => expect(protocol.value).toBe("responses"));
+    expect(codexCompat.value).toBe("responses_custom");
+
+    // And the second option, which pairs with a different compat mode.
+    fireEvent.change(protocol, { target: { value: "openai" } });
+    await waitFor(() => expect(protocol.value).toBe("openai"));
+    expect(codexCompat.value).toBe("chat_function");
+
+    // A later option again, to prove the switch is not one-way.
+    fireEvent.change(protocol, { target: { value: "gemini" } });
+    await waitFor(() => expect(protocol.value).toBe("gemini"));
+  });
+
       it("pre-fills saved API key in edit profile modal with masked password and allows reveal toggle", async () => {
     render(<ProfilesPage />);
     await waitFor(() => {

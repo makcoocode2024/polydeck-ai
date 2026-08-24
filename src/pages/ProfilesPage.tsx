@@ -1763,6 +1763,7 @@ export default function ProfilesPage() {
                                 <div className="space-y-1">
                                   <label className="text-[11px] font-medium text-muted-foreground">Codex 工具兼容模式</label>
                                   <select
+                                    data-testid={`codex-compat-select-${index}`}
                                     value={prov.codexCompat || "responses_custom"}
                                     onChange={(e) =>
                                       handleUpdateProviderField(index, "codexCompat", e.target.value as CodexToolCompat)
