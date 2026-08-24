@@ -18,6 +18,7 @@ pub mod history_watcher;
 pub mod importer;
 pub mod logging;
 pub mod mcp;
+pub mod messages_stream;
 pub mod profile;
 pub mod profile_switch;
 pub mod profile_templates;
