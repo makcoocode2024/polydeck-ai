@@ -398,15 +398,17 @@ export default function ProfilesPage() {
       acceptInvalidCerts: false,
       maxPricePerRequest: null,
     };
-    setEditProviders([...editProviders, newProv]);
+    setEditProviders((prev) => [...prev, newProv]);
   };
 
   const handleRemoveProvider = (index: number) => {
-    const updated = editProviders.filter((_, i) => i !== index);
-    if (updated.length > 0 && !updated.some((p) => p.isPrimary)) {
-      updated[0].isPrimary = true;
-    }
-    setEditProviders(updated);
+    setEditProviders((prev) => {
+      const updated = prev.filter((_, i) => i !== index);
+      if (updated.length > 0 && !updated.some((p) => p.isPrimary)) {
+        updated[0] = { ...updated[0], isPrimary: true };
+      }
+      return updated;
+    });
     setProviderKeys((prev) => {
       const next = { ...prev };
       delete next[index];
@@ -435,8 +437,8 @@ export default function ProfilesPage() {
   };
 
   const handleSetPrimaryProvider = (index: number) => {
-    setEditProviders(
-      editProviders.map((p, i) => ({
+    setEditProviders((prev) =>
+      prev.map((p, i) => ({
         ...p,
         isPrimary: i === index,
       }))
@@ -448,16 +450,20 @@ export default function ProfilesPage() {
     field: K,
     value: ProviderConfig[K]
   ) => {
-    setEditProviders(
-      editProviders.map((p, i) => (i === index ? { ...p, [field]: value } : p))
+    // Functional form, not `editProviders.map(...)`: several handlers call this
+    // twice for one event (the protocol select also writes codexCompat). Reading
+    // the array from the closure makes both calls start from the same stale copy,
+    // so the second silently discards the first.
+    setEditProviders((prev) =>
+      prev.map((p, i) => (i === index ? { ...p, [field]: value } : p))
     );
   };
 
   const handleApplyPresetToProvider = (index: number, presetName: string) => {
     const preset = PROVIDER_PRESETS.find((p) => p.name === presetName);
     if (!preset) return;
-    setEditProviders(
-      editProviders.map((p, i) =>
+    setEditProviders((prev) =>
+      prev.map((p, i) =>
         i === index
           ? {
               ...p,
@@ -1541,6 +1547,7 @@ export default function ProfilesPage() {
                                   </span>
                                 </div>
                                 <select
+                                  data-testid={`protocol-select-${index}`}
                                   value={prov.protocol}
                                   onChange={(e) =>
                                     (() => {
