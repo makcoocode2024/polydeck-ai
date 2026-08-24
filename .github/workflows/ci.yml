@@ -16,12 +16,7 @@ jobs:
       # other two jobs and hides whether the build works on them.
       fail-fast: false
       matrix:
-        # macOS and Linux are parked, not dropped: the v2.0.7 release failed on
-        # both in `npm run build` with missing @tauri-apps/plugin-shell types, a
-        # root cause nobody has located yet. Shipping Windows first is the
-        # deliberate trade. Restore by putting the two names back on this line.
-        os: [windows-latest]
-        # os: [windows-latest, macos-latest, ubuntu-latest]
+        os: [windows-latest, macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
