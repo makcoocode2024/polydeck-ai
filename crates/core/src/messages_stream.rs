@@ -202,7 +202,9 @@ fn synthetic_start(index: u64, kind: &str) -> String {
     let block = match kind {
         // `tool_use` requires id and name; the deltas only carry the arguments, so
         // these are placeholders that keep the block well-formed.
-        "tool_use" => json!({ "type": "tool_use", "id": format!("synthetic_{index}"), "name": "unknown", "input": {} }),
+        "tool_use" => {
+            json!({ "type": "tool_use", "id": format!("synthetic_{index}"), "name": "unknown", "input": {} })
+        }
         "thinking" => json!({ "type": "thinking", "thinking": "" }),
         _ => json!({ "type": "text", "text": "" }),
     };
@@ -226,8 +228,16 @@ mod tests {
     fn paired_indices_produce_no_orphans() {
         let mut r = MessagesStreamRepair::new();
         for i in [0u64, 1] {
-            ev(&mut r, "content_block_start", json!({"index": i, "content_block": {"type": "text"}}));
-            ev(&mut r, "content_block_delta", json!({"index": i, "delta": {"type": "text_delta"}}));
+            ev(
+                &mut r,
+                "content_block_start",
+                json!({"index": i, "content_block": {"type": "text"}}),
+            );
+            ev(
+                &mut r,
+                "content_block_delta",
+                json!({"index": i, "delta": {"type": "text_delta"}}),
+            );
             ev(&mut r, "content_block_stop", json!({"index": i}));
         }
         assert!(r.orphan_indices().is_empty());
@@ -238,8 +248,16 @@ mod tests {
     fn a_delta_on_an_unopened_index_is_an_orphan() {
         // The client's `Content block not found` condition, stated directly.
         let mut r = MessagesStreamRepair::new();
-        ev(&mut r, "content_block_start", json!({"index": 0, "content_block": {"type": "text"}}));
-        ev(&mut r, "content_block_delta", json!({"index": 1, "delta": {"type": "text_delta"}}));
+        ev(
+            &mut r,
+            "content_block_start",
+            json!({"index": 0, "content_block": {"type": "text"}}),
+        );
+        ev(
+            &mut r,
+            "content_block_delta",
+            json!({"index": 1, "delta": {"type": "text_delta"}}),
+        );
         assert_eq!(r.orphan_indices(), &[1]);
     }
 
@@ -248,20 +266,35 @@ mod tests {
         // The bug this guards: without marking the index open, every later delta
         // synthesises another start and the client gets duplicates instead of one.
         let mut r = MessagesStreamRepair::new();
-        let first = ev(&mut r, "content_block_delta", json!({"index": 3, "delta": {"type": "text_delta"}}));
+        let first = ev(
+            &mut r,
+            "content_block_delta",
+            json!({"index": 3, "delta": {"type": "text_delta"}}),
+        );
         assert!(matches!(first, Emit::InsertBefore(_)));
         assert_eq!(
-            ev(&mut r, "content_block_delta", json!({"index": 3, "delta": {"type": "text_delta"}})),
+            ev(
+                &mut r,
+                "content_block_delta",
+                json!({"index": 3, "delta": {"type": "text_delta"}})
+            ),
             Emit::Passthrough
         );
-        assert_eq!(ev(&mut r, "content_block_stop", json!({"index": 3})), Emit::Passthrough);
+        assert_eq!(
+            ev(&mut r, "content_block_stop", json!({"index": 3})),
+            Emit::Passthrough
+        );
         assert_eq!(r.orphan_indices(), &[3]);
     }
 
     #[test]
     fn an_orphan_delta_gets_a_synthetic_start_before_it() {
         let mut r = MessagesStreamRepair::new();
-        let out = ev(&mut r, "content_block_delta", json!({"index": 4, "delta": {"type": "text_delta"}}));
+        let out = ev(
+            &mut r,
+            "content_block_delta",
+            json!({"index": 4, "delta": {"type": "text_delta"}}),
+        );
         let Emit::InsertBefore(blocks) = out else {
             panic!("expected a synthetic start");
         };
@@ -276,7 +309,11 @@ mod tests {
         // Labelling a tool_use block as text would hand the client partial JSON as
         // prose, so the delta's own type has to drive this.
         let mut r = MessagesStreamRepair::new();
-        let out = ev(&mut r, "content_block_delta", json!({"index": 4, "delta": {"type": "input_json_delta"}}));
+        let out = ev(
+            &mut r,
+            "content_block_delta",
+            json!({"index": 4, "delta": {"type": "input_json_delta"}}),
+        );
         let Emit::InsertBefore(blocks) = out else {
             panic!("expected a synthetic start");
         };
@@ -284,7 +321,11 @@ mod tests {
         assert!(blocks[0].contains("\"id\":\"synthetic_4\""));
 
         let mut r2 = MessagesStreamRepair::new();
-        let out2 = ev(&mut r2, "content_block_delta", json!({"index": 0, "delta": {"type": "thinking_delta"}}));
+        let out2 = ev(
+            &mut r2,
+            "content_block_delta",
+            json!({"index": 0, "delta": {"type": "thinking_delta"}}),
+        );
         let Emit::InsertBefore(b2) = out2 else {
             panic!("expected a synthetic start");
         };
@@ -305,13 +346,33 @@ mod tests {
     #[test]
     fn the_measured_agnes_gap_is_repaired() {
         let mut r = MessagesStreamRepair::new();
-        for (i, kind) in [(0u64, "thinking"), (1, "text"), (2, "tool_use"), (3, "text")] {
-            ev(&mut r, "content_block_start", json!({"index": i, "content_block": {"type": kind}}));
+        for (i, kind) in [
+            (0u64, "thinking"),
+            (1, "text"),
+            (2, "tool_use"),
+            (3, "text"),
+        ] {
+            ev(
+                &mut r,
+                "content_block_start",
+                json!({"index": i, "content_block": {"type": kind}}),
+            );
         }
         // Agnes jumps to 5 without ever opening 4, then sends 4's delta.
-        ev(&mut r, "content_block_start", json!({"index": 5, "content_block": {"type": "tool_use"}}));
-        let out = ev(&mut r, "content_block_delta", json!({"index": 4, "delta": {"type": "input_json_delta"}}));
-        assert!(matches!(out, Emit::InsertBefore(_)), "index 4 must be opened");
+        ev(
+            &mut r,
+            "content_block_start",
+            json!({"index": 5, "content_block": {"type": "tool_use"}}),
+        );
+        let out = ev(
+            &mut r,
+            "content_block_delta",
+            json!({"index": 4, "delta": {"type": "input_json_delta"}}),
+        );
+        assert!(
+            matches!(out, Emit::InsertBefore(_)),
+            "index 4 must be opened"
+        );
         assert_eq!(r.orphan_indices(), &[4]);
         assert!(r.open_indices().contains(&4));
     }

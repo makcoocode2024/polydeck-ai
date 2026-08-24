@@ -999,10 +999,7 @@ fn passthrough_raw_stream(upstream_response: reqwest::Response) -> Response<Body
 /// CRLF block through its own middle.
 fn take_sse_block(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
     let lf = buf.windows(2).position(|w| w == b"\n\n").map(|i| i + 2);
-    let crlf = buf
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|i| i + 4);
+    let crlf = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4);
     let end = match (lf, crlf) {
         (Some(a), Some(b)) => a.min(b),
         (Some(a), None) => a,
@@ -1034,7 +1031,12 @@ fn parse_sse_block(block: &[u8]) -> Option<(String, Value)> {
     let resolved = name
         .filter(|n| !n.is_empty())
         .map(str::to_string)
-        .or_else(|| parsed.get("type").and_then(Value::as_str).map(str::to_string))?;
+        .or_else(|| {
+            parsed
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })?;
     Some((resolved, parsed))
 }
 
@@ -1153,7 +1155,10 @@ fn passthrough_messages_stream(upstream_response: reqwest::Response) -> Response
                 repair.block_types()
             );
         } else {
-            debug!("content_block indices paired; opened {:?}", repair.open_indices());
+            debug!(
+                "content_block indices paired; opened {:?}",
+                repair.open_indices()
+            );
         }
     });
     Response::builder()
@@ -2254,8 +2259,14 @@ mod tests {
         let mut buf = b"event: message_stop\nda".to_vec();
         assert!(take_sse_block(&mut buf).is_none());
         buf.extend_from_slice(b"ta: {}\n\nevent: next\ndata: {}\n\n");
-        assert_eq!(s(&take_sse_block(&mut buf).unwrap()), "event: message_stop\ndata: {}\n\n");
-        assert_eq!(s(&take_sse_block(&mut buf).unwrap()), "event: next\ndata: {}\n\n");
+        assert_eq!(
+            s(&take_sse_block(&mut buf).unwrap()),
+            "event: message_stop\ndata: {}\n\n"
+        );
+        assert_eq!(
+            s(&take_sse_block(&mut buf).unwrap()),
+            "event: next\ndata: {}\n\n"
+        );
         assert!(take_sse_block(&mut buf).is_none());
     }
 
@@ -2264,8 +2275,14 @@ mod tests {
         // `\r\n\r\n` contains no `\n\n`, but a naive scan that checks LF first
         // across two CRLF blocks would cut at the wrong offset.
         let mut buf = b"event: a\r\ndata: {}\r\n\r\nevent: b\r\ndata: {}\r\n\r\n".to_vec();
-        assert_eq!(s(&take_sse_block(&mut buf).unwrap()), "event: a\r\ndata: {}\r\n\r\n");
-        assert_eq!(s(&take_sse_block(&mut buf).unwrap()), "event: b\r\ndata: {}\r\n\r\n");
+        assert_eq!(
+            s(&take_sse_block(&mut buf).unwrap()),
+            "event: a\r\ndata: {}\r\n\r\n"
+        );
+        assert_eq!(
+            s(&take_sse_block(&mut buf).unwrap()),
+            "event: b\r\ndata: {}\r\n\r\n"
+        );
     }
 
     #[test]
@@ -2357,13 +2374,24 @@ mod tests {
 
         // The delta must land before message_stop, or the client still cannot
         // finalise the turn.
-        let delta_at = body.find("event: message_delta").expect("no delta supplied");
+        let delta_at = body
+            .find("event: message_delta")
+            .expect("no delta supplied");
         let stop_at = body.find("event: message_stop").expect("no message_stop");
-        assert!(delta_at < stop_at, "delta must precede message_stop:\n{body}");
+        assert!(
+            delta_at < stop_at,
+            "delta must precede message_stop:\n{body}"
+        );
 
         // A tool_use block was opened, so the turn stopped to call the tool.
-        assert!(body.contains("\"stop_reason\":\"tool_use\""), "body:\n{body}");
-        assert!(body.contains("\"input_tokens\":42"), "usage not carried:\n{body}");
+        assert!(
+            body.contains("\"stop_reason\":\"tool_use\""),
+            "body:\n{body}"
+        );
+        assert!(
+            body.contains("\"input_tokens\":42"),
+            "usage not carried:\n{body}"
+        );
 
         // Every upstream event survives, and the reassembled block is intact.
         for expected in [
