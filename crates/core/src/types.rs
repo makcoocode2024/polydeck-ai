@@ -71,6 +71,12 @@ impl ProtocolKind {
 }
 
 /// Reasoning confidence level (4-tier from AI Deck).
+///
+/// This scale is an OpenAI-protocol signal: every level is set by probing
+/// `/v1/chat/completions` with `reasoning_effort` and counting `reasoning_tokens`.
+/// It says nothing about whether the upstream returns *signed* Anthropic thinking
+/// blocks — see [`ThinkingSupport`] for that, and do not gate Anthropic behaviour
+/// on this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
@@ -79,6 +85,37 @@ pub enum ReasoningConfidence {
     Declared,
     Validated,
     Verified,
+}
+
+/// Whether an upstream returns Anthropic thinking blocks a client can actually use.
+///
+/// Extended thinking is only usable if each thinking block carries a `signature`.
+/// Without one the client cannot persist the assistant turn or replay it, so it
+/// fails the turn outright — which then strands the turn's `tool_use` with no
+/// `tool_result` and poisons the rest of the session. An upstream can therefore
+/// return thinking and still be unusable, which is why `Unsigned` is distinct
+/// from `Absent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingSupport {
+    /// Never probed. Treated as unsupported, because injecting on a guess is the
+    /// expensive direction of the error.
+    #[default]
+    Unprobed,
+    /// Thinking blocks come back with a non-empty `signature`. Safe to inject.
+    Signed,
+    /// Thinking blocks come back, but with no `signature`. Must not inject.
+    Unsigned,
+    /// The upstream accepted the request but returned no thinking blocks.
+    Absent,
+}
+
+impl ThinkingSupport {
+    /// Whether the gateway may inject `thinking` for this upstream.
+    pub fn is_injectable(self) -> bool {
+        matches!(self, Self::Signed)
+    }
 }
 
 /// Codex tool compatibility level (from Provider Deck).

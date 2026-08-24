@@ -80,6 +80,7 @@ impl GatewayServer {
             rate_limit_settings: self.config.upstream.rate_limit.clone(),
             max_retries: self.config.max_retries,
             default_effort_level: self.config.upstream.default_effort_level.clone(),
+            thinking_support: self.config.upstream.thinking_support,
         });
         let middleware_state = Arc::new(MiddlewareState {
             local_token: self.config.upstream.local_token.clone(),
@@ -162,6 +163,7 @@ mod tests {
                 responses_mode: ResponsesMode::Auto,
                 rate_limit: polydeck_core::profile::RateLimitSettings::default(),
                 default_effort_level: None,
+                thinking_support: polydeck_core::types::ThinkingSupport::default(),
             },
             model_rewrites: crate::model_rewrite::generate_provider_model_rewrites(
                 &["gpt-4o".to_string(), "claude-3-5-sonnet".to_string()],

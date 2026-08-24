@@ -1,7 +1,7 @@
 //! Built-in profile templates for common providers.
 
 use crate::profile::{ProfileCreate, ProviderConfig};
-use crate::types::{CodexToolCompat, ProtocolKind, ReasoningConfidence};
+use crate::types::{CodexToolCompat, ProtocolKind, ReasoningConfidence, ThinkingSupport};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -69,6 +69,13 @@ fn agnes_provider(id: &str, name: &str, base_url: &str) -> ProviderConfig {
         is_primary: true,
         codex_compat: CodexToolCompat::ChatFunction,
         reasoning_confidence: ReasoningConfidence::Verified,
+        // Measured on the streaming path: Agnes returns thinking blocks with no
+        // `signature`, so extended thinking cannot be injected against it even
+        // though the OpenAI-side reasoning probe passes — `Verified` above refers
+        // to that other path. The non-streaming probe returns no thinking block at
+        // all and so reports `Absent`; either way the gate stays shut, and a real
+        // probe overwrites this seed value.
+        thinking_support: ThinkingSupport::Unsigned,
         accept_invalid_certs: false,
         max_price_per_request: None,
         rate_limit: crate::profile::RateLimitSettings {
@@ -103,6 +110,7 @@ pub fn builtin_templates() -> Vec<ProfileTemplate> {
                 is_primary: true,
                 codex_compat: CodexToolCompat::ResponsesCustom,
                 reasoning_confidence: ReasoningConfidence::Unknown,
+                thinking_support: ThinkingSupport::Unprobed,
                 accept_invalid_certs: false,
                 max_price_per_request: None,
                 rate_limit: crate::profile::RateLimitSettings::default(),
@@ -130,6 +138,7 @@ pub fn builtin_templates() -> Vec<ProfileTemplate> {
                 is_primary: true,
                 codex_compat: CodexToolCompat::ResponsesCustom,
                 reasoning_confidence: ReasoningConfidence::Unknown,
+                thinking_support: ThinkingSupport::Unprobed,
                 accept_invalid_certs: false,
                 max_price_per_request: None,
                 rate_limit: crate::profile::RateLimitSettings::default(),
@@ -157,6 +166,7 @@ pub fn builtin_templates() -> Vec<ProfileTemplate> {
                 is_primary: true,
                 codex_compat: CodexToolCompat::Unknown,
                 reasoning_confidence: ReasoningConfidence::Unknown,
+                thinking_support: ThinkingSupport::Unprobed,
                 accept_invalid_certs: false,
                 max_price_per_request: None,
                 rate_limit: crate::profile::RateLimitSettings::default(),
@@ -184,6 +194,7 @@ pub fn builtin_templates() -> Vec<ProfileTemplate> {
                 is_primary: true,
                 codex_compat: CodexToolCompat::ChatFunction,
                 reasoning_confidence: ReasoningConfidence::Unknown,
+                thinking_support: ThinkingSupport::Unprobed,
                 accept_invalid_certs: false,
                 max_price_per_request: None,
                 rate_limit: crate::profile::RateLimitSettings::default(),
@@ -224,6 +235,7 @@ pub fn builtin_templates() -> Vec<ProfileTemplate> {
                 is_primary: true,
                 codex_compat: CodexToolCompat::ChatFunction,
                 reasoning_confidence: ReasoningConfidence::Unknown,
+                thinking_support: ThinkingSupport::Unprobed,
                 accept_invalid_certs: false,
                 max_price_per_request: None,
                 rate_limit: crate::profile::RateLimitSettings::default(),

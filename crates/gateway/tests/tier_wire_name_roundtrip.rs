@@ -27,6 +27,7 @@ fn provider(
         is_primary: true,
         codex_compat: CodexToolCompat::ResponsesFunction,
         reasoning_confidence: ReasoningConfidence::Unknown,
+        thinking_support: polydeck_core::types::ThinkingSupport::Unprobed,
         models: models.iter().map(|s| s.to_string()).collect(),
         default_model: opus.unwrap_or("model-S").to_string(),
         accept_invalid_certs: false,

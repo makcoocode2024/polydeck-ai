@@ -3,8 +3,15 @@ import type { CodexToolCompat } from "./CodexToolCompat";
 import type { ProtocolKind } from "./ProtocolKind";
 import type { RateLimitSettings } from "./RateLimitSettings";
 import type { ReasoningConfidence } from "./ReasoningConfidence";
+import type { ThinkingSupport } from "./ThinkingSupport";
 
-export type ProviderConfig = { id: string, name: string, baseUrl: string, protocol: ProtocolKind, defaultModel: string, models: Array<string>, isPrimary: boolean, codexCompat: CodexToolCompat, reasoningConfidence: ReasoningConfidence, acceptInvalidCerts: boolean, maxPricePerRequest: number | null, rateLimit: RateLimitSettings, supports1mContext: boolean | null, defaultEffortLevel: string | null, opusModel: string | null, sonnetModel: string | null, haikuModel: string | null, 
+export type ProviderConfig = { id: string, name: string, baseUrl: string, protocol: ProtocolKind, defaultModel: string, models: Array<string>, isPrimary: boolean, codexCompat: CodexToolCompat, reasoningConfidence: ReasoningConfidence, 
+/**
+ * Whether this upstream returns *signed* Anthropic thinking blocks. Gates
+ * thinking injection in the gateway; `reasoning_confidence` must not, since
+ * it only measures the OpenAI `reasoning_effort` path.
+ */
+thinkingSupport: ThinkingSupport, acceptInvalidCerts: boolean, maxPricePerRequest: number | null, rateLimit: RateLimitSettings, supports1mContext: boolean | null, defaultEffortLevel: string | null, opusModel: string | null, sonnetModel: string | null, haikuModel: string | null, 
 /**
  * Name Claude Code should *show* for each tier, written into `~/.claude.json`
  * in place of the bare `opus`/`sonnet`/`haiku` aliases.
