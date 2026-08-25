@@ -192,7 +192,7 @@ pub struct AppSettings {
     pub injection: InjectionSettings,
     pub stepwise: StepwiseSettings,
     /// Write the forced-Chinese-output rule into each client's global
-    /// instructions file. See `crate::language_rule`.
+    /// instructions file. See `crate::client_rules`.
     ///
     /// `serde(default)` is load-bearing, not habit: a state document written
     /// before this field existed has to keep deserializing. Without it the whole
@@ -200,6 +200,12 @@ pub struct AppSettings {
     /// would silently discard every profile the user has.
     #[serde(default)]
     pub force_chinese_output: bool,
+    /// Write the tool-execution-truthfulness rule into each client's global
+    /// instructions file. See `crate::client_rules`.
+    ///
+    /// `serde(default)` for the same reason as the field above.
+    #[serde(default)]
+    pub enforce_tool_truthfulness: bool,
 }
 
 impl Default for AppSettings {
@@ -225,6 +231,7 @@ impl Default for AppSettings {
                 timeout_secs: 30,
             },
             force_chinese_output: false,
+            enforce_tool_truthfulness: false,
         }
     }
 }

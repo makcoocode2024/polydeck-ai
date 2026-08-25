@@ -5,11 +5,18 @@ import type { StepwiseSettings } from "./StepwiseSettings";
 export type AppSettings = { theme: string, autoStart: boolean, minimizeToTray: boolean, checkUpdates: string, acceptInvalidCerts: boolean, generateOnly: boolean, injection: InjectionSettings, stepwise: StepwiseSettings, 
 /**
  * Write the forced-Chinese-output rule into each client's global
- * instructions file. See `crate::language_rule`.
+ * instructions file. See `crate::client_rules`.
  *
  * `serde(default)` is load-bearing, not habit: a state document written
  * before this field existed has to keep deserializing. Without it the whole
  * document fails to parse, and `with_state_path`'s `unwrap_or_default()`
  * would silently discard every profile the user has.
  */
-forceChineseOutput: boolean, };
+forceChineseOutput: boolean, 
+/**
+ * Write the tool-execution-truthfulness rule into each client's global
+ * instructions file. See `crate::client_rules`.
+ *
+ * `serde(default)` for the same reason as the field above.
+ */
+enforceToolTruthfulness: boolean, };

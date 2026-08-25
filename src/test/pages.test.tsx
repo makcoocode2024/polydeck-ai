@@ -1,5 +1,5 @@
 ﻿import { describe, it, expect, vi } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import QuickSetupPage from "@/pages/QuickSetupPage";
 import ProfilesPage from "@/pages/ProfilesPage";
 import ClientsPage from "@/pages/ClientsPage";
@@ -510,17 +510,46 @@ describe("Frontend Pages", () => {
       return el;
     });
     expect(toggle.checked).toBe(false);
-    expect(screen.getAllByText("未写入").length).toBe(2);
+    // Scoped to this card: the page carries a second rule card with the same
+    // per-client badges, so a page-wide count would assert on both rules at once
+    // and break whenever either card changes.
+    const card = () => within(screen.getByTestId("force-chinese-card"));
+    expect(card().getAllByText("未写入").length).toBe(2);
 
     // AGENTS.override.md wins over AGENTS.md, so the rule would not be read.
-    expect(screen.getByText(/抢先读取，规则不会生效/)).toBeInTheDocument();
+    expect(card().getByText(/抢先读取，规则不会生效/)).toBeInTheDocument();
 
     fireEvent.click(toggle);
 
     await waitFor(() => {
-      expect(screen.getAllByText("规则已写入").length).toBe(2);
+      expect(card().getAllByText("规则已写入").length).toBe(2);
     });
     expect((screen.getByTestId("force-chinese-toggle") as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("toggles the tool-truthfulness rule independently of the Chinese-output rule", async () => {
+    render(<SettingsPage />);
+
+    const toggle = await waitFor(() => {
+      const el = screen.getByTestId("tool-truthfulness-toggle") as HTMLInputElement;
+      expect(el.disabled).toBe(false);
+      return el;
+    });
+    expect(toggle.checked).toBe(false);
+
+    const toolCard = () => within(screen.getByTestId("tool-truthfulness-card"));
+    const zhCard = () => within(screen.getByTestId("force-chinese-card"));
+    expect(toolCard().getAllByText("未写入").length).toBe(2);
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(toolCard().getAllByText("规则已写入").length).toBe(2);
+    });
+    // The two rules live in separate sentinel blocks, so turning this one on must
+    // leave the other reporting its own state rather than following along.
+    expect(zhCard().getAllByText("未写入").length).toBe(2);
+    expect((screen.getByTestId("force-chinese-toggle") as HTMLInputElement).checked).toBe(false);
   });
 
   it("explains why the forced-Chinese toggle is unavailable instead of silently disabling it", async () => {

@@ -127,6 +127,8 @@ pub fn run() {
             commands::system::ad_set_autolaunch,
             commands::system::ad_force_chinese_status,
             commands::system::ad_set_force_chinese,
+            commands::system::ad_tool_truthfulness_status,
+            commands::system::ad_set_tool_truthfulness,
             // proxy
             commands::proxy::ad_detect_proxy,
             // ops

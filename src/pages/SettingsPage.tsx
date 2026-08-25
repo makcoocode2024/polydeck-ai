@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { backend } from "@/services/backend";
 import { useAtom } from "jotai";
 import { themeAtom } from "@/state/theme";
-import type { DiagnosticReport, UpdateInfo, AutoLaunchStatus, ForceChineseStatus } from "@/domain/ops";
+import type { DiagnosticReport, UpdateInfo, AutoLaunchStatus, ClientRuleStatus } from "@/domain/ops";
 import type { ProxyStatus } from "@/domain/proxy";
 import {
   Settings,
@@ -25,6 +25,7 @@ import {
   ArrowDownToLine,
   Check,
   Languages,
+  ShieldCheck,
 } from "lucide-react";
 
 export default function SettingsPage() {
@@ -42,9 +43,12 @@ export default function SettingsPage() {
   const [importable, setImportable] = useState<string[]>([]);
   const [importing, setImporting] = useState(false);
   const [importSuccess, setImportSuccess] = useState(false);
-  const [forceChinese, setForceChinese] = useState<ForceChineseStatus | null>(null);
+  const [forceChinese, setForceChinese] = useState<ClientRuleStatus | null>(null);
   const [forceChineseError, setForceChineseError] = useState<string | null>(null);
   const [savingForceChinese, setSavingForceChinese] = useState(false);
+  const [toolTruth, setToolTruth] = useState<ClientRuleStatus | null>(null);
+  const [toolTruthError, setToolTruthError] = useState<string | null>(null);
+  const [savingToolTruth, setSavingToolTruth] = useState(false);
 
   useEffect(() => {
     backend.getVersion().then(setVersion).catch(() => {});
@@ -62,6 +66,15 @@ export default function SettingsPage() {
       .catch((err) =>
         setForceChineseError(err instanceof Error ? err.message : String(err)),
       );
+    backend
+      .toolTruthfulnessStatus()
+      .then((status) => {
+        setToolTruth(status);
+        setToolTruthError(null);
+      })
+      .catch((err) =>
+        setToolTruthError(err instanceof Error ? err.message : String(err)),
+      );
   }, []);
 
   const handleToggleForceChinese = async (next: boolean) => {
@@ -73,6 +86,18 @@ export default function SettingsPage() {
       setForceChineseError(err instanceof Error ? err.message : String(err));
     } finally {
       setSavingForceChinese(false);
+    }
+  };
+
+  const handleToggleToolTruth = async (next: boolean) => {
+    setSavingToolTruth(true);
+    try {
+      setToolTruth(await backend.setToolTruthfulness(next));
+      setToolTruthError(null);
+    } catch (err) {
+      setToolTruthError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingToolTruth(false);
     }
   };
 
@@ -226,7 +251,7 @@ export default function SettingsPage() {
         </Card>
 
         {/* Forced Chinese Output Card */}
-        <Card className="border-border/60 shadow-sm">
+        <Card className="border-border/60 shadow-sm" data-testid="force-chinese-card">
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -312,6 +337,100 @@ export default function SettingsPage() {
             ))}
 
             <p className="text-[11px] text-muted-foreground">
+              客户端每次新开会话才读取指令文件，已经打开的会话需要重启才会生效。
+            </p>
+          </CardContent>
+        </Card>
+
+        {/* Tool Execution Truthfulness Card */}
+        <Card className="border-border/60 shadow-sm" data-testid="tool-truthfulness-card">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="h-4 w-4 text-primary" />
+                <CardTitle className="text-base font-semibold">工具执行真实性检查</CardTitle>
+              </div>
+              {toolTruthError ? (
+                <Badge variant="destructive">不可用</Badge>
+              ) : toolTruth ? (
+                <Badge variant={toolTruth.enabled ? "success" : "secondary"}>
+                  {toolTruth.enabled ? "已启用" : "已关闭"}
+                </Badge>
+              ) : (
+                <Badge variant="secondary">读取中</Badge>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3 text-xs">
+            <label className="flex items-start gap-3 p-3.5 rounded-lg border bg-muted/10 hover:bg-muted/20 cursor-pointer transition-all">
+              <input
+                type="checkbox"
+                checked={toolTruth?.enabled ?? false}
+                disabled={!toolTruth || savingToolTruth}
+                onChange={(e) => handleToggleToolTruth(e.target.checked)}
+                className="mt-0.5 rounded border-input text-primary focus:ring-primary h-4 w-4"
+                data-testid="tool-truthfulness-toggle"
+              />
+              <div className="space-y-0.5 flex-1">
+                <div className="text-xs font-medium text-foreground">
+                  禁止客户端虚构工具执行结果
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  要求只报告工具实际返回的内容：未执行的操作标记【未执行】，无法从工具结果确认的标记【无法确认】，
+                  输出被截断时必须重新调用工具。与中文输出规则各自独立，写在不同的标记块里。
+                </p>
+              </div>
+            </label>
+
+            {toolTruthError && (
+              <div
+                className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 space-y-1"
+                data-testid="tool-truthfulness-error"
+              >
+                <p className="text-[11px] text-destructive flex items-start gap-1">
+                  <XCircle className="h-3 w-3 mt-0.5 shrink-0" />
+                  <span>读取失败：{toolTruthError}</span>
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  若提示命令不存在，说明当前运行的是旧构建。执行 build_release.bat
+                  重新生成生产构建后重启即可。
+                </p>
+              </div>
+            )}
+
+            {toolTruth?.targets.map((t) => (
+              <div key={t.path} className="space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium text-foreground">{t.target}</span>
+                  {t.error ? (
+                    <Badge variant="destructive">写入失败</Badge>
+                  ) : (
+                    <Badge variant={t.rulePresent ? "success" : "secondary"}>
+                      {t.rulePresent ? "规则已写入" : "未写入"}
+                    </Badge>
+                  )}
+                </div>
+                <p className="text-[11px] text-muted-foreground font-mono break-all">{t.path}</p>
+                {t.error && (
+                  <p className="text-[11px] text-destructive flex items-start gap-1">
+                    <XCircle className="h-3 w-3 mt-0.5 shrink-0" />
+                    {t.error}
+                  </p>
+                )}
+                {t.shadowedBy && (
+                  <p className="text-[11px] text-amber-600 dark:text-amber-500 flex items-start gap-1">
+                    <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+                    <span>
+                      该文件被 <span className="font-mono break-all">{t.shadowedBy}</span>{" "}
+                      抢先读取，规则不会生效。删除或清空该文件后才会读到这里。
+                    </span>
+                  </p>
+                )}
+              </div>
+            ))}
+
+            <p className="text-[11px] text-muted-foreground">
+              这是写给客户端的约束，不是运行时校验：它降低虚构结果的概率，但不能从机制上阻止。
               客户端每次新开会话才读取指令文件，已经打开的会话需要重启才会生效。
             </p>
           </CardContent>

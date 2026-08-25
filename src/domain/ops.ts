@@ -26,8 +26,8 @@ export interface AutoLaunchStatus {
   method: string;
 }
 
-/** State of the forced-Chinese rule in one client's global instructions file. */
-export interface LanguageRuleTarget {
+/** State of one rule in one client's global instructions file. */
+export interface ClientRuleTarget {
   target: string;
   path: string;
   /** Whether the block is in the file, which can differ from the app setting. */
@@ -39,7 +39,8 @@ export interface LanguageRuleTarget {
   error: string | null;
 }
 
-export interface ForceChineseStatus {
+/** The saved setting plus what each client's file actually carries. */
+export interface ClientRuleStatus {
   enabled: boolean;
-  targets: LanguageRuleTarget[];
+  targets: ClientRuleTarget[];
 }

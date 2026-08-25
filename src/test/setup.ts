@@ -405,6 +405,51 @@ const mockResponses: Record<string, unknown> = {
       ],
     };
   },
+  ad_tool_truthfulness_status: {
+    enabled: false,
+    targets: [
+      {
+        target: "Claude Code",
+        path: "C:\\Users\\admin\\.claude\\CLAUDE.md",
+        rulePresent: false,
+        changed: false,
+        shadowedBy: null,
+        error: null,
+      },
+      {
+        target: "Codex",
+        path: "C:\\Users\\admin\\.codex\\AGENTS.md",
+        rulePresent: false,
+        changed: false,
+        shadowedBy: null,
+        error: null,
+      },
+    ],
+  },
+  ad_set_tool_truthfulness: (args?: Record<string, unknown>) => {
+    const enabled = Boolean(args?.enabled);
+    return {
+      enabled,
+      targets: [
+        {
+          target: "Claude Code",
+          path: "C:\\Users\\admin\\.claude\\CLAUDE.md",
+          rulePresent: enabled,
+          changed: true,
+          shadowedBy: null,
+          error: null,
+        },
+        {
+          target: "Codex",
+          path: "C:\\Users\\admin\\.codex\\AGENTS.md",
+          rulePresent: enabled,
+          changed: true,
+          shadowedBy: null,
+          error: null,
+        },
+      ],
+    };
+  },
 };
 
 const mockInvoke = async (cmd: string, args?: Record<string, unknown>) => {

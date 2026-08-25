@@ -7,6 +7,7 @@ pub mod api_key_detector;
 pub mod autolaunch;
 pub mod chat_history;
 pub mod client_detector;
+pub mod client_rules;
 pub mod cloud_sync;
 pub mod credentials;
 pub mod deep_link;
@@ -16,7 +17,6 @@ pub mod error;
 pub mod extension_sync;
 pub mod history_watcher;
 pub mod importer;
-pub mod language_rule;
 pub mod logging;
 pub mod mcp;
 pub mod messages_stream;
@@ -121,7 +121,7 @@ impl Default for AppState {
 ///
 /// One guard for the whole crate, deliberately: the variable is process-global,
 /// so a per-module mutex guards nothing against a test in another module. Two
-/// such mutexes existed before this and let `language_rule` tests clear the
+/// such mutexes existed before this and let `client_rules` tests clear the
 /// variable while a `profile_switch` test was mid-write, which sent that test at
 /// the real `~/.claude/settings.json`. It failed only under CI timing.
 #[cfg(test)]
