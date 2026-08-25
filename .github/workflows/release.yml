@@ -23,15 +23,10 @@ jobs:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-          # Windows-only by choice, not because the others are broken: CI builds
-          # all three successfully as of 20d2ceb, which retires the assumption
-          # inherited from v2.0.7 that macOS and Linux could not build at all.
-          # They ship when someone wants to test installers on them; until then a
-          # release carries the one platform anybody is running.
-          # - os: macos-latest
-          #   target: aarch64-apple-darwin
-          # - os: ubuntu-latest
-          #   target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
       # On a manual run, build the tag the user named rather than the default
