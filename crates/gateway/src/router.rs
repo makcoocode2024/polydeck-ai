@@ -22,6 +22,7 @@ use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use polydeck_core::messages_stream::{Emit, MessagesStreamRepair};
 use polydeck_core::responses_chat::{chat_to_response, responses_to_chat, StreamAdapter, ToolMap};
+use polydeck_core::responses_stream::ResponsesStreamRepair;
 use polydeck_core::types::ThinkingSupport;
 use serde_json::Value;
 use std::{
@@ -933,6 +934,15 @@ fn is_missing_responses_error(status: reqwest::StatusCode, body: &[u8]) -> bool 
 /// Universal SSE stream idle timeout (25s without data chunk).
 pub const SSE_STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
 
+/// Stream `/v1/responses` verbatim, supplying a terminal event if the upstream
+/// stops mid-flight.
+///
+/// The bytes still reach the client unchanged — they are only *also* split on SSE
+/// boundaries so [`ResponsesStreamRepair`] can see the events. Measured against
+/// sotamodel, a long `reasoning.effort=high` request has its chunked body cut off
+/// between two `reasoning_summary_text.delta` events, with no terminal event; the
+/// client then discards the whole turn. Synthesising the `response.completed` the
+/// upstream owed keeps the partial reasoning and text that did arrive.
 fn passthrough_raw_stream(upstream_response: reqwest::Response) -> Response<Body> {
     let status = StatusCode::from_u16(upstream_response.status().as_u16())
         .unwrap_or(StatusCode::BAD_GATEWAY);
@@ -943,41 +953,58 @@ fn passthrough_raw_stream(upstream_response: reqwest::Response) -> Response<Body
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(100);
     tokio::spawn(async move {
         let mut byte_stream = upstream_response.bytes_stream();
-        loop {
+        let mut repair = ResponsesStreamRepair::new();
+        let mut buf: Vec<u8> = Vec::new();
+        // Why the reason strings differ: `upstream_disconnected` is the upstream
+        // cutting the body, `idle_timeout` is this gateway giving up on a stream
+        // that went quiet. Both land in `incomplete_details.reason`, so the client
+        // can tell which happened.
+        let reason = loop {
             let next_item = tokio::time::timeout(SSE_STREAM_IDLE_TIMEOUT, byte_stream.next()).await;
             match next_item {
                 Ok(Some(Ok(bytes))) => {
+                    buf.extend_from_slice(&bytes);
+                    while let Some(block) = take_sse_block(&mut buf) {
+                        if let Some((name, data)) = parse_sse_block(&block) {
+                            repair.observe(&name, &data);
+                        }
+                    }
                     if tx.send(Ok(bytes)).await.is_err() {
+                        // Client hung up; nothing left to repair for.
                         return;
                     }
                 }
                 Ok(Some(Err(e))) => {
-                    let err_msg =
-                        serde_json::json!({"error": format!("Stream read error: {e}")}).to_string();
-                    let _ = tx
-                        .send(Ok(Bytes::from(format!("data: {err_msg}\n\n"))))
-                        .await;
-                    return;
+                    warn!("Upstream raw stream read error: {e}");
+                    break "upstream_disconnected";
                 }
-                Ok(None) => break,
+                Ok(None) => break "upstream_disconnected",
                 Err(_elapsed) => {
-                    warn!(
-                        "Upstream raw stream idle timeout (25s without data); closing connection"
-                    );
-                    let err_msg = serde_json::json!({
-                        "error": {
-                            "message": "Upstream stream idle timeout: no data chunk received for 25s",
-                            "type": "timeout_error",
-                            "code": 504
-                        }
-                    }).to_string();
-                    let _ = tx
-                        .send(Ok(Bytes::from(format!("data: {err_msg}\n\n"))))
-                        .await;
-                    return;
+                    warn!("Upstream raw stream idle timeout (25s without data)");
+                    break "idle_timeout";
                 }
             }
+        };
+        // A trailing block with no blank line after it still carries an event.
+        if !buf.is_empty() {
+            if let Some((name, data)) = parse_sse_block(&buf) {
+                repair.observe(&name, &data);
+            }
         }
+        if repair.saw_terminal() {
+            debug!("Upstream responses stream ended with its own terminal event");
+            return;
+        }
+        let open = repair.open_count();
+        for event in repair.finish_truncated(reason) {
+            if tx.send(Ok(Bytes::from(event))).await.is_err() {
+                return;
+            }
+        }
+        warn!(
+            "Responses stream ended with no terminal event ({reason}); \
+             synthesised response.completed, {open} item(s) were still open"
+        );
     });
     let builder = Response::builder()
         .status(status)
@@ -1106,31 +1133,19 @@ fn passthrough_messages_stream(upstream_response: reqwest::Response) -> Response
                         }
                     }
                 }
+                // Both of these used to emit a bare `data: {"error":...}` frame,
+                // which is not an Anthropic event at all — the client cannot parse
+                // it, and the turn ended with no `message_stop` either way. Falling
+                // through to finish_truncated below closes the turn instead, so the
+                // text that did arrive survives.
                 Ok(Some(Err(e))) => {
-                    let err_msg =
-                        serde_json::json!({"error": format!("Stream read error: {e}")}).to_string();
-                    let _ = tx
-                        .send(Ok(Bytes::from(format!("data: {err_msg}\n\n"))))
-                        .await;
-                    return;
+                    warn!("Upstream messages stream read error: {e}");
+                    break;
                 }
                 Ok(None) => break,
                 Err(_elapsed) => {
-                    warn!(
-                        "Upstream messages stream idle timeout (25s without data); closing connection"
-                    );
-                    let err_msg = serde_json::json!({
-                        "error": {
-                            "message": "Upstream stream idle timeout: no data chunk received for 25s",
-                            "type": "timeout_error",
-                            "code": 504
-                        }
-                    })
-                    .to_string();
-                    let _ = tx
-                        .send(Ok(Bytes::from(format!("data: {err_msg}\n\n"))))
-                        .await;
-                    return;
+                    warn!("Upstream messages stream idle timeout (25s without data)");
+                    break;
                 }
             }
         }
@@ -1141,6 +1156,18 @@ fn passthrough_messages_stream(upstream_response: reqwest::Response) -> Response
                     return;
                 }
             }
+        }
+        for out in repair.finish_truncated() {
+            if tx.send(Ok(Bytes::from(out))).await.is_err() {
+                return;
+            }
+        }
+        if repair.truncated() {
+            warn!(
+                "Messages stream ended with no message_stop; closed the turn, \
+                 open blocks {:?}",
+                repair.open_indices()
+            );
         }
         if repair.repaired() {
             debug!("Supplied a message_delta the upstream omitted");

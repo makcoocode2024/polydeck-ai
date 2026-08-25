@@ -51,6 +51,9 @@ pub struct MessagesStreamRepair {
     /// `(index, content_block.type)` per opened block, so a broken stream can be
     /// read back as a sequence rather than a set.
     block_types: Vec<(u64, String)>,
+    /// Set when the turn was closed by `finish_truncated` rather than by the
+    /// upstream's own `message_stop`.
+    truncated: bool,
 }
 
 /// What the caller should write for one inbound SSE event.
@@ -165,6 +168,55 @@ impl MessagesStreamRepair {
     /// True when a `message_delta` was synthesised, for logging.
     pub fn repaired(&self) -> bool {
         self.finished && !self.saw_message_delta
+    }
+
+    /// Close a turn whose stream died before `message_stop` arrived.
+    ///
+    /// Measured against sotamodel, `/v1/messages` truncates the same way
+    /// `/v1/responses` does: the chunked body stops mid-`content_block_delta` with
+    /// no terminal event. Claude Code needs `message_delta` for `stop_reason` and
+    /// `message_stop` to finalise, so without these the turn is lost even though
+    /// the text that arrived is perfectly usable.
+    ///
+    /// Every still-open block is closed first, or the client is left waiting on a
+    /// `content_block_stop` that never comes.
+    ///
+    /// `stop_reason` is `max_tokens`, which is not literally what happened but is
+    /// the only value in the protocol that means "output was cut short". `tool_use`
+    /// would be actively harmful for a truncated `tool_use` block: its argument
+    /// JSON is incomplete, and naming it would have the client invoke a tool with
+    /// malformed input rather than report a short turn.
+    pub fn finish_truncated(&mut self) -> Vec<String> {
+        if self.finished {
+            return Vec::new();
+        }
+        self.finished = true;
+        self.truncated = true;
+        let mut events = Vec::new();
+        // Close in the order the blocks were opened, innermost state first.
+        let open = std::mem::take(&mut self.open_indices);
+        for index in &open {
+            let payload = json!({ "type": "content_block_stop", "index": index });
+            events.push(format!("event: content_block_stop\ndata: {payload}\n\n"));
+        }
+        self.open_indices = open;
+        let delta = json!({
+            "type": "message_delta",
+            "delta": { "stop_reason": "max_tokens", "stop_sequence": null },
+            "usage": {
+                "input_tokens": self.input_tokens.unwrap_or(0),
+                "output_tokens": self.output_tokens.unwrap_or(0)
+            }
+        });
+        events.push(format!("event: message_delta\ndata: {delta}\n\n"));
+        let stop = json!({ "type": "message_stop" });
+        events.push(format!("event: message_stop\ndata: {stop}\n\n"));
+        events
+    }
+
+    /// True once [`Self::finish_truncated`] closed a turn the upstream abandoned.
+    pub fn truncated(&self) -> bool {
+        self.truncated
     }
 
     /// Indices that got a delta or stop without a matching `content_block_start`.
@@ -549,5 +601,93 @@ mod tests {
         .unwrap();
         assert_eq!(data["usage"]["input_tokens"], 0);
         assert_eq!(data["delta"]["stop_reason"], "end_turn");
+    }
+
+    /// The measured sotamodel truncation: text flowing, then the body is cut off
+    /// with the block still open and no `message_stop`.
+    #[test]
+    fn a_truncated_turn_is_closed_with_a_stop_reason() {
+        let mut r = MessagesStreamRepair::new();
+        ev(
+            &mut r,
+            "message_start",
+            json!({ "type": "message_start",
+                    "message": { "usage": { "input_tokens": 40, "output_tokens": 7 } } }),
+        );
+        ev(
+            &mut r,
+            "content_block_start",
+            json!({ "type": "content_block_start", "index": 0,
+                    "content_block": { "type": "text", "text": "" } }),
+        );
+        ev(
+            &mut r,
+            "content_block_delta",
+            json!({ "type": "content_block_delta", "index": 0,
+                    "delta": { "type": "text_delta", "text": "partial" } }),
+        );
+        let out = r.finish_truncated().join("");
+        assert!(r.truncated());
+        assert!(
+            out.contains("event: content_block_stop"),
+            "open block left dangling: {out}"
+        );
+        assert!(out.contains("event: message_delta"), "{out}");
+        assert!(out.contains("event: message_stop"), "{out}");
+        // max_tokens, not tool_use: see finish_truncated's rationale.
+        assert!(out.contains("\"stop_reason\":\"max_tokens\""), "{out}");
+        // The usage seen at message_start has to survive.
+        assert!(out.contains("\"input_tokens\":40"), "{out}");
+    }
+
+    #[test]
+    fn a_turn_that_already_stopped_is_not_closed_again() {
+        let mut r = MessagesStreamRepair::new();
+        ev(&mut r, "message_start", json!({ "type": "message_start" }));
+        ev(
+            &mut r,
+            "message_delta",
+            json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" } }),
+        );
+        ev(&mut r, "message_stop", json!({ "type": "message_stop" }));
+        assert!(r.finish_truncated().is_empty());
+        assert!(!r.truncated());
+    }
+
+    /// A truncated `tool_use` block must not be reported as `tool_use`: its
+    /// argument JSON is incomplete, and the client would call the tool with it.
+    #[test]
+    fn a_truncated_tool_use_turn_does_not_claim_tool_use() {
+        let mut r = MessagesStreamRepair::new();
+        ev(&mut r, "message_start", json!({ "type": "message_start" }));
+        ev(
+            &mut r,
+            "content_block_start",
+            json!({ "type": "content_block_start", "index": 0,
+                    "content_block": { "type": "tool_use", "id": "t1", "name": "shell" } }),
+        );
+        let out = r.finish_truncated().join("");
+        assert!(out.contains("\"stop_reason\":\"max_tokens\""), "{out}");
+        assert!(!out.contains("\"stop_reason\":\"tool_use\""), "{out}");
+    }
+
+    #[test]
+    fn every_open_block_gets_a_stop() {
+        let mut r = MessagesStreamRepair::new();
+        ev(&mut r, "message_start", json!({ "type": "message_start" }));
+        for index in 0..3 {
+            ev(
+                &mut r,
+                "content_block_start",
+                json!({ "type": "content_block_start", "index": index,
+                        "content_block": { "type": "text", "text": "" } }),
+            );
+        }
+        let out = r.finish_truncated();
+        let stops = out
+            .iter()
+            .filter(|e| e.starts_with("event: content_block_stop"))
+            .count();
+        assert_eq!(stops, 3, "not every block closed: {out:?}");
     }
 }
