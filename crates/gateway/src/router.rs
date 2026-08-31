@@ -1288,6 +1288,9 @@ async fn handle_responses_stream(
     }
     tokio::spawn(async move {
         let mut upstream_events = upstream_response.bytes_stream().eventsource();
+        // Every exit below must reach `adapter.finish()`: `response.completed` is the
+        // only event Codex accepts as an end of turn (see `sse_error`), so returning
+        // early emits an `error` frame it treats as a dead stream and drops the turn.
         loop {
             let next_item =
                 tokio::time::timeout(SSE_STREAM_IDLE_TIMEOUT, upstream_events.next()).await;
@@ -1302,6 +1305,7 @@ async fn handle_responses_stream(
                         }
                     }
                     Err(e) => {
+                        warn!("Upstream chunk did not parse as JSON: {e}");
                         let err_msg =
                             serde_json::json!({"error": format!("Parse error: {e}")}).to_string();
                         let _ = tx
@@ -1309,10 +1313,11 @@ async fn handle_responses_stream(
                                 "event: error\ndata: {err_msg}\n\n"
                             ))))
                             .await;
-                        return;
+                        break;
                     }
                 },
                 Ok(Some(Err(e))) => {
+                    warn!("Upstream bridged stream read error: {e}");
                     let err_msg =
                         serde_json::json!({"error": format!("Stream error: {e}")}).to_string();
                     let _ = tx
@@ -1320,11 +1325,11 @@ async fn handle_responses_stream(
                             "event: error\ndata: {err_msg}\n\n"
                         ))))
                         .await;
-                    return;
+                    break;
                 }
                 Ok(None) => break,
                 Err(_elapsed) => {
-                    warn!("Upstream responses SSE stream idle timeout (25s without data); closing connection");
+                    warn!("Upstream bridged responses SSE stream idle timeout (25s without data); closing the turn");
                     let err_msg = serde_json::json!({
                         "error": {
                             "message": "Upstream SSE stream idle timeout: no data chunk received for 25s",
@@ -1337,7 +1342,7 @@ async fn handle_responses_stream(
                             "event: error\ndata: {err_msg}\n\n"
                         ))))
                         .await;
-                    return;
+                    break;
                 }
             }
         }
@@ -2462,6 +2467,83 @@ mod tests {
         let body = collect_body(passthrough_messages_stream(upstream)).await;
         assert_eq!(body, events);
         assert_eq!(body.matches("event: message_delta").count(), 1);
+    }
+
+    /// Like [`upstream_streaming`], but the body fails after the given chunks, so
+    /// the stream dies mid-flight instead of ending cleanly.
+    fn upstream_streaming_then_error(chunks: Vec<&'static str>) -> reqwest::Response {
+        let ok = chunks
+            .into_iter()
+            .map(|c| Ok::<Bytes, std::io::Error>(Bytes::from(c)));
+        let stream = futures_util::stream::iter(
+            ok.chain(std::iter::once(Err(std::io::Error::other("upstream cut")))),
+        );
+        let inner = axum::http::Response::builder()
+            .status(200)
+            .header(header::CONTENT_TYPE, "text/event-stream")
+            .body(reqwest::Body::wrap_stream(stream))
+            .unwrap();
+        reqwest::Response::from(inner)
+    }
+
+    /// The sotamodel failure on the bridge path: the upstream stops without
+    /// `[DONE]`. Codex accepts only `response.completed` as an end of turn, so
+    /// bailing out early cost the whole turn including the text that did arrive.
+    #[tokio::test]
+    async fn bridged_stream_cut_mid_flight_still_completes_the_turn() {
+        let upstream = upstream_streaming_then_error(vec![
+            "data: {\"choices\":[{\"delta\":{\"content\":\"partial \"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n",
+        ]);
+        let body =
+            collect_body(handle_responses_stream(upstream, "m".into(), ToolMap::default()).await)
+                .await;
+
+        assert_eq!(
+            body.matches("event: response.completed").count(),
+            1,
+            "truncated bridge stream must end with exactly one terminal event:\n{body}"
+        );
+        assert!(
+            body.contains("partial answer"),
+            "text received before the cut was dropped:\n{body}"
+        );
+    }
+
+    /// An unparseable chunk takes the same exit, and the error frame stays in
+    /// front of the terminal event for clients that read it.
+    #[tokio::test]
+    async fn bridged_stream_unparseable_chunk_still_completes_the_turn() {
+        let upstream = upstream_streaming(vec![
+            "data: {\"choices\":[{\"delta\":{\"content\":\"before\"}}]}\n\n",
+            "data: {not json}\n\n",
+        ]);
+        let body =
+            collect_body(handle_responses_stream(upstream, "m".into(), ToolMap::default()).await)
+                .await;
+
+        let err_at = body.find("event: error").expect("no error frame:\n{body}");
+        let done_at = body
+            .find("event: response.completed")
+            .unwrap_or_else(|| panic!("no terminal event:\n{body}"));
+        assert!(err_at < done_at, "error must precede completion:\n{body}");
+        assert!(body.contains("before"), "text dropped:\n{body}");
+    }
+
+    /// The healthy path is unchanged: one terminal event, no error frame.
+    #[tokio::test]
+    async fn bridged_stream_completes_normally_without_an_error_frame() {
+        let upstream = upstream_streaming(vec![
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+            "data: [DONE]\n\n",
+        ]);
+        let body =
+            collect_body(handle_responses_stream(upstream, "m".into(), ToolMap::default()).await)
+                .await;
+
+        assert_eq!(body.matches("event: response.completed").count(), 1);
+        assert!(!body.contains("event: error"), "body:\n{body}");
+        assert!(body.contains("hello"), "body:\n{body}");
     }
 
     /// A stream cut off before its blank line must still reach the client.
