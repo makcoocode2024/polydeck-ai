@@ -664,6 +664,12 @@ pub struct StreamAdapter {
     next_output_index: usize,
     tool_calls: HashMap<usize, StreamingTool>,
     usage: Value,
+    /// Why the upstream stream ended early, if it did. Appended to the assistant
+    /// text by `finish`, because an `event: error` frame does not reach the user:
+    /// measured 2026-09-01, a severed bridge stream delivered 3856 characters and
+    /// the client stored no trace of the error frame sent alongside them, so the
+    /// output simply stopped mid-sentence with nothing saying why.
+    truncated: Option<String>,
 }
 
 impl StreamAdapter {
@@ -679,7 +685,14 @@ impl StreamAdapter {
             next_output_index: 0,
             tool_calls: HashMap::new(),
             usage: json!({ "input_tokens": 0, "output_tokens": 0, "total_tokens": 0 }),
+            truncated: None,
         }
+    }
+
+    /// Record that the upstream stream ended early, so `finish` can say so in the
+    /// text. `reason` is short and user-facing; it lands in the transcript.
+    pub fn mark_truncated(&mut self, reason: impl Into<String>) {
+        self.truncated = Some(reason.into());
     }
 
     pub fn start(&self) -> Vec<String> {
@@ -869,6 +882,12 @@ impl StreamAdapter {
         // stalling case, where the whole output budget went to thinking. Flushing
         // here means the client still receives a message instead of nothing.
         events.extend(self.flush_reasoning_into_text());
+        // After the flush, so the notice reads as the last thing in the turn rather
+        // than sitting in front of the thinking it interrupted.
+        if let Some(reason) = self.truncated.take() {
+            let notice = format!("\n\n⚠ 上游在此处断流，本轮输出不完整（{reason}）。");
+            events.extend(self.push_text(&notice));
+        }
         if let (Some(item_id), Some(output_index)) =
             (self.text_item_id.take(), self.text_output_index)
         {
@@ -1225,6 +1244,44 @@ mod tests {
             1,
             "reasoning and answer must share one message item: {full}"
         );
+    }
+
+    /// A truncation notice has to be the last thing in the text. Appending it
+    /// before the reasoning flush would put it in front of the thinking it
+    /// interrupted, which reads as though the turn ended and then kept going.
+    #[test]
+    fn a_truncation_notice_lands_after_the_reasoning_it_interrupted() {
+        let mut adapter = StreamAdapter::new("m".into(), ToolMap::default());
+        let mut events = adapter.start();
+        events.extend(adapter.push_chat_chunk(&json!({
+            "choices": [{ "delta": { "reasoning_content": "half a thought" } }]
+        })));
+        adapter.mark_truncated("上游连接中断");
+        events.extend(adapter.finish());
+        let full = events.join("");
+
+        let think_at = full.find("half a thought").expect("reasoning lost");
+        let notice_at = full.find("本轮输出不完整").expect("no notice emitted");
+        assert!(
+            think_at < notice_at,
+            "notice must follow the thinking it cut off:\n{full}"
+        );
+        assert!(full.contains("上游连接中断"), "reason lost:\n{full}");
+        assert!(full.contains("event: response.completed"));
+    }
+
+    /// Nothing is appended to a turn that ended normally.
+    #[test]
+    fn an_untruncated_turn_gets_no_notice() {
+        let mut adapter = StreamAdapter::new("m".into(), ToolMap::default());
+        let mut events = adapter.start();
+        events.extend(adapter.push_chat_chunk(&json!({
+            "choices": [{ "delta": { "content": "all done" } }]
+        })));
+        events.extend(adapter.finish());
+        let full = events.join("");
+        assert!(!full.contains("本轮输出不完整"), "spurious notice:\n{full}");
+        assert!(full.contains("all done"));
     }
 
     #[test]

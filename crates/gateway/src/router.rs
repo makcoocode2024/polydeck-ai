@@ -1306,6 +1306,7 @@ async fn handle_responses_stream(
                     }
                     Err(e) => {
                         warn!("Upstream chunk did not parse as JSON: {e}");
+                        adapter.mark_truncated("上游返回的数据块无法解析");
                         let err_msg =
                             serde_json::json!({"error": format!("Parse error: {e}")}).to_string();
                         let _ = tx
@@ -1318,6 +1319,7 @@ async fn handle_responses_stream(
                 },
                 Ok(Some(Err(e))) => {
                     warn!("Upstream bridged stream read error: {e}");
+                    adapter.mark_truncated("上游连接中断");
                     let err_msg =
                         serde_json::json!({"error": format!("Stream error: {e}")}).to_string();
                     let _ = tx
@@ -1330,6 +1332,7 @@ async fn handle_responses_stream(
                 Ok(None) => break,
                 Err(_elapsed) => {
                     warn!("Upstream bridged responses SSE stream idle timeout (25s without data); closing the turn");
+                    adapter.mark_truncated("上游 25 秒无数据，网关判定超时");
                     let err_msg = serde_json::json!({
                         "error": {
                             "message": "Upstream SSE stream idle timeout: no data chunk received for 25s",
