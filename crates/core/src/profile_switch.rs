@@ -370,12 +370,12 @@ pub async fn switch_profile(
         // Tier wiring is decided per-provider before any config lands on disk;
         // surface collapses and overridden display names early so a profile that
         // looks set up is not silently not set up.
-        if let Some(primary) = profile
+        let primary = profile
             .providers
             .iter()
             .find(|p| p.is_primary)
-            .or_else(|| profile.providers.first())
-        {
+            .or_else(|| profile.providers.first());
+        if let Some(primary) = primary {
             warnings.extend(claude_tier_warnings(primary));
         }
 
@@ -397,6 +397,28 @@ pub async fn switch_profile(
                     warnings.push(format!("写入 {client} 配置提示：{e}"));
                 }
             }
+        }
+
+        // Claude Desktop keeps its gateway URL and token in account settings, not
+        // in any local file, so activating a profile can only sync its MCP
+        // servers. Without this it lands in `clients_written` and reads as fully
+        // configured while still talking to whatever endpoint it talked to before.
+        if clients_written.iter().any(|c| c.contains("desktop")) {
+            let manual_url = if profile.gateway_enabled {
+                format!("http://127.0.0.1:{GATEWAY_PORT}")
+            } else {
+                primary
+                    .map(|p| strip_anthropic_version_suffix(&p.base_url))
+                    .unwrap_or_default()
+            };
+            let token = if profile.gateway_enabled {
+                "ai-deck-local"
+            } else {
+                "该 Provider 的 API Key"
+            };
+            warnings.push(format!(
+                "Claude Desktop 只同步了 MCP 服务：它的网关地址与令牌存在账号设置里，PolyDeck 写不到本地文件。请在 Desktop 内手填 {manual_url}（令牌 {token}），末尾不要带 /v1，否则它会请求 /v1/v1/messages 并 404"
+            ));
         }
     }
 
@@ -2429,6 +2451,75 @@ mod tests {
         assert!(
             claude_json.get("oauthAccount").is_none(),
             "~/.claude.json 不应残留 oauthAccount"
+        );
+    }
+
+    /// Activating a profile that targets Claude Desktop must say the endpoint is
+    /// still unset, since only its MCP servers can be written locally.
+    #[tokio::test]
+    async fn test_desktop_target_warns_endpoint_is_manual() {
+        let _home_guard = lock_home_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
+        let state_path = temp_home.path().join(".ai-deck").join("state.json");
+        let mut pm = ProfileManager::with_state_path(state_path);
+
+        let mut p = pm.create_profile_simple("方案").unwrap();
+        p.providers[0].base_url = "https://relay.example.com/v1".into();
+        p.providers[0].models = vec!["m".into()];
+        p.providers[0].default_model = "m".into();
+        let providers = p.providers.clone();
+        let p = pm
+            .update_profile(
+                &p.id,
+                ProfileUpdate {
+                    name: Some("方案".into()),
+                    providers: Some(providers.clone()),
+                    clients: Some(vec!["claude-desktop".into()]),
+                    gateway_enabled: Some(true),
+                    failover_enabled: None,
+                },
+            )
+            .unwrap();
+
+        let res = switch_profile(&mut pm, &p.id).await.unwrap();
+        assert!(res.clients_written.iter().any(|c| c == "claude-desktop"));
+        let warning = res
+            .warnings
+            .iter()
+            .find(|w| w.contains("Claude Desktop"))
+            .expect("以 Claude Desktop 为目标时必须提示端点需手填");
+        assert!(
+            warning.contains(&format!("http://127.0.0.1:{GATEWAY_PORT}")),
+            "网关模式应给出回环地址，实际：{warning}"
+        );
+        assert!(
+            !warning.contains(&format!("http://127.0.0.1:{GATEWAY_PORT}/v1")),
+            "提示里的地址不能带 /v1，否则 Desktop 会请求 /v1/v1/messages"
+        );
+
+        // Direct mode: the provider's own /v1 suffix must be stripped too.
+        let p = pm
+            .update_profile(
+                &p.id,
+                ProfileUpdate {
+                    name: None,
+                    providers: Some(providers),
+                    clients: Some(vec!["claude-desktop".into()]),
+                    gateway_enabled: Some(false),
+                    failover_enabled: None,
+                },
+            )
+            .unwrap();
+        let res = switch_profile(&mut pm, &p.id).await.unwrap();
+        let warning = res
+            .warnings
+            .iter()
+            .find(|w| w.contains("Claude Desktop"))
+            .expect("直连模式同样要提示");
+        assert!(
+            warning.contains("https://relay.example.com（"),
+            "直连模式应给出去掉 /v1 的上游地址，实际：{warning}"
         );
     }
 

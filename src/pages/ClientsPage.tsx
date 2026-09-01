@@ -151,21 +151,21 @@ export default function ClientsPage() {
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-sm font-semibold">Claude Desktop 官方桌面端</CardTitle>
-                <Badge variant="outline" className="text-[10px]">MCP & 网关直连</Badge>
+                <Badge variant="outline" className="text-[10px]">MCP 自动同步 / 端点手填</Badge>
               </div>
             </CardHeader>
             <CardContent className="space-y-3 text-xs">
               <p className="text-muted-foreground text-[11px]">
-                配置文件位于 <code>claude_desktop_config.json</code>，PolyDeck 支持自动同步 MCP 服务与网关转发配置。
+                PolyDeck 只能同步 <code>claude_desktop_config.json</code> 里的 MCP 服务。网关地址与令牌存在 Desktop 的账号设置里，需在其中手填（不要带 <code>/v1</code>，Anthropic SDK 会自行拼接，否则请求 <code>/v1/v1/messages</code> 并 404）：
               </p>
               <div className="p-2.5 bg-muted/50 rounded font-mono text-[11px] space-y-1 relative group">
-                <div>Gateway URL: <b>http://127.0.0.1:18888/v1</b></div>
+                <div>Gateway URL: <b>http://127.0.0.1:18888</b></div>
                 <div>Auth Token: <b>Bearer ai-deck-local</b></div>
                 <Button
                   variant="ghost"
                   size="sm"
                   className="h-6 w-6 p-0 absolute top-2 right-2"
-                  onClick={() => copySnippet("claude-desktop", "http://127.0.0.1:18888/v1")}
+                  onClick={() => copySnippet("claude-desktop", "http://127.0.0.1:18888")}
                 >
                   {copiedKey === "claude-desktop" ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
                 </Button>

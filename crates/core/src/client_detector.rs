@@ -122,7 +122,9 @@ pub fn detect_all() -> Vec<DetectedClient> {
             installed: claude_desktop_installed,
             version: None,
             config_path: claude_desktop_config.map(|p| p.to_string_lossy().into()),
-            supports_auto_config: true,
+            // Only its MCP servers can be written; the gateway URL and token live
+            // in account settings, so the endpoint is always set by hand.
+            supports_auto_config: false,
         },
         DetectedClient {
             id: "hermes".into(),
@@ -286,7 +288,9 @@ pub fn detect_all() -> Vec<DetectedClient> {
             },
             version: None,
             config_path: None,
-            supports_auto_config: true,
+            // No writer in `profile_switch::write_client_config`, and no local
+            // config file to write one for.
+            supports_auto_config: false,
         },
     ]
 }
@@ -367,4 +371,38 @@ fn which_exists(name: &str) -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `supports_auto_config` drives the "支持一键配置同步写入" label, so it must
+    /// mean exactly one thing: activating a profile writes this client's endpoint.
+    ///
+    /// Two clients used to claim it without that being true — `claude-desktop`
+    /// (its writer only syncs MCP servers; the endpoint lives in account
+    /// settings) and `opencode` (no writer at all). Both read as configured while
+    /// still pointing at whatever endpoint they pointed at before.
+    #[test]
+    fn auto_config_flag_matches_which_clients_get_an_endpoint_written() {
+        // Mirrors the dispatch in `profile_switch::write_client_config`, minus
+        // Claude Desktop, whose writer deliberately touches only `mcpServers`.
+        let writes_endpoint = |id: &str| {
+            let id = id.to_ascii_lowercase();
+            let is_desktop = id == "claude-desktop" || id.contains("desktop");
+            !is_desktop
+                && (id.contains("codex") || id.contains("hermes") || id.contains("claude"))
+        };
+
+        for client in detect_all() {
+            assert_eq!(
+                client.supports_auto_config,
+                writes_endpoint(&client.id),
+                "{} 的 supports_auto_config 与它是否真被写入端点不一致：\
+                 该字段驱动“支持一键配置同步写入”文案，写不到端点就不能报 true",
+                client.id
+            );
+        }
+    }
 }
