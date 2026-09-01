@@ -29,8 +29,10 @@ const mockResponses: Record<string, unknown> = {
   ad_get_version: "2.0.0",
   ad_ping: "pong",
   ad_detect_clients: [
+    // Ids and order mirror `client_detector::detect_all`, so client-selection
+    // logic is exercised against what the backend actually returns.
     {
-      id: "codex",
+      id: "codex-cli",
       name: "Codex CLI",
       installed: true,
       version: "0.1.0",
@@ -44,16 +46,6 @@ const mockResponses: Record<string, unknown> = {
       version: null,
       configPath: null,
       supportsAutoConfig: false,
-    },
-    // Real ids, so client-selection logic can be exercised. `codex` above keeps
-    // its legacy id because tests assert on `clients[0].id`.
-    {
-      id: "codex-cli",
-      name: "Codex CLI (codex-cli)",
-      installed: true,
-      version: "0.1.0",
-      configPath: "C:\\Users\\admin\\.codex\\config.toml",
-      supportsAutoConfig: true,
     },
     {
       id: "claude-code",

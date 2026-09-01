@@ -14,7 +14,7 @@ describe("Backend API Service", () => {
     const clients = await backend.detectClients();
     expect(Array.isArray(clients)).toBe(true);
     expect(clients.length).toBeGreaterThan(0);
-    expect(clients[0].id).toBe("codex");
+    expect(clients[0].id).toBe("codex-cli");
   });
 
   it("probes provider rate limits and recommendations", async () => {

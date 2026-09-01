@@ -52,8 +52,11 @@ import {
   EyeOff,
 } from "lucide-react";
 
+// Ids must match `client_detector::detect_all`, since `allClientOptions` merges
+// the two by id — a stale id here shows up as a second, never-installed row for
+// a client that is already in the list.
 const KNOWN_CLIENTS = [
-  { id: "codex", name: "Codex CLI" },
+  { id: "codex-cli", name: "Codex CLI" },
   { id: "claude-code", name: "Claude Code" },
   { id: "claude-desktop", name: "Claude Desktop" },
   { id: "hermes", name: "Hermes" },
@@ -62,7 +65,6 @@ const KNOWN_CLIENTS = [
   { id: "cherry-studio", name: "Cherry Studio" },
   { id: "chatbox", name: "Chatbox" },
   { id: "vscode", name: "VS Code (Cline / Continue)" },
-  { id: "aider", name: "Aider CLI" },
 ];
 
 /**
