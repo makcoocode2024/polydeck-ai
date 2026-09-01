@@ -399,26 +399,29 @@ pub async fn switch_profile(
             }
         }
 
-        // Claude Desktop keeps its gateway URL and token in account settings, not
-        // in any local file, so activating a profile can only sync its MCP
-        // servers. Without this it lands in `clients_written` and reads as fully
-        // configured while still talking to whatever endpoint it talked to before.
+        // Writing the endpoint puts Desktop into third-party mode, which takes it
+        // off the user's Claude account until a profile without it is activated.
+        // Neither fact is visible from the app, and the config is only read at
+        // startup.
         if clients_written.iter().any(|c| c.contains("desktop")) {
-            let manual_url = if profile.gateway_enabled {
-                format!("http://127.0.0.1:{GATEWAY_PORT}")
-            } else {
-                primary
-                    .map(|p| strip_anthropic_version_suffix(&p.base_url))
-                    .unwrap_or_default()
-            };
-            let token = if profile.gateway_enabled {
-                "ai-deck-local"
-            } else {
-                "该 Provider 的 API Key"
-            };
-            warnings.push(format!(
-                "Claude Desktop 只同步了 MCP 服务：它的网关地址与令牌存在账号设置里，PolyDeck 写不到本地文件。请在 Desktop 内手填 {manual_url}（令牌 {token}），末尾不要带 /v1，否则它会请求 /v1/v1/messages 并 404"
-            ));
+            warnings.push(
+                "Claude Desktop 已切到第三方模式，需要重启它才生效；期间它不再走你的 Claude 账号登录。切到未勾选它的方案会自动恢复官方登录".into(),
+            );
+        }
+    }
+
+    // Hand Desktop back to its own account login when this profile does not claim
+    // it. Keyed on the profile's own client list rather than `clients_written`, so
+    // a failed write does not then tear down a setup that was working. Sits
+    // outside the providers check above because a provider-less profile still has
+    // to release Desktop.
+    let targets_desktop = profile.clients.iter().any(|client| {
+        let clean = client.trim().to_ascii_lowercase();
+        clean == "claude-desktop" || clean.contains("desktop")
+    });
+    if !targets_desktop {
+        if let Err(e) = crate::claude_desktop::restore() {
+            warnings.push(format!("恢复 Claude Desktop 官方登录时提示：{e}"));
         }
     }
 
@@ -1299,17 +1302,21 @@ async fn write_claude_config(
     Ok(())
 }
 
+/// Point Claude Desktop at the profile's endpoint.
+///
+/// Two separate surfaces, in two separate directory trees: the MCP servers below,
+/// and the third-party endpoint in `Claude-3p`, which
+/// [`crate::claude_desktop::apply`] owns.
 async fn write_claude_desktop_config(
-    _provider: &crate::profile::ProviderConfig,
-    _profile_id: &str,
-    _gateway_enabled: bool,
+    provider: &crate::profile::ProviderConfig,
+    profile_id: &str,
+    gateway_enabled: bool,
 ) -> AppResult<()> {
     let home =
         crate::user_home_dir().ok_or_else(|| AppError::Config("无法确定用户主目录".into()))?;
 
     #[cfg(windows)]
-    let config_path = std::env::var_os("APPDATA")
-        .map(std::path::PathBuf::from)
+    let config_path = crate::roaming_app_data_dir()
         .unwrap_or_else(|| home.join("AppData/Roaming"))
         .join(r"Claude\claude_desktop_config.json");
 
@@ -1342,7 +1349,92 @@ async fn write_claude_desktop_config(
         std::fs::create_dir_all(parent)?;
     }
     crate::storage::atomic_replace(&config_path, content.as_bytes())?;
-    Ok(())
+
+    crate::claude_desktop::apply(&desktop_endpoint_spec(
+        provider,
+        profile_id,
+        gateway_enabled,
+    ))
+}
+
+/// Describe the endpoint Claude Desktop should use for this provider.
+fn desktop_endpoint_spec(
+    provider: &crate::profile::ProviderConfig,
+    profile_id: &str,
+    gateway_enabled: bool,
+) -> crate::claude_desktop::EndpointSpec {
+    // Desktop appends the `/v1/...` path itself, so a `/v1` suffix here would
+    // make it request `/v1/v1/messages` and 404.
+    let base_url = if gateway_enabled {
+        format!("http://127.0.0.1:{GATEWAY_PORT}")
+    } else {
+        strip_anthropic_version_suffix(&provider.base_url)
+    };
+
+    let api_key = crate::credentials::get_api_key(profile_id)
+        .ok()
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+        .unwrap_or_else(|| {
+            if gateway_enabled {
+                "ai-deck-local".to_string()
+            } else {
+                String::new()
+            }
+        });
+
+    crate::claude_desktop::EndpointSpec {
+        base_url,
+        api_key,
+        models: desktop_inference_models(provider, gateway_enabled),
+    }
+}
+
+/// The three tiers as Desktop's model menu should list them.
+///
+/// Without the gateway there is nothing to translate a display name into the
+/// provider's real model, so the menu has to carry the upstream names verbatim.
+fn desktop_inference_models(
+    provider: &crate::profile::ProviderConfig,
+    gateway_enabled: bool,
+) -> Vec<crate::claude_desktop::InferenceModel> {
+    let (opus_wire, sonnet_wire, haiku_wire) = if gateway_enabled {
+        claude_wire_names(provider)
+    } else {
+        claude_tier_candidates(provider)
+    };
+    let (opus_display, sonnet_display, haiku_display) = claude_display_names(provider);
+    let supports_1m = provider.supports_1m_context.unwrap_or(false);
+
+    let mut models = Vec::new();
+    let mut seen = HashSet::new();
+    // Haiku 4.5 caps at 200K, so only the two larger tiers claim 1M.
+    for (wire, display, tier_supports_1m) in [
+        (opus_wire, opus_display, supports_1m),
+        (sonnet_wire, sonnet_display, supports_1m),
+        (haiku_wire, haiku_display, false),
+    ] {
+        if wire.is_empty() || !seen.insert(wire.to_string()) {
+            continue;
+        }
+        models.push(crate::claude_desktop::InferenceModel {
+            name: wire.to_string(),
+            // Only meaningful when the gateway is there to map it back.
+            label_override: (gateway_enabled && display != wire).then(|| display.to_string()),
+            supports_1m: tier_supports_1m,
+        });
+    }
+
+    let default_model = claude_default_model(provider);
+    if !default_model.is_empty() && seen.insert(default_model.to_string()) {
+        models.push(crate::claude_desktop::InferenceModel {
+            name: default_model.to_string(),
+            label_override: None,
+            supports_1m: false,
+        });
+    }
+
+    models
 }
 
 async fn write_hermes_config(
@@ -1476,41 +1568,26 @@ ANTHROPIC_API_KEY={key}
             crate::storage::atomic_replace(&dot_config_hermes.join(".env"), env_content.as_bytes());
     }
 
+    // Hermes reads whichever of these it finds first, so both get the same
+    // content. Resolved through the app-data helpers rather than the environment
+    // so tests cannot reach real user data.
     #[cfg(windows)]
-    if let Some(appdata) = std::env::var_os("APPDATA") {
-        let appdata_hermes = std::path::PathBuf::from(appdata).join("hermes");
-        if std::fs::create_dir_all(&appdata_hermes).is_ok() {
+    for dir in [crate::roaming_app_data_dir(), crate::local_app_data_dir()]
+        .into_iter()
+        .flatten()
+    {
+        let hermes_dir = dir.join("hermes");
+        if std::fs::create_dir_all(&hermes_dir).is_ok() {
             let _ = crate::storage::atomic_replace(
-                &appdata_hermes.join("config.yaml"),
+                &hermes_dir.join("config.yaml"),
                 config_yaml.as_bytes(),
             );
             let _ = crate::storage::atomic_replace(
-                &appdata_hermes.join("config.json"),
+                &hermes_dir.join("config.json"),
                 json_content.as_bytes(),
             );
-            let _ = crate::storage::atomic_replace(
-                &appdata_hermes.join(".env"),
-                env_content.as_bytes(),
-            );
-        }
-    }
-
-    #[cfg(windows)]
-    if let Some(localappdata) = std::env::var_os("LOCALAPPDATA") {
-        let localappdata_hermes = std::path::PathBuf::from(localappdata).join("hermes");
-        if std::fs::create_dir_all(&localappdata_hermes).is_ok() {
-            let _ = crate::storage::atomic_replace(
-                &localappdata_hermes.join("config.yaml"),
-                config_yaml.as_bytes(),
-            );
-            let _ = crate::storage::atomic_replace(
-                &localappdata_hermes.join("config.json"),
-                json_content.as_bytes(),
-            );
-            let _ = crate::storage::atomic_replace(
-                &localappdata_hermes.join(".env"),
-                env_content.as_bytes(),
-            );
+            let _ =
+                crate::storage::atomic_replace(&hermes_dir.join(".env"), env_content.as_bytes());
         }
     }
 
@@ -2454,10 +2531,10 @@ mod tests {
         );
     }
 
-    /// Activating a profile that targets Claude Desktop must say the endpoint is
-    /// still unset, since only its MCP servers can be written locally.
+    /// Targeting Claude Desktop must write its 3P endpoint, and switching away
+    /// must hand it back to its own account login.
     #[tokio::test]
-    async fn test_desktop_target_warns_endpoint_is_manual() {
+    async fn test_desktop_target_writes_the_3p_endpoint() {
         let _home_guard = lock_home_env();
         let temp_home = tempfile::tempdir().unwrap();
         std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
@@ -2468,13 +2545,12 @@ mod tests {
         p.providers[0].base_url = "https://relay.example.com/v1".into();
         p.providers[0].models = vec!["m".into()];
         p.providers[0].default_model = "m".into();
-        let providers = p.providers.clone();
         let p = pm
             .update_profile(
                 &p.id,
                 ProfileUpdate {
                     name: Some("方案".into()),
-                    providers: Some(providers.clone()),
+                    providers: Some(p.providers.clone()),
                     clients: Some(vec!["claude-desktop".into()]),
                     gateway_enabled: Some(true),
                     failover_enabled: None,
@@ -2482,45 +2558,86 @@ mod tests {
             )
             .unwrap();
 
+        // A foreign entry stands in for a profile the user made in Desktop itself.
+        let threep = temp_home
+            .path()
+            .join("AppData")
+            .join("Local")
+            .join("Claude-3p");
+        let library = threep.join("configLibrary");
+        std::fs::create_dir_all(&library).unwrap();
+        std::fs::write(
+            library.join("_meta.json"),
+            r#"{"appliedId":"foreign-id","entries":[{"id":"foreign-id","name":"111"}]}"#,
+        )
+        .unwrap();
+
         let res = switch_profile(&mut pm, &p.id).await.unwrap();
         assert!(res.clients_written.iter().any(|c| c == "claude-desktop"));
-        let warning = res
-            .warnings
-            .iter()
-            .find(|w| w.contains("Claude Desktop"))
-            .expect("以 Claude Desktop 为目标时必须提示端点需手填");
-        assert!(
-            warning.contains(&format!("http://127.0.0.1:{GATEWAY_PORT}")),
-            "网关模式应给出回环地址，实际：{warning}"
-        );
-        assert!(
-            !warning.contains(&format!("http://127.0.0.1:{GATEWAY_PORT}/v1")),
-            "提示里的地址不能带 /v1，否则 Desktop 会请求 /v1/v1/messages"
+
+        let our_profile = library.join(format!("{}.json", crate::claude_desktop::PROFILE_UUID));
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&our_profile).unwrap()).unwrap();
+        assert_eq!(
+            written["inferenceGatewayBaseUrl"].as_str(),
+            Some(format!("http://127.0.0.1:{GATEWAY_PORT}").as_str()),
+            "网关模式应指向回环地址且不带 /v1"
         );
 
-        // Direct mode: the provider's own /v1 suffix must be stripped too.
-        let p = pm
+        let mode_of = |dir: &std::path::Path| -> String {
+            let raw = std::fs::read_to_string(dir.join("claude_desktop_config.json")).unwrap();
+            serde_json::from_str::<serde_json::Value>(&raw).unwrap()["deploymentMode"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        };
+        let normal = temp_home
+            .path()
+            .join("AppData")
+            .join("Local")
+            .join("Claude");
+        assert_eq!(mode_of(&threep), "3p");
+        assert_eq!(mode_of(&normal), "3p");
+        assert!(
+            res.warnings.iter().any(|w| w.contains("重启")),
+            "必须提示要重启 Desktop 才生效"
+        );
+        assert!(
+            !res.warnings.iter().any(|w| w.contains("写不到本地文件")),
+            "端点现在写得进去了，不该再声称写不到"
+        );
+
+        // Switching to a profile that does not claim Desktop restores it.
+        let mut other = pm.create_profile_simple("仅 CLI").unwrap();
+        other.providers[0].models = vec!["m".into()];
+        other.providers[0].default_model = "m".into();
+        let other_providers = other.providers.clone();
+        let other = pm
             .update_profile(
-                &p.id,
+                &other.id,
                 ProfileUpdate {
-                    name: None,
-                    providers: Some(providers),
-                    clients: Some(vec!["claude-desktop".into()]),
-                    gateway_enabled: Some(false),
+                    name: Some("仅 CLI".into()),
+                    providers: Some(other_providers),
+                    clients: Some(vec!["claude-code".into()]),
+                    gateway_enabled: Some(true),
                     failover_enabled: None,
                 },
             )
             .unwrap();
-        let res = switch_profile(&mut pm, &p.id).await.unwrap();
-        let warning = res
-            .warnings
-            .iter()
-            .find(|w| w.contains("Claude Desktop"))
-            .expect("直连模式同样要提示");
-        assert!(
-            warning.contains("https://relay.example.com（"),
-            "直连模式应给出去掉 /v1 的上游地址，实际：{warning}"
+        switch_profile(&mut pm, &other.id).await.unwrap();
+
+        assert_eq!(mode_of(&threep), "1p");
+        assert_eq!(mode_of(&normal), "1p");
+        assert!(!our_profile.exists(), "恢复后应删掉 PolyDeck 那份 profile");
+        let meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(library.join("_meta.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            meta["appliedId"].as_str(),
+            Some("foreign-id"),
+            "appliedId 应回到用户自己的 profile"
         );
+        assert_eq!(meta["entries"].as_array().unwrap().len(), 1);
     }
 
     #[test]

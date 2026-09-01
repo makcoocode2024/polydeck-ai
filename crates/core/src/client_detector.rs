@@ -122,9 +122,7 @@ pub fn detect_all() -> Vec<DetectedClient> {
             installed: claude_desktop_installed,
             version: None,
             config_path: claude_desktop_config.map(|p| p.to_string_lossy().into()),
-            // Only its MCP servers can be written; the gateway URL and token live
-            // in account settings, so the endpoint is always set by hand.
-            supports_auto_config: false,
+            supports_auto_config: true,
         },
         DetectedClient {
             id: "hermes".into(),
@@ -380,19 +378,15 @@ mod tests {
     /// `supports_auto_config` drives the "支持一键配置同步写入" label, so it must
     /// mean exactly one thing: activating a profile writes this client's endpoint.
     ///
-    /// Two clients used to claim it without that being true — `claude-desktop`
-    /// (its writer only syncs MCP servers; the endpoint lives in account
-    /// settings) and `opencode` (no writer at all). Both read as configured while
-    /// still pointing at whatever endpoint they pointed at before.
+    /// `opencode` claimed it without that being true — no branch in
+    /// `write_client_config` matches it, so it falls through to the arm that logs
+    /// and writes nothing, while still reading as configured.
     #[test]
     fn auto_config_flag_matches_which_clients_get_an_endpoint_written() {
-        // Mirrors the dispatch in `profile_switch::write_client_config`, minus
-        // Claude Desktop, whose writer deliberately touches only `mcpServers`.
+        // Mirrors the dispatch in `profile_switch::write_client_config`.
         let writes_endpoint = |id: &str| {
             let id = id.to_ascii_lowercase();
-            let is_desktop = id == "claude-desktop" || id.contains("desktop");
-            !is_desktop
-                && (id.contains("codex") || id.contains("hermes") || id.contains("claude"))
+            id.contains("codex") || id.contains("hermes") || id.contains("claude")
         };
 
         for client in detect_all() {
