@@ -76,7 +76,11 @@ const mockResponses: Record<string, unknown> = {
           maxPricePerRequest: null,
         },
       ],
-      clients: ["codex"],
+      // Real ids from client_detector::detect_all. `"codex"` was neither a
+      // KNOWN_CLIENTS nor a detector id, so anything resolving ids to display
+      // names rendered it raw; the Rust dispatch matches on `contains("codex")`,
+      // which is why it worked end to end and stayed unnoticed.
+      clients: ["codex-cli", "claude-code"],
       mcpServers: [],
       skills: [],
       prompts: [],
@@ -111,7 +115,7 @@ const mockResponses: Record<string, unknown> = {
           maxPricePerRequest: null,
         },
       ],
-      clients: ["codex"],
+      clients: ["codex-cli", "claude-code"],
       mcpServers: [],
       skills: [],
       prompts: [],
@@ -146,7 +150,7 @@ const mockResponses: Record<string, unknown> = {
       name: update?.name || "Updated Profile",
       isActive: true,
       providers: update?.providers || [],
-      clients: update?.clients || ["codex"],
+      clients: update?.clients || ["codex-cli", "claude-code"],
       mcpServers: [],
       skills: [],
       prompts: [],

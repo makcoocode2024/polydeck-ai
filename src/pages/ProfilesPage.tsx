@@ -885,6 +885,12 @@ export default function ProfilesPage() {
     }));
   })();
 
+  // Display names for a profile's client ids. Falls back to the raw id, which is
+  // what the inspector already does: a backend that grows a new client would
+  // otherwise render an empty slot.
+  const clientNames = (ids: string[] | undefined) =>
+    (ids ?? []).map((id) => allClientOptions.find((o) => o.id === id)?.name || id);
+
   return (
     <div className="space-y-8 max-w-6xl mx-auto pb-12">
       {/* Header */}
@@ -976,7 +982,21 @@ export default function ProfilesPage() {
                       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
                         <span>{p.providers?.length ?? 0} 个 Provider</span>
                         <span>·</span>
-                        <span>{p.clients?.length ?? 0} 个客户端</span>
+                        {(() => {
+                          const names = clientNames(p.clients);
+                          if (names.length === 0) return <span>0 个客户端</span>;
+                          // Capped at three: this card is about 440px wide and the
+                          // action cluster beside it does not yield space, so the
+                          // full list goes in the tooltip instead of wrapping.
+                          const shown = names.slice(0, 3).join("、");
+                          const rest = names.length - 3;
+                          return (
+                            <span title={names.join("、")}>
+                              {names.length} 个客户端 · {shown}
+                              {rest > 0 ? ` +${rest}` : ""}
+                            </span>
+                          );
+                        })()}
                         <span>·</span>
                         <span>{p.gatewayEnabled !== false ? "网关开启" : "网关关闭"}</span>
                       </div>

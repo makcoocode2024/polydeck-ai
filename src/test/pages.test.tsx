@@ -577,6 +577,76 @@ describe("Frontend Pages", () => {
     }
   });
 
+  it("names the bound clients in the profile list, not just a count", async () => {
+    // A bare "1 个客户端" gave no way to tell which client a profile drives, so
+    // two profiles differing only in their bindings looked identical.
+    // Owns its fixture: the duplicate-profile test pushes into the shared
+    // `ad_list_profiles` array, so a second card would carry the same title.
+    const restore = setMockResponse("ad_list_profiles", [
+      {
+        id: "prof_named",
+        name: "Named Clients",
+        providers: [],
+        clients: ["codex-cli", "claude-code"],
+        mcpServers: [],
+        skills: [],
+        prompts: [],
+        gatewayEnabled: true,
+        failoverEnabled: false,
+        createdAt: "2026-08-18T00:00:00Z",
+        updatedAt: "2026-08-18T00:00:00Z",
+      },
+    ]);
+    try {
+      render(<ProfilesPage />);
+      await waitFor(() => {
+        expect(screen.getAllByText("Named Clients").length).toBeGreaterThan(0);
+      });
+
+      const row = await screen.findByTitle("Codex CLI、Claude Code");
+      expect(row.textContent).toBe("2 个客户端 · Codex CLI、Claude Code");
+      // No overflow marker while the list fits.
+      expect(row.textContent).not.toMatch(/\+\d/);
+    } finally {
+      restore();
+    }
+  });
+
+  it("caps the client list at three and counts the rest", async () => {
+    // The card is ~440px wide with a shrink-0 action cluster beside it, so a
+    // profile bound to many clients has to summarize rather than wrap.
+    const restore = setMockResponse("ad_list_profiles", [
+      {
+        id: "prof_many",
+        name: "Many Clients",
+        providers: [],
+        clients: ["codex-cli", "claude-code", "claude-desktop", "hermes", "windsurf"],
+        mcpServers: [],
+        skills: [],
+        prompts: [],
+        gatewayEnabled: true,
+        failoverEnabled: false,
+        createdAt: "2026-08-18T00:00:00Z",
+        updatedAt: "2026-08-18T00:00:00Z",
+      },
+    ]);
+    try {
+      render(<ProfilesPage />);
+      await waitFor(() => {
+        expect(screen.getAllByText("Many Clients").length).toBeGreaterThan(0);
+      });
+
+      const row = await screen.findByTitle(
+        "Codex CLI、Claude Code、Claude Desktop、Hermes、Windsurf"
+      );
+      expect(row.textContent).toBe(
+        "5 个客户端 · Codex CLI、Claude Code、Claude Desktop +2"
+      );
+    } finally {
+      restore();
+    }
+  });
+
   it("moves the default model onto the probed list when the old one is gone", async () => {
     // Regression: probing wrote `models` but left `defaultModel` untouched, so a
     // value from a preset or an earlier probe survived into a provider that does
