@@ -241,9 +241,8 @@ pub fn apply(spec: &EndpointSpec) -> AppResult<()> {
         )));
     }
 
-    let (normal_dir, threep_dir) = data_dirs().ok_or_else(|| {
-        AppError::Config("当前平台没有 Claude Desktop 的第三方配置目录".into())
-    })?;
+    let (normal_dir, threep_dir) = data_dirs()
+        .ok_or_else(|| AppError::Config("当前平台没有 Claude Desktop 的第三方配置目录".into()))?;
     let library = threep_dir.join(CONFIG_LIBRARY_DIR);
 
     let profile = json!({
@@ -328,7 +327,11 @@ mod tests {
 
     /// A temp home with the 3P tree already present, plus the guard that keeps
     /// the override from leaking into another test.
-    fn temp_desktop() -> (tempfile::TempDir, std::sync::MutexGuard<'static, ()>, PathBuf) {
+    fn temp_desktop() -> (
+        tempfile::TempDir,
+        std::sync::MutexGuard<'static, ()>,
+        PathBuf,
+    ) {
         let guard = crate::lock_home_env();
         let home = tempfile::tempdir().unwrap();
         std::env::set_var("AI_DECK_HOME_OVERRIDE", home.path());
@@ -377,7 +380,10 @@ mod tests {
             "apply 后应由 PolyDeck 接管 appliedId"
         );
         let ids = entry_ids(&meta);
-        assert!(ids.contains(&FOREIGN_ID.to_string()), "外来 entry 不能被删掉");
+        assert!(
+            ids.contains(&FOREIGN_ID.to_string()),
+            "外来 entry 不能被删掉"
+        );
         assert!(ids.contains(&PROFILE_UUID.to_string()));
 
         restore().unwrap();
@@ -554,12 +560,12 @@ mod tests {
         }
 
         for bad in [
-            "model-T",              // 中转自己的名字，没有 claude- 前缀
-            "gpt-5.6-sol",          // 同上
-            "claude-opus-",         // 退化值，角色后没有标识
-            "claude-5-opus",        // 角色不在紧跟前缀的位置
-            "claude-opus-5[1m]",    // Desktop 用 supports1m 字段表达，不认这个后缀
-            "opus",                 // 裸别名
+            "model-T",           // 中转自己的名字，没有 claude- 前缀
+            "gpt-5.6-sol",       // 同上
+            "claude-opus-",      // 退化值，角色后没有标识
+            "claude-5-opus",     // 角色不在紧跟前缀的位置
+            "claude-opus-5[1m]", // Desktop 用 supports1m 字段表达，不认这个后缀
+            "opus",              // 裸别名
             "",
         ] {
             assert!(!is_menu_safe(bad), "{bad} 应被拒绝");
