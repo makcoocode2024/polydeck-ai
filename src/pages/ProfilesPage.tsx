@@ -21,6 +21,7 @@ import type {
   ModelInfo,
   ChatTestResult,
   RateLimitSettings,
+  ClientBindingView,
 } from "@/domain/profile";
 import {
   UserCheck,
@@ -37,6 +38,7 @@ import {
   X,
   Sliders,
   Laptop,
+  AlertTriangle,
   Radio,
   Key,
   ListFilter,
@@ -65,7 +67,14 @@ const KNOWN_CLIENTS = [
   { id: "cherry-studio", name: "Cherry Studio" },
   { id: "chatbox", name: "Chatbox" },
   { id: "vscode", name: "VS Code (Cline / Continue)" },
+  { id: "opencode", name: "OpenCode" },
 ];
+
+// The clients `profile_switch::write_client_config` has a writer for. The rest bind
+// and route through the gateway just the same, but their address and token have to
+// be pasted in by hand, so the inspector has to say so rather than let a binding
+// that changed no file look like it worked.
+const AUTO_CONFIG_CLIENTS = ["codex-cli", "claude-code", "claude-desktop", "hermes"];
 
 /**
  * Claude Code's three model tiers.
@@ -180,10 +189,12 @@ export default function ProfilesPage() {
   const [loading, setLoading] = useState(profiles.length === 0);
   const [refreshing, setRefreshing] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(() => {
-    const active = profiles.find((p) => p.isActive);
-    return active ? active.id : profiles[0]?.id || null;
-  });
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(
+    () => profiles[0]?.id || null
+  );
+  /// Which client follows which profile. Several profiles can be in use at once, so
+  /// there is no single "active" one to preselect.
+  const [bindings, setBindings] = useState<ClientBindingView[]>([]);
 
   // Probe status on right-side details inspector
   const [testingPrimary, setTestingPrimary] = useState(false);
@@ -240,17 +251,30 @@ export default function ProfilesPage() {
       const pListPromise = backend.listProfiles();
       const tListPromise = templates.length === 0 ? backend.getProfileTemplates().catch(() => []) : Promise.resolve(templates);
       const cListPromise = detectedClients.length === 0 ? backend.detectClients().catch(() => []) : Promise.resolve(detectedClients);
+      const bListPromise = backend.listClientBindings().catch(() => []);
 
-      const [pList, tList, cList] = await Promise.all([pListPromise, tListPromise, cListPromise]);
+      const [pList, tList, cList, bList] = await Promise.all([
+        pListPromise,
+        tListPromise,
+        cListPromise,
+        bListPromise,
+      ]);
 
       setProfiles(pList);
       if (tList.length > 0) setTemplates(tList);
       if (cList.length > 0) setDetectedClients(cList);
+      // `?? []` because an older build without this command returns null rather
+      // than rejecting, and a null here makes every binding lookup throw mid-render.
+      setBindings(bList ?? []);
 
       setSelectedProfileId((prev) => {
         if (prev && pList.some((p) => p.id === prev)) return prev;
-        const active = pList.find((p) => p.isActive);
-        return active ? active.id : pList[0]?.id || null;
+        // Prefer whichever profile the most clients follow, so the inspector opens
+        // on something in use rather than an arbitrary first row.
+        const counts = new Map<string, number>();
+        bList.forEach((b) => counts.set(b.profileId, (counts.get(b.profileId) ?? 0) + 1));
+        const mostBound = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+        return (mostBound && pList.some((p) => p.id === mostBound) ? mostBound : pList[0]?.id) || null;
       });
     } catch (err) {
       console.error("Failed to load profiles:", err);
@@ -286,25 +310,62 @@ export default function ProfilesPage() {
     }
   };
 
-  const handleSwitch = async (id: string) => {
-    // Optimistic UI update
-    setProfiles((prev) =>
-      prev.map((p) => ({
-        ...p,
-        isActive: p.id === id,
-      }))
-    );
+  /// Bind clients to a profile. `clients` omitted means the profile's whole target
+  /// list, which is what the 激活 button does; naming one client moves just that one.
+  const handleActivate = async (id: string, clients?: string[]) => {
+    const profile = profiles.find((p) => p.id === id);
+    const moving = clients ?? profile?.clients ?? [];
+    // Optimistic: move the named clients onto this profile and drop them from
+    // wherever they were, mirroring what bind_clients does server-side.
+    setBindings((prev) => [
+      ...prev.filter((b) => !moving.includes(b.clientId)),
+      ...moving.map((clientId) => ({
+        clientId,
+        profileId: id,
+        profileName: profile?.name ?? null,
+        gatewayEnabled: profile?.gatewayEnabled ?? false,
+        boundAt: new Date().toISOString(),
+      })),
+    ]);
     setSelectedProfileId(id);
     setPrimaryTestResult(null);
     setPrimaryChatResult(null);
 
     try {
-      await backend.switchProfile(id);
-      const updatedList = await backend.listProfiles();
+      await backend.activateProfile(id, clients);
+      const [updatedList, updatedBindings] = await Promise.all([
+        backend.listProfiles(),
+        backend.listClientBindings(),
+      ]);
       setProfiles(updatedList);
+      setBindings(updatedBindings ?? []);
     } catch (err) {
-      alert(`切换失败: ${err instanceof Error ? err.message : String(err)}`);
+      alert(`激活失败: ${err instanceof Error ? err.message : String(err)}`);
+      backend.listClientBindings().then(setBindings).catch(() => {});
       backend.listProfiles().then((list) => setProfiles(list)).catch(() => {});
+    }
+  };
+
+  const handleDeactivate = async (clients: string[]) => {
+    setBindings((prev) => prev.filter((b) => !clients.includes(b.clientId)));
+    try {
+      await backend.deactivateClients(clients);
+      setBindings((await backend.listClientBindings()) ?? []);
+    } catch (err) {
+      alert(`解绑失败: ${err instanceof Error ? err.message : String(err)}`);
+      backend.listClientBindings().then(setBindings).catch(() => {});
+    }
+  };
+
+  const handleCopyConnection = async (client: string) => {
+    try {
+      const info = await backend.clientConnectionInfo(client);
+      await navigator.clipboard.writeText(
+        `Base URL: ${info.baseUrl}\nAPI Key: ${info.token}`
+      );
+      alert(`已复制 ${client} 的地址与令牌，粘贴到它自己的设置里即可。`);
+    } catch (err) {
+      alert(`读取连接信息失败: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
@@ -725,19 +786,14 @@ export default function ProfilesPage() {
         clients: editClients,
       });
       if (activate) {
-        await backend.switchProfile(editingProfile.id);
+        await backend.activateProfile(editingProfile.id);
       }
       setEditingProfile(null);
-      setProfiles((prev) =>
-        prev.map((p) =>
-          p.id === updated.id
-            ? { ...updated, isActive: activate ? true : p.isActive }
-            : activate
-            ? { ...p, isActive: false }
-            : p
-        )
-      );
+      setProfiles((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
       backend.listProfiles().then((list) => setProfiles(list)).catch(() => {});
+      if (activate) {
+        backend.listClientBindings().then(setBindings).catch(() => {});
+      }
     } catch (err) {
       alert(`保存修改失败: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -891,6 +947,13 @@ export default function ProfilesPage() {
   const clientNames = (ids: string[] | undefined) =>
     (ids ?? []).map((id) => allClientOptions.find((o) => o.id === id)?.name || id);
 
+  const clientName = (id: string) => allClientOptions.find((o) => o.id === id)?.name || id;
+  /// Clients currently following a profile, as opposed to `profile.clients`, which
+  /// is the set it *would* bind when activated.
+  const boundClients = (profileId: string) =>
+    bindings.filter((b) => b.profileId === profileId).map((b) => b.clientId);
+  const bindingFor = (clientId: string) => bindings.find((b) => b.clientId === clientId);
+
   return (
     <div className="space-y-8 max-w-6xl mx-auto pb-12">
       {/* Header */}
@@ -972,10 +1035,14 @@ export default function ProfilesPage() {
                     <div className="space-y-1 min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <span className="font-semibold text-sm truncate">{p.name}</span>
-                        {p.isActive && (
-                          <Badge variant="success" className="text-[10px] px-1.5 py-0 shrink-0">
+                        {boundClients(p.id).length > 0 && (
+                          <Badge
+                            variant="success"
+                            className="text-[10px] px-1.5 py-0 shrink-0"
+                            title={clientNames(boundClients(p.id)).join("、")}
+                          >
                             <CheckCircle2 className="h-2.5 w-2.5 mr-1" />
-                            当前激活
+                            {boundClients(p.id).length} 个已绑定
                           </Badge>
                         )}
                       </div>
@@ -1003,16 +1070,20 @@ export default function ProfilesPage() {
                     </div>
 
                     <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-                      {!p.isActive && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-7 text-xs px-2"
-                          onClick={() => handleSwitch(p.id)}
-                        >
-                          激活
-                        </Button>
-                      )}
+                      {/* Shown even when some clients already follow this profile:
+                          it binds the whole target list, so it still has work to do
+                          when only part of that list is bound. */}
+                      {(p.clients?.length ?? 0) > 0 &&
+                        boundClients(p.id).length < (p.clients?.length ?? 0) && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs px-2"
+                            onClick={() => handleActivate(p.id)}
+                          >
+                            激活
+                          </Button>
+                        )}
                       <Button
                         variant="outline"
                         size="sm"
@@ -1062,7 +1133,11 @@ export default function ProfilesPage() {
                   <div className="space-y-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <CardTitle className="text-lg truncate">{selectedProfile.name}</CardTitle>
-                      {selectedProfile.isActive && <Badge variant="success">激活中</Badge>}
+                      {boundClients(selectedProfile.id).length > 0 && (
+                        <Badge variant="success">
+                          {boundClients(selectedProfile.id).length} 个客户端使用中
+                        </Badge>
+                      )}
                     </div>
                     <p className="text-[11px] text-muted-foreground font-mono truncate">ID: {selectedProfile.id}</p>
                   </div>
@@ -1109,9 +1184,14 @@ export default function ProfilesPage() {
                       <Pencil className="h-3.5 w-3.5 mr-1" />
                       编辑方案
                     </Button>
-                    {!selectedProfile.isActive && (
-                      <Button size="sm" onClick={() => handleSwitch(selectedProfile.id)} className="text-xs">
-                        设为激活方案
+                    {(selectedProfile.clients?.length ?? 0) >
+                      boundClients(selectedProfile.id).length && (
+                      <Button
+                        size="sm"
+                        onClick={() => handleActivate(selectedProfile.id)}
+                        className="text-xs"
+                      >
+                        绑定全部客户端
                       </Button>
                     )}
                   </div>
@@ -1266,23 +1346,96 @@ export default function ProfilesPage() {
                 <div className="pt-2 border-t">
                   <h4 className="text-xs font-semibold uppercase text-muted-foreground tracking-wider mb-2 flex items-center gap-1.5">
                     <Laptop className="h-3.5 w-3.5 text-primary" />
-                    关联客户端 ({selectedProfile.clients?.length ?? 0})
+                    目标客户端 ({selectedProfile.clients?.length ?? 0})
                   </h4>
                   {(!selectedProfile.clients || selectedProfile.clients.length === 0) ? (
-                    <p className="text-xs text-muted-foreground">全局生效 / 未指定绑定特定客户端</p>
+                    <p className="text-xs text-muted-foreground">
+                      此方案未选择任何客户端，激活不会生效。请先在「编辑方案 → 客户端绑定」里勾选。
+                    </p>
                   ) : (
-                    <div className="flex flex-wrap gap-2">
-                      {selectedProfile.clients.map((cid) => {
-                        const opt = allClientOptions.find((c) => c.id === cid);
-                        return (
-                          <Badge key={cid} variant="secondary" className="text-xs py-1 px-2.5 font-normal">
-                            {opt ? opt.name : cid}
-                          </Badge>
-                        );
-                      })}
-                    </div>
+                    <>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedProfile.clients.map((cid) => {
+                          const binding = bindingFor(cid);
+                          const here = binding?.profileId === selectedProfile.id;
+                          const elsewhereName = binding && !here ? binding.profileName : null;
+                          return (
+                            <button
+                              key={cid}
+                              type="button"
+                              data-testid={`client-chip-${cid}`}
+                              onClick={() =>
+                                here
+                                  ? handleDeactivate([cid])
+                                  : handleActivate(selectedProfile.id, [cid])
+                              }
+                              title={
+                                here
+                                  ? "点击解绑"
+                                  : elsewhereName
+                                  ? `当前跟随「${elsewhereName}」，点击改绑到本方案`
+                                  : "点击绑定到本方案"
+                              }
+                              className={`text-xs py-1 px-2.5 rounded-md border transition-colors ${
+                                here
+                                  ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
+                                  : elsewhereName
+                                  ? "bg-transparent border-border text-muted-foreground hover:border-primary"
+                                  : "bg-transparent border-dashed border-border text-muted-foreground hover:border-primary"
+                              }`}
+                            >
+                              {here && <CheckCircle2 className="h-3 w-3 mr-1 inline-block" />}
+                              {clientName(cid)}
+                              {elsewhereName ? ` → ${elsewhereName}` : ""}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="text-[11px] text-muted-foreground mt-2">
+                        绿色为正跟随本方案；带箭头的正跟随别的方案，点一下即可改过来。
+                      </p>
+                    </>
                   )}
                 </div>
+
+                {/* Clients PolyDeck cannot write a config file for */}
+                {(() => {
+                  const manual = boundClients(selectedProfile.id).filter(
+                    (cid) => !AUTO_CONFIG_CLIENTS.includes(cid)
+                  );
+                  if (manual.length === 0) return null;
+                  return (
+                    <div className="pt-2 border-t">
+                      <h4 className="text-xs font-semibold uppercase text-muted-foreground tracking-wider mb-2 flex items-center gap-1.5">
+                        <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+                        需要手动填写 ({manual.length})
+                      </h4>
+                      <p className="text-[11px] text-muted-foreground mb-2">
+                        这些客户端没有 PolyDeck 能改写的配置文件。绑定已生效、网关会正常路由，
+                        但地址和令牌需要你自己粘进它们的设置里。
+                      </p>
+                      <div className="space-y-2">
+                        {manual.map((cid) => (
+                          <div
+                            key={cid}
+                            className="flex items-center gap-2 flex-wrap p-2 rounded-lg border bg-muted/20"
+                          >
+                            <span className="text-xs font-medium">{clientName(cid)}</span>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-6 text-[10px] px-2"
+                              data-testid={`copy-conn-${cid}`}
+                              onClick={() => handleCopyConnection(cid)}
+                            >
+                              复制地址与令牌
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
               </CardContent>
             </Card>
           ) : (

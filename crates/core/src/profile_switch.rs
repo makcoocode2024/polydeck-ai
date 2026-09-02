@@ -25,7 +25,10 @@ pub const DEFAULT_SONNET_DISPLAY_NAME: &str = "claude-sonnet-5";
 pub const DEFAULT_HAIKU_DISPLAY_NAME: &str = "claude-haiku-4-5";
 
 /// Loopback port the built-in gateway listens on.
-const GATEWAY_PORT: u16 = 18888;
+///
+/// Public because the clients PolyDeck cannot write a config file for still need
+/// this address surfaced for the user to paste in by hand.
+pub const GATEWAY_PORT: u16 = 18888;
 
 /// Point every `keys` entry at `wire` in a `modelOverrides` map.
 ///
@@ -337,7 +340,14 @@ pub struct SwitchResult {
     pub success: bool,
     pub profile_id: String,
     pub profile_name: String,
+    /// Clients whose config file this call actually rewrote.
     pub clients_written: Vec<String>,
+    /// Clients now recorded as following this profile.
+    ///
+    /// Distinct from `clients_written`: a client with no writer of its own binds and
+    /// routes through the gateway but has nothing on disk to update, so it appears
+    /// here and not there.
+    pub clients_bound: Vec<String>,
     pub warnings: Vec<String>,
     pub message: String,
 }
@@ -353,10 +363,15 @@ pub struct ResolvedEndpoint {
     pub gateway_port: Option<u16>,
 }
 
-/// Switch to a profile: write configs for all target clients, sync extensions.
-pub async fn switch_profile(
+/// Bind clients to a profile and write their configs.
+///
+/// `targets` names the clients to bind; `None` means the profile's own `clients`
+/// list, which is what the "activate" button does. Naming a subset is how one
+/// client moves to another profile while the rest stay where they are.
+pub async fn activate_profile(
     manager: &mut ProfileManager,
     profile_id: &str,
+    targets: Option<&[String]>,
 ) -> AppResult<SwitchResult> {
     let profile = manager
         .get_profile(profile_id)
@@ -364,6 +379,11 @@ pub async fn switch_profile(
 
     let mut clients_written = Vec::new();
     let mut warnings = Vec::new();
+
+    let target_clients: Vec<String> = match targets {
+        Some(explicit) => crate::binding::normalize_client_ids(explicit),
+        None => crate::binding::normalize_client_ids(&profile.clients),
+    };
 
     // If profile has providers, write client configs
     if !profile.providers.is_empty() {
@@ -379,17 +399,6 @@ pub async fn switch_profile(
             warnings.extend(claude_tier_warnings(primary));
         }
 
-        let mut target_set = HashSet::new();
-        for client in &profile.clients {
-            let clean = client.trim().to_ascii_lowercase();
-            if !clean.is_empty() {
-                target_set.insert(clean);
-            }
-        }
-
-        let mut target_clients: Vec<String> = target_set.into_iter().collect();
-        target_clients.sort();
-
         for client in &target_clients {
             match write_client_config(client, &profile).await {
                 Ok(()) => clients_written.push(client.clone()),
@@ -400,42 +409,63 @@ pub async fn switch_profile(
         }
 
         // Writing the endpoint puts Desktop into third-party mode, which takes it
-        // off the user's Claude account until a profile without it is activated.
-        // Neither fact is visible from the app, and the config is only read at
-        // startup.
+        // off the user's Claude account until no profile claims it. Neither fact is
+        // visible from the app, and the config is only read at startup.
         if clients_written.iter().any(|c| c.contains("desktop")) {
             warnings.push(
-                "Claude Desktop 已切到第三方模式，需要重启它才生效；期间它不再走你的 Claude 账号登录。切到未勾选它的方案会自动恢复官方登录".into(),
+                "Claude Desktop 已切到第三方模式，需要重启它才生效；期间它不再走你的 Claude 账号登录。解绑它会自动恢复官方登录".into(),
             );
         }
     }
 
-    // Hand Desktop back to its own account login when this profile does not claim
-    // it. Keyed on the profile's own client list rather than `clients_written`, so
-    // a failed write does not then tear down a setup that was working. Sits
-    // outside the providers check above because a provider-less profile still has
-    // to release Desktop.
-    let targets_desktop = profile.clients.iter().any(|client| {
-        let clean = client.trim().to_ascii_lowercase();
-        clean == "claude-desktop" || clean.contains("desktop")
-    });
-    if !targets_desktop {
+    // Record the bindings before deciding Desktop's fate, so the check below sees
+    // this call's own claim.
+    let bound = manager.bind_clients(profile_id, &target_clients)?;
+    let clients_bound: Vec<String> = bound.into_iter().map(|b| b.client_id).collect();
+
+    // Hand Desktop back to its own account login only when *no* binding claims it.
+    //
+    // The old rule asked whether the profile being activated claimed Desktop, which
+    // meant activating a CLI-only profile for Codex tore down a Desktop setup a
+    // different profile legitimately owned. Sits outside the providers check above
+    // because a provider-less profile still has to release Desktop.
+    if !manager.any_binding_claims_desktop() {
         if let Err(e) = crate::claude_desktop::restore() {
             warnings.push(format!("恢复 Claude Desktop 官方登录时提示：{e}"));
         }
     }
-
-    // Set active
-    manager.set_active(profile_id)?;
 
     Ok(SwitchResult {
         success: true,
         profile_id: profile_id.into(),
         profile_name: profile.name,
         clients_written,
+        clients_bound,
         warnings,
         message: "Profile 激活并同步配置成功".into(),
     })
+}
+
+/// Release `client_ids` from whatever profile they follow.
+///
+/// Their config files are left as written. A released client then presents a token
+/// the gateway no longer routes and gets a 401 — loud, and fixed by binding it
+/// again. Rewriting the files to some "off" state would instead need a decision
+/// about what they should point at, and any answer silently sends the client
+/// somewhere the user did not choose.
+///
+/// Desktop is the exception, because leaving it alone would leave it in third-party
+/// mode with no profile behind it. Releasing the last Desktop binding restores its
+/// own account login.
+pub async fn deactivate_clients(
+    manager: &mut ProfileManager,
+    client_ids: &[String],
+) -> AppResult<Vec<String>> {
+    let released = manager.unbind_clients(client_ids)?;
+    if !manager.any_binding_claims_desktop() {
+        let _ = crate::claude_desktop::restore();
+    }
+    Ok(released)
 }
 
 async fn write_client_config(client: &str, profile: &Profile) -> AppResult<()> {
@@ -1782,10 +1812,10 @@ mod tests {
             )
             .unwrap();
 
-        // 1. Switch to Profile Alpha
-        let res1 = switch_profile(&mut pm, &p1.id).await.unwrap();
+        // 1. Bind every client to Profile Alpha
+        let res1 = activate_profile(&mut pm, &p1.id, None).await.unwrap();
         assert!(res1.success);
-        assert_eq!(pm.active_profile().unwrap().id, p1.id);
+        assert_eq!(pm.profile_for_client("codex-cli").unwrap().id, p1.id);
 
         let home = crate::user_home_dir().unwrap();
         let codex_doc = std::fs::read_to_string(home.join(".codex").join("config.toml")).unwrap();
@@ -1825,10 +1855,11 @@ mod tests {
             "Hermes 配置中不应包含未激活的 Beta 方案模型"
         );
 
-        // 2. Switch to Profile Beta
-        let res2 = switch_profile(&mut pm, &p2.id).await.unwrap();
+        // 2. Move every client to Profile Beta. Each client has one config file, so
+        // moving them all must leave no trace of Alpha anywhere.
+        let res2 = activate_profile(&mut pm, &p2.id, None).await.unwrap();
         assert!(res2.success);
-        assert_eq!(pm.active_profile().unwrap().id, p2.id);
+        assert_eq!(pm.profile_for_client("codex-cli").unwrap().id, p2.id);
 
         let codex_doc2 = std::fs::read_to_string(home.join(".codex").join("config.toml")).unwrap();
         assert!(
@@ -2572,7 +2603,7 @@ mod tests {
         )
         .unwrap();
 
-        let res = switch_profile(&mut pm, &p.id).await.unwrap();
+        let res = activate_profile(&mut pm, &p.id, None).await.unwrap();
         assert!(res.clients_written.iter().any(|c| c == "claude-desktop"));
 
         let our_profile = library.join(format!("{}.json", crate::claude_desktop::PROFILE_UUID));
@@ -2607,7 +2638,9 @@ mod tests {
             "端点现在写得进去了，不该再声称写不到"
         );
 
-        // Switching to a profile that does not claim Desktop restores it.
+        // Activating a CLI-only profile must leave Desktop alone. Desktop still
+        // follows the first profile, and the old rule -- "does the profile being
+        // activated claim Desktop?" -- would have torn that down here.
         let mut other = pm.create_profile_simple("仅 CLI").unwrap();
         other.providers[0].models = vec!["m".into()];
         other.providers[0].default_model = "m".into();
@@ -2624,7 +2657,28 @@ mod tests {
                 },
             )
             .unwrap();
-        switch_profile(&mut pm, &other.id).await.unwrap();
+        activate_profile(&mut pm, &other.id, None).await.unwrap();
+
+        assert_eq!(
+            mode_of(&threep),
+            "3p",
+            "Desktop 仍被第一个方案绑着，不该被拆掉"
+        );
+        assert_eq!(mode_of(&normal), "3p");
+        assert!(
+            our_profile.exists(),
+            "别人的激活不该删掉 Desktop 的 profile"
+        );
+        assert_eq!(
+            pm.profile_for_client("claude-desktop").unwrap().id,
+            p.id,
+            "Desktop 的绑定不该被 claude-code 的激活带走"
+        );
+
+        // Releasing Desktop itself is what restores its own account login.
+        deactivate_clients(&mut pm, &["claude-desktop".into()])
+            .await
+            .unwrap();
 
         assert_eq!(mode_of(&threep), "1p");
         assert_eq!(mode_of(&normal), "1p");
@@ -2638,6 +2692,70 @@ mod tests {
             "appliedId 应回到用户自己的 profile"
         );
         assert_eq!(meta["entries"].as_array().unwrap().len(), 1);
+    }
+
+    /// The point of the whole change: two clients on two profiles at once, each
+    /// config file holding only its own profile's model.
+    ///
+    /// The older isolation test asserts the opposite for a single client moving
+    /// between profiles, which is still right — one file, one profile. This covers
+    /// the case that rule cannot express.
+    #[tokio::test]
+    async fn two_clients_can_follow_two_profiles_at_once() {
+        let _home_guard = lock_home_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
+        let state_path = temp_home.path().join("state.json");
+        let mut pm = crate::profile::ProfileManager::with_state_path(state_path);
+
+        let make = |pm: &mut crate::profile::ProfileManager, name: &str, model: &str| {
+            let created = pm.create_profile_simple(name).unwrap();
+            let mut providers = created.providers.clone();
+            providers[0].models = vec![model.into()];
+            providers[0].default_model = model.into();
+            pm.update_profile(
+                &created.id,
+                ProfileUpdate {
+                    name: Some(name.into()),
+                    providers: Some(providers),
+                    clients: Some(vec!["codex-cli".into(), "claude-code".into()]),
+                    gateway_enabled: Some(true),
+                    failover_enabled: None,
+                },
+            )
+            .unwrap()
+        };
+        let alpha = make(&mut pm, "方案Alpha", "alpha-model");
+        let beta = make(&mut pm, "方案Beta", "beta-model");
+
+        // Codex on Alpha, Claude Code on Beta.
+        activate_profile(&mut pm, &alpha.id, Some(&["codex-cli".into()]))
+            .await
+            .unwrap();
+        activate_profile(&mut pm, &beta.id, Some(&["claude-code".into()]))
+            .await
+            .unwrap();
+
+        assert_eq!(pm.profile_for_client("codex-cli").unwrap().id, alpha.id);
+        assert_eq!(pm.profile_for_client("claude-code").unwrap().id, beta.id);
+
+        let home = crate::user_home_dir().unwrap();
+        let codex = std::fs::read_to_string(home.join(".codex").join("config.toml")).unwrap();
+        assert!(codex.contains("alpha-model"), "Codex 应拿到 Alpha 的模型");
+        assert!(
+            !codex.contains("beta-model"),
+            "Codex 不该看到 Claude Code 那边的模型"
+        );
+
+        let claude = std::fs::read_to_string(home.join(".claude").join("settings.json")).unwrap();
+        assert!(
+            claude.contains("beta-model"),
+            "Claude Code 应拿到 Beta 的模型"
+        );
+        assert!(
+            !claude.contains("alpha-model"),
+            "Claude Code 不该看到 Codex 那边的模型"
+        );
     }
 
     #[test]

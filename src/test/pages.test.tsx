@@ -577,6 +577,57 @@ describe("Frontend Pages", () => {
     }
   });
 
+  it("binds one client without disturbing the others", async () => {
+    // The whole point of per-client bindings: moving Claude Code must not move
+    // Codex. The old model could not express this — activating a profile claimed
+    // every client it listed.
+    const activateSpy = vi.spyOn(backend, "activateProfile");
+    render(<ProfilesPage />);
+    await waitFor(() => {
+      expect(screen.getAllByText("Default Profile").length).toBeGreaterThan(0);
+    });
+
+    // codex-cli is bound per the fixture; claude-code is not.
+    const codexChip = await screen.findByTestId("client-chip-codex-cli");
+    const claudeChip = screen.getByTestId("client-chip-claude-code");
+    expect(codexChip.getAttribute("title")).toBe("点击解绑");
+    expect(claudeChip.getAttribute("title")).toBe("点击绑定到本方案");
+
+    fireEvent.click(claudeChip);
+    await waitFor(() => {
+      expect(activateSpy).toHaveBeenCalledWith("prof_default", ["claude-code"]);
+    });
+    activateSpy.mockRestore();
+  });
+
+  it("offers a copy button for clients it cannot configure", async () => {
+    // Binding one of these changes no file, so without saying so the binding looks
+    // broken. `write_client_config` only has writers for four of the ten clients.
+    const restore = setMockResponse("ad_list_client_bindings", [
+      {
+        clientId: "cursor",
+        profileId: "prof_default",
+        profileName: "Default Profile",
+        gatewayEnabled: true,
+        boundAt: "2026-08-18T00:00:00Z",
+      },
+    ]);
+    const infoSpy = vi.spyOn(backend, "clientConnectionInfo");
+    try {
+      render(<ProfilesPage />);
+      await waitFor(() => {
+        expect(screen.getAllByText("Default Profile").length).toBeGreaterThan(0);
+      });
+
+      expect(await screen.findByText(/需要手动填写/)).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("copy-conn-cursor"));
+      await waitFor(() => expect(infoSpy).toHaveBeenCalledWith("cursor"));
+    } finally {
+      infoSpy.mockRestore();
+      restore();
+    }
+  });
+
   it("names the bound clients in the profile list, not just a count", async () => {
     // A bare "1 个客户端" gave no way to tell which client a profile drives, so
     // two profiles differing only in their bindings looked identical.

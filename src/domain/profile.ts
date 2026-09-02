@@ -94,10 +94,46 @@ export interface McpServerConfig {
   enabled: boolean;
 }
 
+/// One client pinned to one profile, with the profile's name resolved for display.
+///
+/// A client can only follow one profile at a time because every client has a single
+/// config file, so this is a map from client to profile rather than a set.
+export interface ClientBindingView {
+  clientId: string;
+  profileId: string;
+  profileName: string | null;
+  gatewayEnabled: boolean;
+  boundAt: string;
+}
+
+/// Where a client should point, for the ones PolyDeck cannot write a config for.
+export interface ClientConnectionInfo {
+  clientId: string;
+  profileId: string;
+  profileName: string;
+  baseUrl: string;
+  token: string;
+  isGateway: boolean;
+}
+
+export interface SwitchResult {
+  success: boolean;
+  profileId: string;
+  profileName: string;
+  /// Clients whose config file was rewritten.
+  clientsWritten: string[];
+  /// Clients now recorded as following this profile. Wider than `clientsWritten`:
+  /// a client with no writer binds and routes but has nothing on disk to update.
+  clientsBound: string[];
+  warnings: string[];
+  message: string;
+}
+
 export interface Profile {
   id: string;
   name: string;
-  isActive: boolean;
+  // No `isActive`. Which clients follow a profile comes from `listClientBindings`,
+  // since one flag cannot say "Codex follows me but Claude Code does not".
   providers: ProviderConfig[];
   clients: string[];
   mcpServers: McpServerConfig[];

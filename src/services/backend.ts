@@ -1,6 +1,6 @@
 ﻿import { invoke } from "@tauri-apps/api/core";
 import type { DetectedClient } from "@/domain/client";
-import type { Profile, ProfileTemplate, ProbeResult, ProfileUpdate, ChatTestResult, ProtocolKind, RateLimitRecommendation, ThinkingSupport } from "@/domain/profile";
+import type { Profile, ProfileTemplate, ProbeResult, ProfileUpdate, ChatTestResult, ProtocolKind, RateLimitRecommendation, ThinkingSupport, ClientBindingView, ClientConnectionInfo, SwitchResult } from "@/domain/profile";
 import type { McpServer, ManagedSkill, PromptTemplate } from "@/domain/extensions";
 import type { SessionSummary } from "@/domain/history";
 import type { DiagnosticReport, UpdateInfo, AutoLaunchStatus, ClientRuleStatus } from "@/domain/ops";
@@ -71,9 +71,26 @@ export const backend = {
       invalidateReads("profiles", "active-profile");
       return value;
     }),
-  switchProfile: (id: string) =>
-    invoke<void>("ad_switch_profile", { id }).then((value) => {
-      invalidateReads("profiles", "active-profile");
+  /// Bind clients to a profile. Omit `clients` to bind the profile's own target list.
+  ///
+  /// Returns the SwitchResult the backend has always sent; the old `switchProfile`
+  /// declared `void` and discarded `clientsWritten` and `warnings`.
+  activateProfile: (id: string, clients?: string[]) =>
+    invoke<SwitchResult>("ad_activate_profile", { id, clients }).then((value) => {
+      invalidateReads("profiles", "active-profile", "bindings");
+      return value;
+    }),
+  deactivateClients: (clients: string[]) =>
+    invoke<string[]>("ad_deactivate_clients", { clients }).then((value) => {
+      invalidateReads("profiles", "active-profile", "bindings");
+      return value;
+    }),
+  listClientBindings: () => invoke<ClientBindingView[]>("ad_list_client_bindings"),
+  clientConnectionInfo: (client: string) =>
+    invoke<ClientConnectionInfo>("ad_client_connection_info", { client }),
+  rotateClientToken: (client: string) =>
+    invoke<string>("ad_rotate_client_token", { client }).then((value) => {
+      invalidateReads("bindings");
       return value;
     }),
   getProfileTemplates: () => cachedRead("profile-templates", () => invoke<ProfileTemplate[]>("ad_get_profile_templates"), 30_000),

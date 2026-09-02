@@ -48,7 +48,7 @@ pub fn run() {
                     app_handle.try_state::<GatewayState>(),
                 ) {
                     let pm_guard = pm.lock().await;
-                    if let Some(active) = pm_guard.active_profile() {
+                    if let Some(active) = crate::commands::gateway::gateway_profile(&pm_guard) {
                         if active.gateway_enabled {
                             if let Some(primary) = active
                                 .providers
@@ -91,7 +91,11 @@ pub fn run() {
             commands::profile::ad_duplicate_profile,
             commands::profile::ad_update_profile,
             commands::profile::ad_delete_profile,
-            commands::profile::ad_switch_profile,
+            commands::profile::ad_activate_profile,
+            commands::profile::ad_deactivate_clients,
+            commands::profile::ad_list_client_bindings,
+            commands::profile::ad_client_connection_info,
+            commands::profile::ad_rotate_client_token,
             commands::profile::ad_get_profile_templates,
             commands::profile::ad_probe_provider,
             commands::profile::ad_probe_rate_limits,

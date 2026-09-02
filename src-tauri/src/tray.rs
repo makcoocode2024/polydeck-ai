@@ -82,13 +82,15 @@ pub fn build_tray_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, tauri::Error
     let profiles_submenu = if let Some(pm) = pm_state {
         let guard = tauri::async_runtime::block_on(async { pm.lock().await });
         let profiles = guard.list_profiles();
-        let active_id = guard.active_profile().map(|p| p.id);
 
         let mut sub_items: Vec<Box<dyn tauri::menu::IsMenuItem<tauri::Wry>>> = Vec::new();
         for p in profiles {
-            let is_active = active_id.as_deref() == Some(&p.id);
-            let label = if is_active {
-                format!("✓ {}", p.name)
+            // No single checkmark any more: several profiles can be in use at once,
+            // so each row reports how many clients follow it instead of claiming to
+            // be the one active choice.
+            let bound = guard.clients_for_profile(&p.id).len();
+            let label = if bound > 0 {
+                format!("✓ {} ({bound} 个客户端)", p.name)
             } else {
                 format!("   {}", p.name)
             };
@@ -148,9 +150,15 @@ pub fn handle_menu_event(app: &AppHandle, menu_id: &str) {
                     app_handle.try_state::<GatewayState>(),
                 ) {
                     let mut pm_guard = pm.lock().await;
-                    if let Ok(result) =
-                        polydeck_core::profile_switch::switch_profile(&mut pm_guard, &profile_id)
-                            .await
+                    // The tray row means "put this profile's own clients on it",
+                    // matching the activate button rather than offering a per-client
+                    // choice there is no room to present.
+                    if let Ok(result) = polydeck_core::profile_switch::activate_profile(
+                        &mut pm_guard,
+                        &profile_id,
+                        None,
+                    )
+                    .await
                     {
                         if result.success {
                             if let Some(active) = pm_guard.get_profile(&profile_id) {

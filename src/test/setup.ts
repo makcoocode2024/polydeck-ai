@@ -161,6 +161,36 @@ const mockResponses: Record<string, unknown> = {
     };
   },
   ad_delete_profile: null,
+  // Codex follows the default profile; claude-code follows nothing, so the chip
+  // row has one bound and one unbound case to render.
+  ad_list_client_bindings: [
+    {
+      clientId: "codex-cli",
+      profileId: "prof_default",
+      profileName: "Default Profile",
+      gatewayEnabled: true,
+      boundAt: "2026-08-18T00:00:00Z",
+    },
+  ],
+  ad_activate_profile: {
+    success: true,
+    profileId: "prof_default",
+    profileName: "Default Profile",
+    clientsWritten: ["codex-cli", "claude-code"],
+    clientsBound: ["codex-cli", "claude-code"],
+    warnings: [],
+    message: "Profile 激活并同步配置成功",
+  },
+  ad_deactivate_clients: ["codex-cli"],
+  ad_client_connection_info: {
+    clientId: "cursor",
+    profileId: "prof_default",
+    profileName: "Default Profile",
+    baseUrl: "http://127.0.0.1:18888",
+    token: "adk_testtoken",
+    isGateway: true,
+  },
+  ad_rotate_client_token: "adk_rotated",
   ad_switch_profile: {
     success: true,
     profileId: "prof_default",

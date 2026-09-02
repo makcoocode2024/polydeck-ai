@@ -633,7 +633,9 @@ export default function QuickSetupPage() {
         });
 
         if (activate) {
-          await backend.switchProfile(created.id);
+          // No client list: bind the ones this wizard just selected, which is what
+          // the profile's own `clients` now holds.
+          await backend.activateProfile(created.id);
           if (gatewayEnabled) {
             try {
               await backend.gatewayStart();

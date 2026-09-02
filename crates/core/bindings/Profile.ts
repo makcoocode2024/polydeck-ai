@@ -2,4 +2,4 @@
 import type { McpServerConfig } from "./McpServerConfig";
 import type { ProviderConfig } from "./ProviderConfig";
 
-export type Profile = { id: string, name: string, isActive: boolean, providers: Array<ProviderConfig>, clients: Array<string>, mcpServers: Array<McpServerConfig>, skills: Array<string>, prompts: Array<string>, gatewayEnabled: boolean, failoverEnabled: boolean, createdAt: string, updatedAt: string, };
+export type Profile = { id: string, name: string, providers: Array<ProviderConfig>, clients: Array<string>, mcpServers: Array<McpServerConfig>, skills: Array<string>, prompts: Array<string>, gatewayEnabled: boolean, failoverEnabled: boolean, createdAt: string, updatedAt: string, };
