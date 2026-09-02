@@ -577,6 +577,77 @@ describe("Frontend Pages", () => {
     }
   });
 
+  it("moves the default model onto the probed list when the old one is gone", async () => {
+    // Regression: probing wrote `models` but left `defaultModel` untouched, so a
+    // value from a preset or an earlier probe survived into a provider that does
+    // not serve it. The picker then matched no option and showed as unselected
+    // while the text field still displayed the stale name, and the profile saved
+    // a model the upstream rejects.
+    vi.spyOn(backend, "probeProvider").mockResolvedValueOnce({
+      protocol: "openai",
+      confidence: "high",
+      evidence: [],
+      codexCompat: "chat_function",
+      baseUrl: "https://api.openai.com/v1",
+      supportsStreaming: true,
+      models: [{ id: "model-T", name: "model-T" }],
+    } as never);
+
+    render(<ProfilesPage />);
+    await waitFor(() => {
+      expect(screen.getAllByText("Default Profile").length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(screen.getAllByRole("button", { name: /编辑/i })[0]);
+    await waitFor(() => {
+      expect(screen.getByText("编辑配置方案")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Provider 节点/i }));
+
+    const modelInput = (await waitFor(() =>
+      screen.getByTestId("provider-default-model-input-0")
+    )) as HTMLInputElement;
+    expect(modelInput.value).toBe("gpt-4o");
+
+    fireEvent.click(screen.getByRole("button", { name: /探测连通与模型/i }));
+
+    const picker = (await waitFor(() =>
+      screen.getByTestId("provider-default-model-select-0")
+    )) as HTMLSelectElement;
+    // The sole probed model is now both the saved default and the picker's
+    // selection, rather than an unreachable `gpt-4o`.
+    await waitFor(() => expect(modelInput.value).toBe("model-T"));
+    expect(picker.value).toBe("model-T");
+  });
+
+  it("keeps a default model the probe confirms is still served", async () => {
+    // The correction must not fire when there is nothing wrong: `gpt-4o` is in
+    // the mock's probe result, so a user who picked it keeps it.
+    render(<ProfilesPage />);
+    await waitFor(() => {
+      expect(screen.getAllByText("Default Profile").length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(screen.getAllByRole("button", { name: /编辑/i })[0]);
+    await waitFor(() => {
+      expect(screen.getByText("编辑配置方案")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Provider 节点/i }));
+    fireEvent.click(screen.getByRole("button", { name: /探测连通与模型/i }));
+
+    const picker = (await waitFor(() =>
+      screen.getByTestId("provider-default-model-select-0")
+    )) as HTMLSelectElement;
+    expect(picker.value).toBe("gpt-4o");
+    expect(
+      (screen.getByTestId("provider-default-model-input-0") as HTMLInputElement).value
+    ).toBe("gpt-4o");
+
+    // And a deliberate switch still lands.
+    fireEvent.change(picker, { target: { value: "o1-preview" } });
+    await waitFor(() => expect(picker.value).toBe("o1-preview"));
+  });
+
   it("switches the provider protocol back to either of the first two options", async () => {
     // The protocol select also writes codexCompat for exactly "responses" and
     // "openai", so those two paths issue two state updates in one event. Reading

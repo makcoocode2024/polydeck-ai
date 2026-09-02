@@ -532,10 +532,17 @@ export default function ProfilesPage() {
         handleUpdateProviderField(index, "codexCompat", res.codexCompat);
       }
       if (res.models && res.models.length > 0) {
-        handleUpdateProviderField(
-          index,
-          "models",
-          res.models.map((m) => m.id)
+        const ids = res.models.map((m) => m.id);
+        setEditProviders((prev) =>
+          prev.map((p, i) => {
+            if (i !== index) return p;
+            // A default carried over from a preset or an earlier probe is not
+            // necessarily served here. Left in place, the picker below matches no
+            // option and renders as unselected while the text field still shows
+            // the old name, so the profile saves a model this provider rejects.
+            const keep = ids.includes((p.defaultModel || "").trim());
+            return { ...p, models: ids, defaultModel: keep ? p.defaultModel : ids[0] };
+          })
         );
       }
 
@@ -1713,6 +1720,7 @@ export default function ProfilesPage() {
                               <div className="space-y-1">
                                 <label className="text-[11px] font-medium text-muted-foreground">默认模型 (Default Model)</label>
                                 <Input
+                                  data-testid={`provider-default-model-input-${index}`}
                                   value={prov.defaultModel}
                                   onChange={(e) => handleUpdateProviderField(index, "defaultModel", e.target.value)}
                                   placeholder="gpt-4o / deepseek-chat"
@@ -1727,7 +1735,12 @@ export default function ProfilesPage() {
                                     从探测到的模型列表中选择
                                   </label>
                                   <select
-                                    value={prov.defaultModel}
+                                    data-testid={`provider-default-model-select-${index}`}
+                                    value={
+                                      pState.models.some((m) => m.id === prov.defaultModel)
+                                        ? prov.defaultModel
+                                        : ""
+                                    }
                                     onChange={(e) => handleUpdateProviderField(index, "defaultModel", e.target.value)}
                                     className="w-full h-8 text-xs rounded-md border border-input bg-background px-2.5 py-1 text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-mono"
                                   >
