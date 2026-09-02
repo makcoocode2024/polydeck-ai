@@ -5,17 +5,16 @@ use crate::{
     config::ResponsesMode,
     failover::FailoverSlot,
     health::{health_check, HealthState},
-    middleware::{auth_middleware, logging_middleware, loopback_only_middleware, MiddlewareState},
+    middleware::{logging_middleware, loopback_only_middleware, route_auth, SharedRouteTable},
     model_rewrite::ModelRewriter,
     replay::{classify, ReplayDecision},
 };
 use axum::{
     body::Body,
-    extract::State,
     http::{header, HeaderMap, Response, StatusCode},
     middleware,
     routing::{get, post},
-    Json, Router,
+    Extension, Json, Router,
 };
 use bytes::Bytes;
 use eventsource_stream::Eventsource;
@@ -292,10 +291,17 @@ fn is_failure_status(status: reqwest::StatusCode) -> bool {
     status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
 }
 
-pub fn build_router(app_state: Arc<AppState>, middleware_state: Arc<MiddlewareState>) -> Router {
+/// Build the router.
+///
+/// `health` is shared by every profile, so `/health` keeps its own state and stays
+/// unauthenticated — diagnostics read it, and it reveals nothing profile-specific.
+/// The API routes take their `AppState` from a request extension that
+/// [`route_auth`] fills in from the caller's token, which is what lets one listener
+/// serve several profiles at once.
+pub fn build_router(health: HealthState, table: SharedRouteTable) -> Router {
     let health_router = Router::new()
         .route("/health", get(health_check))
-        .with_state(Arc::new(app_state.health.clone()));
+        .with_state(Arc::new(health));
     let api_router = Router::new()
         .route("/v1/responses", post(handle_responses))
         .route("/responses", post(handle_responses))
@@ -307,11 +313,7 @@ pub fn build_router(app_state: Arc<AppState>, middleware_state: Arc<MiddlewareSt
         .route("/messages/count_tokens", post(handle_count_tokens))
         .route("/v1/models", get(handle_models))
         .route("/models", get(handle_models))
-        .layer(middleware::from_fn_with_state(
-            middleware_state,
-            auth_middleware,
-        ))
-        .with_state(app_state);
+        .layer(middleware::from_fn_with_state(table, route_auth));
     health_router
         .merge(api_router)
         .layer(middleware::from_fn(logging_middleware))
@@ -440,7 +442,7 @@ fn sanitize_messages_effort(body: &mut Value, model: &str) -> Option<String> {
     }
 }
 
-async fn handle_models(State(state): State<Arc<AppState>>) -> Response<Body> {
+async fn handle_models(Extension(state): Extension<Arc<AppState>>) -> Response<Body> {
     state.health.increment_connections();
     let _guard = ConnectionGuard(&state.health);
     debug!("Processing GET /models request");
@@ -618,7 +620,7 @@ fn rewrite_model_in_place(body: &mut Value, rewriter: &ModelRewriter) -> Option<
 }
 
 async fn handle_messages(
-    State(state): State<Arc<AppState>>,
+    Extension(state): Extension<Arc<AppState>>,
     headers: HeaderMap,
     Json(mut body): Json<Value>,
 ) -> Response<Body> {
@@ -675,7 +677,7 @@ async fn handle_messages(
 }
 
 async fn handle_count_tokens(
-    State(state): State<Arc<AppState>>,
+    Extension(state): Extension<Arc<AppState>>,
     headers: HeaderMap,
     Json(mut body): Json<Value>,
 ) -> Response<Body> {
@@ -712,7 +714,7 @@ async fn handle_count_tokens(
 }
 
 async fn handle_responses(
-    State(state): State<Arc<AppState>>,
+    Extension(state): Extension<Arc<AppState>>,
     headers: HeaderMap,
     Json(mut body): Json<Value>,
 ) -> Response<Body> {
@@ -1201,7 +1203,7 @@ fn passthrough_messages_stream(upstream_response: reqwest::Response) -> Response
 }
 
 async fn handle_chat_completions(
-    State(state): State<Arc<AppState>>,
+    Extension(state): Extension<Arc<AppState>>,
     headers: HeaderMap,
     Json(mut body): Json<Value>,
 ) -> Response<Body> {

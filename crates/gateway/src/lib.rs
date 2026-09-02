@@ -14,7 +14,7 @@ pub mod replay;
 pub mod router;
 pub mod server;
 
-pub use config::{GatewayConfig, ModelRewriteRule, ResponsesMode, UpstreamConfig};
+pub use config::{GatewayConfig, ModelRewriteRule, ResponsesMode, RouteConfig, UpstreamConfig};
 pub use failover::{
     FailoverEvent, FailoverManager, FailoverOptions, FailoverSlot, FailoverStatus, HealthStatus,
 };

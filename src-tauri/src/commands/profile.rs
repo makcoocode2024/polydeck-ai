@@ -84,25 +84,7 @@ pub async fn ad_update_profile(
     };
 
     if is_active {
-        let mut gw_guard = gw.lock().await;
-        if let Some(server) = gw_guard.as_mut() {
-            server.stop().await;
-            *gw_guard = None;
-        }
-        if updated.gateway_enabled {
-            if let Some(primary) = updated
-                .providers
-                .iter()
-                .find(|p| p.is_primary)
-                .or_else(|| updated.providers.first())
-            {
-                let gw_config =
-                    crate::commands::gateway::build_gateway_config(&updated.id, primary);
-                let mut server = polydeck_gateway::GatewayServer::new(gw_config);
-                let _ = server.start().await;
-                *gw_guard = Some(server);
-            }
-        }
+        let _ = crate::commands::gateway::refresh_gateway(&gw, &pm).await;
     }
 
     Ok(updated)
@@ -134,7 +116,7 @@ pub async fn ad_activate_profile(
     id: String,
     clients: Option<Vec<String>>,
 ) -> Result<polydeck_core::profile_switch::SwitchResult, String> {
-    let (result, active_opt) = {
+    let (mut result, active_opt) = {
         let mut pm_guard = pm.lock().await;
         let result =
             polydeck_core::profile_switch::activate_profile(&mut pm_guard, &id, clients.as_deref())
@@ -148,25 +130,12 @@ pub async fn ad_activate_profile(
         (result, active)
     };
 
-    if let Some(active) = active_opt {
-        let mut gw_guard = gw.lock().await;
-        if let Some(server) = gw_guard.as_mut() {
-            server.stop().await;
-            *gw_guard = None;
-        }
-        if active.gateway_enabled {
-            if let Some(primary) = active
-                .providers
-                .iter()
-                .find(|p| p.is_primary)
-                .or_else(|| active.providers.first())
-            {
-                let gw_config = crate::commands::gateway::build_gateway_config(&active.id, primary);
-                let mut server = polydeck_gateway::GatewayServer::new(gw_config);
-                let _ = server.start().await;
-                *gw_guard = Some(server);
-            }
-        }
+    // Unconditional: the profile just activated may have the gateway off while
+    // another bound profile has it on, so the listener's fate depends on the whole
+    // binding set rather than on this one profile.
+    let _ = active_opt;
+    if let Err(e) = crate::commands::gateway::refresh_gateway(&gw, &pm).await {
+        result.warnings.push(format!("网关未能同步：{e}"));
     }
 
     Ok(result)
@@ -181,12 +150,19 @@ pub async fn ad_activate_profile(
 #[command]
 pub async fn ad_deactivate_clients(
     pm: State<'_, ProfileState>,
+    gw: State<'_, GatewayState>,
     clients: Vec<String>,
 ) -> Result<Vec<String>, String> {
-    let mut pm_guard = pm.lock().await;
-    polydeck_core::profile_switch::deactivate_clients(&mut pm_guard, &clients)
-        .await
-        .map_err(|e| e.to_string())
+    let released = {
+        let mut pm_guard = pm.lock().await;
+        polydeck_core::profile_switch::deactivate_clients(&mut pm_guard, &clients)
+            .await
+            .map_err(|e| e.to_string())?
+    };
+    // Drop the released clients' routes, so their old token stops working rather
+    // than continuing to reach the profile they were just unbound from.
+    let _ = crate::commands::gateway::refresh_gateway(&gw, &pm).await;
+    Ok(released)
 }
 
 /// The loopback address and bearer a client should be pointed at.

@@ -101,29 +101,32 @@ async fn stub_upstream(ending: Ending) -> String {
     format!("http://{addr}")
 }
 
+/// The token this test's single route answers to.
+const STUB_TOKEN: &str = "adk_bridge_truncation_stub";
+
 /// A gateway in front of the stub, on an ephemeral port so it cannot collide with
 /// the desktop app's 18888.
 async fn gateway_in_front_of(upstream: String) -> (GatewayServer, String) {
-    let config = GatewayConfig {
-        listen_addr: Some(SocketAddr::from(([127, 0, 0, 1], 0))),
-        timeout: Duration::from_secs(60),
-        max_retries: 0,
-        upstream: UpstreamConfig {
+    let mut config = GatewayConfig::single(
+        UpstreamConfig {
             provider_id: Some("stub".into()),
             base_url: upstream,
             api_key: "stub-key".into(),
             protocol: "openai".into(),
-            // The sentinel that means "loopback bind is the boundary", so the
-            // request needs no token.
-            local_token: "ai-deck-local".into(),
+            // Requests must now carry a token that selects a route; there is no
+            // sentinel that waves authentication through.
+            local_token: STUB_TOKEN.into(),
             responses_mode: ResponsesMode::Auto,
             max_price_per_request: None,
             rate_limit: polydeck_core::profile::RateLimitSettings::default(),
             default_effort_level: None,
             thinking_support: polydeck_core::types::ThinkingSupport::Unprobed,
         },
-        model_rewrites: Vec::new(),
-    };
+        Vec::new(),
+    );
+    config.listen_addr = Some(SocketAddr::from(([127, 0, 0, 1], 0)));
+    config.timeout = Duration::from_secs(60);
+    config.max_retries = 0;
     let mut server = GatewayServer::new(config);
     let addr = server.start().await.expect("gateway did not start");
     (server, format!("http://{addr}"))
@@ -132,7 +135,7 @@ async fn gateway_in_front_of(upstream: String) -> (GatewayServer, String) {
 async fn stream_a_turn(base: &str) -> String {
     let resp = reqwest::Client::new()
         .post(format!("{base}/v1/responses"))
-        .bearer_auth("ai-deck-local")
+        .bearer_auth(STUB_TOKEN)
         .json(&json!({
             "model": "stub-model",
             "stream": true,

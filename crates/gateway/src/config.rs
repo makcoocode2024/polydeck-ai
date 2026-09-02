@@ -7,12 +7,41 @@ use std::time::Duration;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConfig {
     pub listen_addr: Option<SocketAddr>,
-    pub upstream: UpstreamConfig,
-    pub model_rewrites: Vec<ModelRewriteRule>,
+    /// One entry per bound client. The client's `local_token` selects its entry, so
+    /// two clients on different profiles reach different upstreams through the same
+    /// listener.
+    pub routes: Vec<RouteConfig>,
     #[serde(default = "default_timeout")]
     pub timeout: Duration,
     #[serde(default = "default_retries")]
     pub max_retries: u32,
+}
+
+impl GatewayConfig {
+    /// A config serving one client, for callers and tests that have only one.
+    pub fn single(upstream: UpstreamConfig, model_rewrites: Vec<ModelRewriteRule>) -> Self {
+        Self {
+            listen_addr: None,
+            routes: vec![RouteConfig {
+                client_id: "default".into(),
+                upstream,
+                model_rewrites,
+            }],
+            timeout: default_timeout(),
+            max_retries: default_retries(),
+        }
+    }
+}
+
+/// Everything one client's requests need: where to go, as what, and under which
+/// model names.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteConfig {
+    /// Which client this serves. Only for logging and diagnostics — routing is by
+    /// token, since that is what arrives on the request.
+    pub client_id: String,
+    pub upstream: UpstreamConfig,
+    pub model_rewrites: Vec<ModelRewriteRule>,
 }
 
 fn default_timeout() -> Duration {

@@ -161,30 +161,10 @@ pub fn handle_menu_event(app: &AppHandle, menu_id: &str) {
                     .await
                     {
                         if result.success {
-                            if let Some(active) = pm_guard.get_profile(&profile_id) {
-                                let mut gw_guard = gw.lock().await;
-                                if let Some(server) = gw_guard.as_mut() {
-                                    server.stop().await;
-                                    *gw_guard = None;
-                                }
-                                if active.gateway_enabled {
-                                    if let Some(primary) = active
-                                        .providers
-                                        .iter()
-                                        .find(|p| p.is_primary)
-                                        .or_else(|| active.providers.first())
-                                    {
-                                        let gw_config =
-                                            crate::commands::gateway::build_gateway_config(
-                                                &active.id, primary,
-                                            );
-                                        let mut server =
-                                            polydeck_gateway::GatewayServer::new(gw_config);
-                                        let _ = server.start().await;
-                                        *gw_guard = Some(server);
-                                    }
-                                }
-                            }
+                            // Release the lock before reconciling: `refresh_gateway`
+                            // takes it itself, and holding it here would deadlock.
+                            drop(pm_guard);
+                            let _ = crate::commands::gateway::refresh_gateway(&gw, &pm).await;
                         }
                     }
                 }

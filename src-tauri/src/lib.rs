@@ -47,25 +47,44 @@ pub fn run() {
                     app_handle.try_state::<ProfileState>(),
                     app_handle.try_state::<GatewayState>(),
                 ) {
-                    let pm_guard = pm.lock().await;
-                    if let Some(active) = crate::commands::gateway::gateway_profile(&pm_guard) {
-                        if active.gateway_enabled {
-                            if let Some(primary) = active
-                                .providers
-                                .iter()
-                                .find(|p| p.is_primary)
-                                .or_else(|| active.providers.first())
-                            {
-                                let gw_config = crate::commands::gateway::build_gateway_config(
-                                    &active.id, primary,
-                                );
-                                let mut server = polydeck_gateway::GatewayServer::new(gw_config);
-                                if server.start().await.is_ok() {
-                                    let mut gw_guard = gw.lock().await;
-                                    *gw_guard = Some(server);
-                                }
+                    // A migrated state.json has bindings, but the clients' config
+                    // files still carry the pre-binding bearer that the gateway will
+                    // no longer accept. Re-activate each bound profile first to
+                    // issue tokens and rewrite those files; without this every
+                    // client that worked before the upgrade would 401.
+                    let profiles_to_reapply: Vec<(String, Vec<String>)> = {
+                        let pm_guard = pm.lock().await;
+                        if pm_guard.needs_reapply() {
+                            let mut by_profile: std::collections::HashMap<String, Vec<String>> =
+                                std::collections::HashMap::new();
+                            for binding in pm_guard.bindings() {
+                                by_profile
+                                    .entry(binding.profile_id)
+                                    .or_default()
+                                    .push(binding.client_id);
                             }
+                            by_profile.into_iter().collect()
+                        } else {
+                            Vec::new()
                         }
+                    };
+                    for (profile_id, clients) in profiles_to_reapply {
+                        let mut pm_guard = pm.lock().await;
+                        if let Err(e) = polydeck_core::profile_switch::activate_profile(
+                            &mut pm_guard,
+                            &profile_id,
+                            Some(&clients),
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                "迁移后重新下发方案 {profile_id} 的配置失败：{e}；相关客户端需要手动重新激活"
+                            );
+                        }
+                    }
+
+                    if let Err(e) = crate::commands::gateway::refresh_gateway(&gw, &pm).await {
+                        tracing::warn!("启动时网关未能就绪：{e}");
                     }
                 }
             });

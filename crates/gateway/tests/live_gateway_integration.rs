@@ -17,6 +17,10 @@ use std::time::Duration;
 /// LIVE_GATEWAY_BASE_URL=https://your-relay LIVE_GATEWAY_API_KEY=sk-... \
 ///   cargo test -p polydeck-gateway --test live_gateway_integration -- --ignored
 /// ```
+/// The token this test's single route answers to. Any value works; it only has to
+/// match between the route config and the requests.
+const LIVE_TOKEN: &str = "adk_live_integration";
+
 fn live_credentials() -> Option<(String, String)> {
     let base_url = std::env::var("LIVE_GATEWAY_BASE_URL").ok()?;
     let api_key = std::env::var("LIVE_GATEWAY_API_KEY").ok()?;
@@ -40,24 +44,24 @@ async fn test_full_gateway_and_clients_flow() {
         ModelRewriteRule::exact("gpt-4o", "gemini-3.7-flash-high"),
     ];
 
-    let config = GatewayConfig {
-        listen_addr: Some(SocketAddr::from(([127, 0, 0, 1], 18889))),
-        timeout: Duration::from_secs(60),
-        max_retries: 2,
-        upstream: UpstreamConfig {
+    let mut config = GatewayConfig::single(
+        UpstreamConfig {
             provider_id: Some("subtoken-test".into()),
             base_url: base_url.to_string(),
             api_key: api_key.to_string(),
             protocol: "openai".to_string(),
-            local_token: "ai-deck-local".into(),
+            local_token: LIVE_TOKEN.into(),
             responses_mode: ResponsesMode::Auto,
             max_price_per_request: Some(5.0),
             rate_limit: polydeck_core::profile::RateLimitSettings::default(),
             default_effort_level: None,
             thinking_support: polydeck_core::types::ThinkingSupport::Unprobed,
         },
-        model_rewrites: rules,
-    };
+        rules,
+    );
+    config.listen_addr = Some(SocketAddr::from(([127, 0, 0, 1], 18889)));
+    config.timeout = Duration::from_secs(60);
+    config.max_retries = 2;
 
     let mut server = GatewayServer::new(config);
     let addr = server
@@ -69,11 +73,15 @@ async fn test_full_gateway_and_clients_flow() {
     let client = Client::new();
     let gw_base = format!("http://{}", addr);
 
-    // 1. Test GET /v1/models with upstream bearer token
-    println!("=== 1. Test GET /v1/models (Auth: Bearer upstream_key) ===");
+    // 1. Test GET /v1/models with the route token.
+    //
+    // This step used the upstream provider key, which the gateway accepted inbound
+    // alongside the local token. Per-client routing dropped that: two profiles can
+    // share an upstream key, so it cannot select a route.
+    println!("=== 1. Test GET /v1/models (Auth: Bearer route token) ===");
     let resp = client
         .get(format!("{}/v1/models", gw_base))
-        .bearer_auth(api_key)
+        .bearer_auth(LIVE_TOKEN)
         .send()
         .await
         .unwrap();
@@ -88,10 +96,10 @@ async fn test_full_gateway_and_clients_flow() {
     );
 
     // 2. Test GET /models with local token
-    println!("=== 2. Test GET /models (Auth: Bearer ai-deck-local) ===");
+    println!("=== 2. Test GET /models (Auth: Bearer route token) ===");
     let resp2 = client
         .get(format!("{}/models", gw_base))
-        .bearer_auth("ai-deck-local")
+        .bearer_auth(LIVE_TOKEN)
         .send()
         .await
         .unwrap();
@@ -108,7 +116,7 @@ async fn test_full_gateway_and_clients_flow() {
     });
     let chat_resp = client
         .post(format!("{}/v1/chat/completions", gw_base))
-        .bearer_auth("ai-deck-local")
+        .bearer_auth(LIVE_TOKEN)
         .json(&chat_req)
         .send()
         .await
@@ -129,7 +137,7 @@ async fn test_full_gateway_and_clients_flow() {
     });
     let claude_resp = client
         .post(format!("{}/v1/messages", gw_base))
-        .header("x-api-key", "ai-deck-local")
+        .header("x-api-key", LIVE_TOKEN)
         .header("anthropic-version", "2023-06-01")
         .json(&claude_req)
         .send()
@@ -156,7 +164,7 @@ async fn test_full_gateway_and_clients_flow() {
     });
     let codex_resp = client
         .post(format!("{}/v1/responses", gw_base))
-        .bearer_auth("ai-deck-local")
+        .bearer_auth(LIVE_TOKEN)
         .json(&codex_req)
         .send()
         .await

@@ -13,18 +13,44 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, info};
 
-#[derive(Clone, Default)]
-pub struct MiddlewareState {
-    pub local_token: String,
-    pub upstream_api_key: String,
+/// Which runtime each client token selects.
+///
+/// One entry per bound client. Several clients bound to the same profile share one
+/// `Arc<AppState>`, so they also share that profile's learned Auto-mode Responses
+/// probe rather than each rediscovering it.
+///
+/// A `Vec` scanned linearly, not a `HashMap`: hashing a secret to index a table is
+/// a timing oracle, `secret_eq` is not, and the entry count is the number of
+/// configured clients — single digits.
+#[derive(Default)]
+pub struct RouteTable {
+    entries: Vec<(String, Arc<crate::router::AppState>)>,
 }
 
-/// The sentinel `local_token` meaning "local desktop mode, no token required".
-///
-/// `build_gateway_config` writes this, and `profile_switch` writes the same
-/// string into each client's config as its bearer token, so this is the value
-/// seen in every normal run.
-pub const LOCAL_DESKTOP_TOKEN: &str = "ai-deck-local";
+impl RouteTable {
+    pub fn new(entries: Vec<(String, Arc<crate::router::AppState>)>) -> Self {
+        Self { entries }
+    }
+
+    /// The runtime `token` selects, or `None` when it matches no client.
+    pub fn resolve(&self, token: &str) -> Option<Arc<crate::router::AppState>> {
+        self.entries
+            .iter()
+            .find(|(candidate, _)| secret_eq(token, candidate))
+            .map(|(_, state)| Arc::clone(state))
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// A route table that can be swapped while the listener keeps running.
+pub type SharedRouteTable = Arc<tokio::sync::RwLock<RouteTable>>;
 
 /// Compare two secrets without leaking their common prefix length via timing.
 ///
@@ -42,44 +68,40 @@ fn secret_eq(a: &str, b: &str) -> bool {
     diff == 0
 }
 
-/// Gate the API routes.
+/// Authenticate the caller and choose the runtime its request will use.
 ///
-/// Two modes, and the distinction is the whole point:
+/// The token does both jobs at once: it says who is calling and, because each
+/// bound client has its own, which profile to serve them. A request that matches no
+/// client is rejected rather than defaulted, since defaulting would silently answer
+/// from a profile nobody chose.
 ///
-/// - **Local desktop mode** (`local_token` empty or [`LOCAL_DESKTOP_TOKEN`]):
-///   no token is required. The security boundary is
-///   [`loopback_only_middleware`] plus the loopback-only bind in
-///   `GatewayServer::start`, per the project rule that the gateway never
-///   listens off-loopback. This is the configuration every normal run uses.
-///
-/// - **Explicit token mode** (any other `local_token`): the token is enforced.
-///   Previously a catch-all arm accepted *any* non-empty token here, so a
-///   deliberately configured token was unenforceable while still appearing to
-///   be a control. That is worse than no check, because it reads as one.
-pub async fn auth_middleware(
-    State(state): State<Arc<MiddlewareState>>,
+/// This replaces a two-mode scheme where the sentinel token `ai-deck-local` meant
+/// "no token required" and the upstream provider's own API key was also accepted.
+/// Neither survives per-client routing: the first cannot identify a caller at all,
+/// and the second cannot pick between two profiles that happen to share an upstream
+/// key. Loopback-only remains the outer boundary, but it is no longer the only one.
+pub async fn route_auth(
+    State(table): State<SharedRouteTable>,
     headers: HeaderMap,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
-    if state.local_token.is_empty() || state.local_token == LOCAL_DESKTOP_TOKEN {
-        return next.run(request).await;
-    }
+    let selected = match extract_auth_token(&headers) {
+        Some(token) => table.read().await.resolve(token),
+        None => None,
+    };
 
-    // The upstream key is accepted too: a client configured to talk straight to
-    // the provider keeps working when the gateway is put in front of it.
-    let accepted = extract_auth_token(&headers).is_some_and(|t| {
-        secret_eq(t, &state.local_token)
-            || (!state.upstream_api_key.is_empty() && secret_eq(t, &state.upstream_api_key))
-    });
-
-    if accepted {
-        next.run(request).await
-    } else {
-        json_error(
+    match selected {
+        Some(state) => {
+            // Handlers read this via `Extension` instead of `State`, which is what
+            // lets one listener serve several profiles.
+            request.extensions_mut().insert(state);
+            next.run(request).await
+        }
+        None => json_error(
             StatusCode::UNAUTHORIZED,
-            "Missing or invalid Authorization / x-api-key header",
-        )
+            "No profile is bound to this token. Re-activate this client in PolyDeck.",
+        ),
     }
 }
 
@@ -191,15 +213,47 @@ mod tests {
         assert_eq!(extract_auth_token(&headers), None);
     }
 
-    /// Drive the real middleware, since the bug being guarded against lived in
-    /// its match arms rather than in token extraction.
-    async fn probe(state: MiddlewareState, auth: Option<&str>) -> StatusCode {
+    /// A runtime distinguishable only by its provider id, which is all these tests
+    /// need to tell one route's selection from another's.
+    fn runtime(provider_id: &str) -> Arc<crate::router::AppState> {
+        Arc::new(crate::router::AppState {
+            upstream: crate::client::UpstreamClient::new(
+                "http://127.0.0.1:1".into(),
+                "k".into(),
+                std::time::Duration::from_secs(1),
+                0,
+            )
+            .unwrap(),
+            rewriter: crate::model_rewrite::ModelRewriter::new(&[]).unwrap(),
+            health: crate::health::HealthState::new(),
+            failover: None,
+            responses_mode: crate::config::ResponsesMode::Auto,
+            responses_native: Arc::new(std::sync::OnceLock::new()),
+            max_price_per_request: None,
+            rate_limiter_registry: Arc::new(crate::rate_limiter::RateLimiterRegistry::new()),
+            primary_provider_id: provider_id.into(),
+            rate_limit_settings: Default::default(),
+            max_retries: 0,
+            default_effort_level: None,
+            thinking_support: Default::default(),
+        })
+    }
+
+    fn table_of(pairs: &[(&str, &str)]) -> SharedRouteTable {
+        Arc::new(tokio::sync::RwLock::new(RouteTable::new(
+            pairs
+                .iter()
+                .map(|(token, provider)| ((*token).to_string(), runtime(provider)))
+                .collect(),
+        )))
+    }
+
+    /// Drive the real middleware: the property under test is that a token both
+    /// authenticates *and* selects, and only the middleware does both.
+    async fn probe(table: SharedRouteTable, auth: Option<&str>) -> StatusCode {
         let app = Router::new()
             .route("/v1/models", get(|| async { "ok" }))
-            .layer(axum::middleware::from_fn_with_state(
-                Arc::new(state),
-                auth_middleware,
-            ));
+            .layer(axum::middleware::from_fn_with_state(table, route_auth));
         let mut req = Request::builder().uri("/v1/models");
         if let Some(a) = auth {
             req = req.header(header::AUTHORIZATION, format!("Bearer {a}"));
@@ -210,65 +264,73 @@ mod tests {
             .status()
     }
 
-    fn state(local: &str, upstream: &str) -> MiddlewareState {
-        MiddlewareState {
-            local_token: local.into(),
-            upstream_api_key: upstream.into(),
-        }
-    }
-
     #[tokio::test]
-    async fn local_desktop_mode_needs_no_token() {
-        for local in ["", LOCAL_DESKTOP_TOKEN] {
-            assert_eq!(
-                probe(state(local, "sk-upstream"), None).await,
-                StatusCode::OK,
-                "local_token={local:?} must stay open; loopback is the boundary"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn explicit_token_is_accepted() {
+    async fn a_known_token_is_accepted() {
         assert_eq!(
-            probe(state("secret-token", ""), Some("secret-token")).await,
+            probe(table_of(&[("adk_a", "prov-a")]), Some("adk_a")).await,
             StatusCode::OK
         );
     }
 
+    /// The old sentinel meant "no token required". Under per-client routing it
+    /// cannot identify a caller, so it must not be special any more.
     #[tokio::test]
-    async fn upstream_key_is_accepted_when_token_configured() {
+    async fn the_old_sentinel_no_longer_opens_the_gate() {
         assert_eq!(
-            probe(state("secret-token", "sk-upstream"), Some("sk-upstream")).await,
-            StatusCode::OK
-        );
-    }
-
-    /// The regression. A catch-all arm used to accept any non-empty token, so a
-    /// configured token was decorative.
-    #[tokio::test]
-    async fn explicit_token_rejects_wrong_token() {
-        assert_eq!(
-            probe(state("secret-token", "sk-upstream"), Some("wrong-token")).await,
+            probe(table_of(&[("adk_a", "prov-a")]), Some("ai-deck-local")).await,
             StatusCode::UNAUTHORIZED
         );
     }
 
     #[tokio::test]
-    async fn explicit_token_rejects_missing_token() {
+    async fn an_unknown_token_is_refused() {
         assert_eq!(
-            probe(state("secret-token", ""), None).await,
+            probe(table_of(&[("adk_a", "prov-a")]), Some("adk_nope")).await,
             StatusCode::UNAUTHORIZED
         );
     }
 
-    /// An empty upstream key must not turn into a wildcard via `Some("")`.
+    /// No token cannot mean "use the only route": with several routes there is no
+    /// only route, and defaulting would answer from a profile nobody chose.
     #[tokio::test]
-    async fn empty_upstream_key_is_not_a_wildcard() {
+    async fn a_missing_token_is_refused_even_with_one_route() {
         assert_eq!(
-            probe(state("secret-token", ""), Some("")).await,
+            probe(table_of(&[("adk_a", "prov-a")]), None).await,
             StatusCode::UNAUTHORIZED
         );
+    }
+
+    #[tokio::test]
+    async fn an_empty_token_is_not_a_wildcard() {
+        assert_eq!(
+            probe(table_of(&[("adk_a", "prov-a")]), Some("")).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_table_refuses_everything() {
+        assert_eq!(
+            probe(table_of(&[]), Some("adk_a")).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    /// The selection itself, which the status code cannot show.
+    #[tokio::test]
+    async fn each_token_selects_its_own_runtime() {
+        let table = table_of(&[("adk_a", "prov-a"), ("adk_b", "prov-b")]);
+        let guard = table.read().await;
+
+        assert_eq!(
+            guard.resolve("adk_a").unwrap().primary_provider_id,
+            "prov-a"
+        );
+        assert_eq!(
+            guard.resolve("adk_b").unwrap().primary_provider_id,
+            "prov-b"
+        );
+        assert!(guard.resolve("adk_c").is_none());
     }
 
     #[test]
