@@ -5,6 +5,7 @@
 
 pub mod api_key_detector;
 pub mod autolaunch;
+pub mod binding;
 pub mod chat_history;
 pub mod claude_desktop;
 pub mod client_detector;
