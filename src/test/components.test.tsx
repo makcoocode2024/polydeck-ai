@@ -8,6 +8,7 @@ import { BrowserRouter } from "react-router-dom";
 import { Sidebar } from "@/components/sidebar";
 import { StatusBar } from "@/components/status-bar";
 import { invalidateBackendReadCache } from "@/services/backend";
+import { setMockResponse } from "./setup";
 
 describe("UI Components", () => {
   it("renders Button correctly with variant and size", () => {
@@ -79,5 +80,50 @@ describe("UI Components", () => {
     await waitFor(() => {
       expect(screen.getByText(/网关/)).toBeInTheDocument();
     });
+  });
+
+  it("reports every bound profile, not one active one", async () => {
+    // The bar used to read `getActiveProfile`, which now answers null whenever the
+    // bound clients disagree — so with two profiles in use it would have said
+    // "未指定" exactly when the most was configured.
+    const restore = setMockResponse("ad_list_client_bindings", [
+      {
+        clientId: "codex-cli",
+        profileId: "prof_a",
+        profileName: "方案A",
+        gatewayEnabled: true,
+        boundAt: "2026-08-18T00:00:00Z",
+      },
+      {
+        clientId: "claude-code",
+        profileId: "prof_b",
+        profileName: "方案B",
+        gatewayEnabled: true,
+        boundAt: "2026-08-18T00:00:00Z",
+      },
+    ]);
+    try {
+      render(<StatusBar />);
+      const row = await screen.findByTestId("status-bindings");
+      await waitFor(() => expect(row.textContent).toContain("2 个客户端"));
+      expect(row.textContent).toContain("方案A、方案B");
+      // Which client went where is in the tooltip; the bar has no room for it.
+      expect(row.getAttribute("title")).toBe(
+        "codex-cli → 方案A\nclaude-code → 方案B"
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("says so when nothing is bound", async () => {
+    const restore = setMockResponse("ad_list_client_bindings", []);
+    try {
+      render(<StatusBar />);
+      const row = await screen.findByTestId("status-bindings");
+      await waitFor(() => expect(row.textContent).toContain("未绑定"));
+    } finally {
+      restore();
+    }
   });
 });

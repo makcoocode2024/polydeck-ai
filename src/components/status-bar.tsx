@@ -4,11 +4,14 @@ import { gatewayStatusAtom } from "@/state/gateway";
 import { backend } from "@/services/backend";
 import { Button } from "@/components/ui/button";
 import { Play, Square, RefreshCw, Layers, RotateCw } from "lucide-react";
-import type { Profile } from "@/domain/profile";
+import type { ClientBindingView } from "@/domain/profile";
 
 export function StatusBar() {
   const [gateway, setGateway] = useAtom(gatewayStatusAtom);
-  const [activeProfile, setActiveProfile] = useState<Profile | null>(null);
+  // Bindings rather than one active profile: several can be in use at once, and
+  // `getActiveProfile` answers null whenever the bound clients disagree — which
+  // would read as "nothing configured" exactly when the most is.
+  const [bindings, setBindings] = useState<ClientBindingView[]>([]);
   const [loading, setLoading] = useState(false);
 
   const refreshStatus = useCallback(async () => {
@@ -19,8 +22,7 @@ export function StatusBar() {
       // Keep previous state if offline or mocking
     }
     try {
-      const p = await backend.getActiveProfile();
-      setActiveProfile(p);
+      setBindings((await backend.listClientBindings()) ?? []);
     } catch {
       // Ignored
     }
@@ -73,13 +75,35 @@ export function StatusBar() {
 
         <div className="h-3 w-px bg-border" />
 
-        <div className="flex items-center gap-1.5 text-muted-foreground">
-          <Layers className="h-3.5 w-3.5" />
-          <span>当前方案:</span>
-          <span className="font-medium text-foreground">
-            {activeProfile?.name ?? "未指定"}
-          </span>
-        </div>
+        {(() => {
+          const names = Array.from(
+            new Set(bindings.map((b) => b.profileName).filter((n): n is string => !!n))
+          );
+          return (
+            <div
+              className="flex items-center gap-1.5 text-muted-foreground"
+              title={
+                bindings.length > 0
+                  ? bindings.map((b) => `${b.clientId} → ${b.profileName ?? "?"}`).join("\n")
+                  : undefined
+              }
+              data-testid="status-bindings"
+            >
+              <Layers className="h-3.5 w-3.5" />
+              {bindings.length === 0 ? (
+                <>
+                  <span>客户端绑定:</span>
+                  <span className="font-medium text-foreground">未绑定</span>
+                </>
+              ) : (
+                <>
+                  <span>{bindings.length} 个客户端:</span>
+                  <span className="font-medium text-foreground">{names.join("、")}</span>
+                </>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       <div className="flex items-center gap-2 text-muted-foreground">

@@ -170,6 +170,10 @@ const PROTOCOLS: { id: ProtocolKind; name: string; desc: string; defaultModel: s
   },
 ];
 
+/// The clients `profile_switch::write_client_config` has a writer for, so activating
+/// a profile configures them with no further steps. The others can be bound too and
+/// route through the gateway the same way, but their address and token have to be
+/// pasted in by hand — see the 需要手动填写 panel on the profiles page.
 const CORE_CLIENT_IDS = ["codex-cli", "claude-code", "claude-desktop", "hermes"];
 
 /**
