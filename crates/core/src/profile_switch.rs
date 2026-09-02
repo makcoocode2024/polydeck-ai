@@ -476,19 +476,48 @@ async fn write_client_config(client: &str, profile: &Profile) -> AppResult<()> {
         .or_else(|| profile.providers.first())
         .ok_or_else(|| AppError::Config("Profile 没有配置 Provider".into()))?;
 
-    let clean = client.trim().to_ascii_lowercase();
+    // Normalized with the same function the bindings and the gateway's route table
+    // use, so the token looked up here is the one that client authenticates with.
+    let clean = crate::binding::normalize_client_id(client);
+    let auth = client_auth(&clean, &profile.id, profile.gateway_enabled)?;
+
     if clean.contains("codex") {
-        write_codex_config(primary, &profile.id, profile.gateway_enabled).await
-    } else if clean == "claude-desktop" || clean.contains("desktop") {
-        write_claude_desktop_config(primary, &profile.id, profile.gateway_enabled).await
+        write_codex_config(primary, &auth, profile.gateway_enabled).await
+    } else if crate::binding::is_claude_desktop(&clean) {
+        write_claude_desktop_config(primary, &auth, profile.gateway_enabled).await
     } else if clean.contains("claude") {
-        write_claude_config(primary, &profile.id, profile.gateway_enabled).await
+        write_claude_config(primary, &auth, profile.gateway_enabled).await
     } else if clean.contains("hermes") {
-        write_hermes_config(primary, &profile.id, profile.gateway_enabled).await
+        write_hermes_config(primary, &auth, profile.gateway_enabled).await
     } else {
         tracing::info!("客户端 {client} 暂无专用本地配置文件需要写入");
         Ok(())
     }
+}
+
+/// The credential this client should present on every request.
+///
+/// Gateway mode: the client's own token. The gateway's route table is keyed by
+/// exactly these, so this value is what picks the profile — and the reason each
+/// client needs its own. Two things must *not* go here. The upstream key, because
+/// the gateway no longer accepts it (it cannot tell two profiles sharing one
+/// upstream apart) and writing it would hand the provider key to every bound
+/// client. And the old `ai-deck-local` sentinel, which identifies no caller.
+///
+/// Direct mode: the upstream key itself, since the client talks to the provider
+/// with no gateway in between. Empty when the profile has no key stored, which the
+/// writers take as "leave the auth field out".
+///
+/// Failing here beats falling back: a config written with a credential the gateway
+/// will reject looks activated but 401s on first use.
+fn client_auth(client_id: &str, profile_id: &str, gateway_enabled: bool) -> AppResult<String> {
+    if gateway_enabled {
+        return crate::credentials::ensure_client_token(client_id);
+    }
+    Ok(crate::credentials::get_api_key(profile_id)
+        .unwrap_or_default()
+        .trim()
+        .to_string())
 }
 
 /// The conservative effort ladder handed to models no rule recognises.
@@ -813,7 +842,7 @@ pub fn build_codex_catalog_with_1m(
 
 async fn write_codex_config(
     provider: &crate::profile::ProviderConfig,
-    profile_id: &str,
+    auth: &str,
     gateway_enabled: bool,
 ) -> AppResult<()> {
     let home =
@@ -902,9 +931,6 @@ async fn write_codex_config(
         }
     };
 
-    // Retrieve API key if stored in OS credentials
-    let maybe_key = crate::credentials::get_api_key(profile_id).ok();
-
     // Update model_providers table
     let providers = doc
         .entry("model_providers")
@@ -917,25 +943,8 @@ async fn write_codex_config(
         provider_table.insert("wire_api", toml_edit::value("responses"));
         provider_table.insert("requires_openai_auth", toml_edit::value(false));
 
-        let token_to_write = if let Some(key) = &maybe_key {
-            if !key.trim().is_empty() {
-                key.trim().to_string()
-            } else if gateway_enabled {
-                "ai-deck-local".to_string()
-            } else {
-                String::new()
-            }
-        } else if gateway_enabled {
-            "ai-deck-local".to_string()
-        } else {
-            String::new()
-        };
-
-        if !token_to_write.is_empty() {
-            provider_table.insert(
-                "experimental_bearer_token",
-                toml_edit::value(token_to_write),
-            );
+        if !auth.is_empty() {
+            provider_table.insert("experimental_bearer_token", toml_edit::value(auth));
         }
 
         table.insert(&provider_key, toml_edit::Item::Table(provider_table));
@@ -951,7 +960,7 @@ async fn write_codex_config(
 
 async fn write_claude_config(
     provider: &crate::profile::ProviderConfig,
-    profile_id: &str,
+    auth: &str,
     gateway_enabled: bool,
 ) -> AppResult<()> {
     let home =
@@ -1160,26 +1169,11 @@ async fn write_claude_config(
             serde_json::Value::String(target_base_url),
         );
 
-        let maybe_key = crate::credentials::get_api_key(profile_id).ok();
-        let token_to_write = if let Some(key) = &maybe_key {
-            if !key.trim().is_empty() {
-                key.trim().to_string()
-            } else if gateway_enabled {
-                "ai-deck-local".to_string()
-            } else {
-                String::new()
-            }
-        } else if gateway_enabled {
-            "ai-deck-local".to_string()
-        } else {
-            String::new()
-        };
-
-        if !token_to_write.is_empty() {
+        if !auth.is_empty() {
             // Write only ANTHROPIC_AUTH_TOKEN to avoid mutual exclusivity warnings in Claude Code
             env_obj.insert(
                 "ANTHROPIC_AUTH_TOKEN".into(),
-                serde_json::Value::String(token_to_write.clone()),
+                serde_json::Value::String(auth.to_string()),
             );
             env_obj.remove("ANTHROPIC_API_KEY");
         } else {
@@ -1339,7 +1333,7 @@ async fn write_claude_config(
 /// [`crate::claude_desktop::apply`] owns.
 async fn write_claude_desktop_config(
     provider: &crate::profile::ProviderConfig,
-    profile_id: &str,
+    auth: &str,
     gateway_enabled: bool,
 ) -> AppResult<()> {
     let home =
@@ -1380,17 +1374,13 @@ async fn write_claude_desktop_config(
     }
     crate::storage::atomic_replace(&config_path, content.as_bytes())?;
 
-    crate::claude_desktop::apply(&desktop_endpoint_spec(
-        provider,
-        profile_id,
-        gateway_enabled,
-    ))
+    crate::claude_desktop::apply(&desktop_endpoint_spec(provider, auth, gateway_enabled))
 }
 
 /// Describe the endpoint Claude Desktop should use for this provider.
 fn desktop_endpoint_spec(
     provider: &crate::profile::ProviderConfig,
-    profile_id: &str,
+    auth: &str,
     gateway_enabled: bool,
 ) -> crate::claude_desktop::EndpointSpec {
     // Desktop appends the `/v1/...` path itself, so a `/v1` suffix here would
@@ -1401,21 +1391,9 @@ fn desktop_endpoint_spec(
         strip_anthropic_version_suffix(&provider.base_url)
     };
 
-    let api_key = crate::credentials::get_api_key(profile_id)
-        .ok()
-        .map(|key| key.trim().to_string())
-        .filter(|key| !key.is_empty())
-        .unwrap_or_else(|| {
-            if gateway_enabled {
-                "ai-deck-local".to_string()
-            } else {
-                String::new()
-            }
-        });
-
     crate::claude_desktop::EndpointSpec {
         base_url,
-        api_key,
+        api_key: auth.to_string(),
         models: desktop_inference_models(provider, gateway_enabled),
     }
 }
@@ -1469,7 +1447,7 @@ fn desktop_inference_models(
 
 async fn write_hermes_config(
     provider: &crate::profile::ProviderConfig,
-    profile_id: &str,
+    auth: &str,
     gateway_enabled: bool,
 ) -> AppResult<()> {
     let home =
@@ -1488,20 +1466,7 @@ async fn write_hermes_config(
         }
     };
 
-    let maybe_key = crate::credentials::get_api_key(profile_id).ok();
-    let key = if let Some(k) = &maybe_key {
-        if !k.trim().is_empty() {
-            k.trim().to_string()
-        } else if gateway_enabled {
-            "ai-deck-local".to_string()
-        } else {
-            String::new()
-        }
-    } else if gateway_enabled {
-        "ai-deck-local".to_string()
-    } else {
-        String::new()
-    };
+    let key = auth;
 
     let model = if provider.default_model.trim().is_empty() {
         "gpt-4o"
@@ -1915,7 +1880,7 @@ mod tests {
             haiku_display_name: None,
         };
 
-        let res = write_claude_config(&provider, "test-profile", true).await;
+        let res = write_claude_config(&provider, "adk_test", true).await;
         assert!(res.is_ok());
 
         let settings_path = claude_dir.join("settings.json");
@@ -2019,7 +1984,7 @@ mod tests {
             haiku_display_name: None,
         };
 
-        let res2 = write_claude_config(&custom_provider, "custom-profile", true).await;
+        let res2 = write_claude_config(&custom_provider, "adk_test", true).await;
         assert!(res2.is_ok());
         let content2 = std::fs::read_to_string(&settings_path).unwrap();
         let parsed2: serde_json::Value = serde_json::from_str(&content2).unwrap();
@@ -2245,15 +2210,21 @@ mod tests {
                 .map(str::to_string)
         };
 
-        write_claude_config(&provider, "p", true).await.unwrap();
+        write_claude_config(&provider, "adk_test", true)
+            .await
+            .unwrap();
         assert_eq!(read_flag(&settings_path).as_deref(), Some("1"));
 
         // Same file, gateway now off: the flag has to flip, not linger.
-        write_claude_config(&provider, "p", false).await.unwrap();
+        write_claude_config(&provider, "adk_test", false)
+            .await
+            .unwrap();
         assert_eq!(read_flag(&settings_path).as_deref(), Some("0"));
 
         // And back on again.
-        write_claude_config(&provider, "p", true).await.unwrap();
+        write_claude_config(&provider, "adk_test", true)
+            .await
+            .unwrap();
         assert_eq!(read_flag(&settings_path).as_deref(), Some("1"));
     }
 
@@ -2355,7 +2326,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap()
         };
 
-        write_claude_config(&base, "p", true).await.unwrap();
+        write_claude_config(&base, "adk_test", true).await.unwrap();
         let parsed = read_config();
         let overrides = parsed
             .get("modelOverrides")
@@ -2420,7 +2391,9 @@ mod tests {
             supports_1m_context: Some(false),
             ..base.clone()
         };
-        write_claude_config(&no_1m, "p", false).await.unwrap();
+        write_claude_config(&no_1m, "adk_test", false)
+            .await
+            .unwrap();
         let parsed = read_config();
         let overrides = parsed
             .get("modelOverrides")
@@ -2526,7 +2499,9 @@ mod tests {
         };
 
         // Gateway mode: must point at the bare loopback origin.
-        write_claude_config(&provider, "prof", true).await.unwrap();
+        write_claude_config(&provider, "adk_test", true)
+            .await
+            .unwrap();
         let gw_url = read_base_url(&claude_dir);
         assert_eq!(gw_url, format!("http://127.0.0.1:{GATEWAY_PORT}"));
         assert!(
@@ -2535,7 +2510,9 @@ mod tests {
         );
 
         // Direct mode: the provider /v1 suffix must be stripped, not appended to.
-        write_claude_config(&provider, "prof", false).await.unwrap();
+        write_claude_config(&provider, "adk_test", false)
+            .await
+            .unwrap();
         let direct_url = read_base_url(&claude_dir);
         assert_eq!(direct_url, "https://relay.example.com");
         assert!(
@@ -2545,7 +2522,9 @@ mod tests {
 
         // Direct mode without a /v1 suffix must stay unchanged.
         provider.base_url = "https://relay.example.com".into();
-        write_claude_config(&provider, "prof", false).await.unwrap();
+        write_claude_config(&provider, "adk_test", false)
+            .await
+            .unwrap();
         assert_eq!(read_base_url(&claude_dir), "https://relay.example.com");
 
         // The stale /login managed key must be gone, otherwise Claude Code warns
@@ -2758,6 +2737,127 @@ mod tests {
         );
     }
 
+    /// The credential in `~/.codex/config.toml`, as Codex would send it.
+    fn codex_bearer(home: &std::path::Path) -> String {
+        let raw = std::fs::read_to_string(home.join(".codex").join("config.toml")).unwrap();
+        let doc = raw.parse::<toml_edit::DocumentMut>().unwrap();
+        let token = doc["model_providers"]
+            .as_table()
+            .unwrap()
+            .iter()
+            .next()
+            .unwrap()
+            .1
+            .get("experimental_bearer_token")
+            .map(|v| v.as_str().unwrap().to_string())
+            .unwrap_or_default();
+        token
+    }
+
+    /// The credential in `~/.claude/settings.json`, as Claude Code would send it.
+    fn claude_bearer(home: &std::path::Path) -> String {
+        let raw = std::fs::read_to_string(home.join(".claude").join("settings.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        parsed["env"]["ANTHROPIC_AUTH_TOKEN"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// A gateway-mode client must present the token the gateway's route table is
+    /// keyed by, which is the client's own — not the upstream key.
+    ///
+    /// This is the seam that broke: the routing half was keyed by
+    /// `ensure_client_token`, while the writers still emitted the upstream key,
+    /// falling back to the retired `ai-deck-local` sentinel when no key was stored.
+    /// The gateway rejects both, so every client 401'd as soon as it was activated.
+    /// Nothing tied the two halves together, so nothing caught it.
+    ///
+    /// Writing the upstream key here also leaked it: one provider key copied into
+    /// the config file of every bound client.
+    #[tokio::test]
+    async fn gateway_clients_present_their_own_token_not_the_upstream_key() {
+        let _home_guard = lock_home_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
+        let mut pm =
+            crate::profile::ProfileManager::with_state_path(temp_home.path().join("state.json"));
+
+        const UPSTREAM: &str = "sk-upstream-must-not-be-copied-to-clients";
+        let created = pm.create_profile_simple("方案G").unwrap();
+        crate::credentials::set_api_key(&created.id, UPSTREAM).unwrap();
+        pm.update_profile(
+            &created.id,
+            ProfileUpdate {
+                name: Some("方案G".into()),
+                providers: Some(created.providers.clone()),
+                clients: Some(vec!["codex-cli".into(), "claude-code".into()]),
+                gateway_enabled: Some(true),
+                failover_enabled: None,
+            },
+        )
+        .unwrap();
+
+        activate_profile(&mut pm, &created.id, None).await.unwrap();
+
+        let home = crate::user_home_dir().unwrap();
+        let codex = codex_bearer(&home);
+        let claude = claude_bearer(&home);
+
+        for (client, written) in [("codex-cli", &codex), ("claude-code", &claude)] {
+            assert_eq!(
+                crate::credentials::get_client_token(client)
+                    .unwrap()
+                    .as_ref(),
+                Some(written),
+                "{client} 写入的凭据必须等于网关路由表认的那个令牌"
+            );
+            assert!(
+                written.starts_with(crate::credentials::CLIENT_TOKEN_PREFIX),
+                "{client} 的凭据应是 adk_ 客户端令牌，实际为 {written}"
+            );
+            assert_ne!(written, UPSTREAM, "{client} 不该拿到上游 API key");
+            assert_ne!(written, "ai-deck-local", "{client} 不该拿到已废弃的哨兵值");
+        }
+
+        assert_ne!(codex, claude, "两个客户端必须各自持有不同的令牌");
+    }
+
+    /// Direct mode has no gateway to authenticate against — the client talks to the
+    /// provider — so it still needs the provider's own key. The clause above must
+    /// not have taken that away.
+    #[tokio::test]
+    async fn direct_clients_still_present_the_upstream_key() {
+        let _home_guard = lock_home_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
+        let mut pm =
+            crate::profile::ProfileManager::with_state_path(temp_home.path().join("state.json"));
+
+        const UPSTREAM: &str = "sk-direct-upstream-key";
+        let created = pm.create_profile_simple("方案D").unwrap();
+        crate::credentials::set_api_key(&created.id, UPSTREAM).unwrap();
+        pm.update_profile(
+            &created.id,
+            ProfileUpdate {
+                name: Some("方案D".into()),
+                providers: Some(created.providers.clone()),
+                clients: Some(vec!["codex-cli".into()]),
+                gateway_enabled: Some(false),
+                failover_enabled: None,
+            },
+        )
+        .unwrap();
+
+        activate_profile(&mut pm, &created.id, None).await.unwrap();
+
+        assert_eq!(
+            codex_bearer(&crate::user_home_dir().unwrap()),
+            UPSTREAM,
+            "直连模式下 Codex 应直接持有上游 key"
+        );
+    }
+
     #[test]
     fn test_model_window_agnes_families_differ() {
         let flash = model_window("agnes-2.5-flash").unwrap();
@@ -2832,7 +2932,7 @@ mod tests {
         )
         .unwrap();
 
-        write_claude_config(provider, "test-profile", false)
+        write_claude_config(provider, "adk_test", false)
             .await
             .unwrap();
 

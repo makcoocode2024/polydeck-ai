@@ -1,21 +1,6 @@
 use crate::state::{GatewayState, ProfileState};
 use tauri::{command, State};
 
-/// The profile the single gateway listener should serve.
-///
-/// Interim: the gateway still serves one profile, so this picks the first
-/// gateway-enabled binding's profile. Once the gateway routes per client token,
-/// every bound profile is served at once and this collapses into building the whole
-/// route table instead.
-pub fn gateway_profile(
-    pm: &polydeck_core::profile::ProfileManager,
-) -> Option<polydeck_core::profile::Profile> {
-    pm.bindings()
-        .into_iter()
-        .filter_map(|b| pm.get_profile(&b.profile_id))
-        .find(|p| p.gateway_enabled)
-}
-
 /// One client's route: which upstream its requests go to, under which token.
 pub fn build_route_config(
     client_id: &str,
