@@ -2573,7 +2573,7 @@ mod tests {
         // The directory comes from `claude_desktop` rather than being spelled out
         // here: this test used to hardcode Windows' `AppData/Local` layout and so
         // looked in the wrong place on macOS.
-        let threep = crate::claude_desktop::threep_dir();
+        let (normal, threep) = crate::claude_desktop::desktop_dirs();
         let library = threep.join("configLibrary");
         std::fs::create_dir_all(&library).unwrap();
         std::fs::write(
@@ -2601,11 +2601,6 @@ mod tests {
                 .unwrap_or_default()
                 .to_string()
         };
-        let normal = temp_home
-            .path()
-            .join("AppData")
-            .join("Local")
-            .join("Claude");
         assert_eq!(mode_of(&threep), "3p");
         assert_eq!(mode_of(&normal), "3p");
         assert!(

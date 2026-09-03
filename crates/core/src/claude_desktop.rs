@@ -77,20 +77,23 @@ fn data_dirs() -> Option<(PathBuf, PathBuf)> {
     }
 }
 
-/// Desktop's third-party directory, for tests asserting on what [`apply`] wrote.
+/// Desktop's `(normal, 3P)` directories, for tests asserting on what [`apply`] wrote.
 ///
 /// Exposed so no test re-derives the layout by hand. `profile_switch`'s Desktop
-/// test did exactly that — it hardcoded `AppData/Local/Claude-3p`, which is only
-/// Windows' shape — and so read from the wrong place on macOS, where
+/// test did exactly that for both directories — it spelled them
+/// `AppData/Local/Claude` and `AppData/Local/Claude-3p`, which is only Windows'
+/// shape — and so read from paths that never existed on macOS, where
 /// `app_data_under` ignores the `local` flag and answers
-/// `Library/Application Support`. The write succeeded, the assertion looked for a
-/// file that was never going to be there, and the failure named a missing file
-/// rather than the path mismatch that caused it.
+/// `Library/Application Support`. Both writes succeeded; the assertions looked
+/// elsewhere, and the failures named a missing file rather than the path mismatch
+/// behind it.
+///
+/// Returns the pair rather than one directory so a caller cannot take this for the
+/// 3P path and still hand-roll the normal one — which is exactly how the second
+/// half of that bug outlived the first fix.
 #[cfg(all(test, any(windows, target_os = "macos")))]
-pub(crate) fn threep_dir() -> PathBuf {
-    data_dirs()
-        .expect("this platform must resolve Desktop data dirs")
-        .1
+pub(crate) fn desktop_dirs() -> (PathBuf, PathBuf) {
+    data_dirs().expect("this platform must resolve Desktop data dirs")
 }
 
 /// Find Desktop's data directory, tolerating a suffixed install.
