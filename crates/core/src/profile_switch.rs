@@ -2570,11 +2570,10 @@ mod tests {
             .unwrap();
 
         // A foreign entry stands in for a profile the user made in Desktop itself.
-        let threep = temp_home
-            .path()
-            .join("AppData")
-            .join("Local")
-            .join("Claude-3p");
+        // The directory comes from `claude_desktop` rather than being spelled out
+        // here: this test used to hardcode Windows' `AppData/Local` layout and so
+        // looked in the wrong place on macOS.
+        let threep = crate::claude_desktop::threep_dir();
         let library = threep.join("configLibrary");
         std::fs::create_dir_all(&library).unwrap();
         std::fs::write(
