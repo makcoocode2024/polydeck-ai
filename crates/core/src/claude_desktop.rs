@@ -311,8 +311,10 @@ mod tests {
     /// isolation was briefly broken the test overwrote that machine's actual
     /// `_meta.json` with content that happened to match — damage that its own
     /// assertions could not see.
+    #[cfg(any(windows, target_os = "macos"))]
     const FOREIGN_ID: &str = "test-fixture-not-a-real-profile-id";
 
+    #[cfg(any(windows, target_os = "macos"))]
     fn spec() -> EndpointSpec {
         EndpointSpec {
             base_url: "http://127.0.0.1:18888".into(),
@@ -327,6 +329,7 @@ mod tests {
 
     /// A temp home with the 3P tree already present, plus the guard that keeps
     /// the override from leaking into another test.
+    #[cfg(any(windows, target_os = "macos"))]
     fn temp_desktop() -> (
         tempfile::TempDir,
         std::sync::MutexGuard<'static, ()>,
@@ -340,10 +343,12 @@ mod tests {
         (home, guard, threep)
     }
 
+    #[cfg(any(windows, target_os = "macos"))]
     fn read_meta(threep: &Path) -> Map<String, Value> {
         read_object(&threep.join(CONFIG_LIBRARY_DIR).join(META_FILE))
     }
 
+    #[cfg(any(windows, target_os = "macos"))]
     fn entry_ids(meta: &Map<String, Value>) -> Vec<String> {
         meta.get("entries")
             .and_then(Value::as_array)
@@ -359,6 +364,7 @@ mod tests {
 
     /// The user's own Desktop profile shares `_meta.json` with ours, so neither
     /// applying nor restoring may drop it.
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn meta_merge_keeps_foreign_entries() {
         let (_home, _guard, threep) = temp_desktop();
@@ -405,6 +411,7 @@ mod tests {
     }
 
     /// Both config files carry unrelated user preferences.
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn deployment_mode_merge_preserves_other_keys() {
         let (_home, _guard, threep) = temp_desktop();
@@ -469,6 +476,7 @@ mod tests {
 
     /// A blank key with `inferenceCredentialKind: "static"` surfaces as an opaque
     /// auth failure, so it must be refused before any file is touched.
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn blank_api_key_is_refused_before_writing() {
         let (_home, _guard, threep) = temp_desktop();
@@ -512,6 +520,7 @@ mod tests {
     }
 
     /// The written profile must not carry a `/v1` suffix, whatever it was given.
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn base_url_is_written_verbatim_without_a_v1_suffix() {
         let (_home, _guard, threep) = temp_desktop();
@@ -574,6 +583,7 @@ mod tests {
 
     /// A relay tier pointing at a non-Claude name must not take the other tiers
     /// down with it.
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn unsafe_model_names_are_dropped_not_written() {
         let (_home, _guard, threep) = temp_desktop();
@@ -618,6 +628,7 @@ mod tests {
 
     /// Nothing usable means the profile would be rejected wholesale, so say so
     /// instead of writing it.
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn all_unsafe_model_names_is_an_error() {
         let (_home, _guard, threep) = temp_desktop();

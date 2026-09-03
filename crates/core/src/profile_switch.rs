@@ -2543,6 +2543,7 @@ mod tests {
 
     /// Targeting Claude Desktop must write its 3P endpoint, and switching away
     /// must hand it back to its own account login.
+    #[cfg(any(windows, target_os = "macos"))]
     #[tokio::test]
     async fn test_desktop_target_writes_the_3p_endpoint() {
         let _home_guard = lock_home_env();
