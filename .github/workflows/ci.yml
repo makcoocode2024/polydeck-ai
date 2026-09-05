@@ -1,15 +1,18 @@
-name: CI
+﻿name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  # Lets the packaging job be triggered deliberately without waiting for a release.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Lint and test on every push and PR. Fast enough to gate merges on.
   check:
     strategy:
       # A lint failure is platform-independent; without this it cancels the
@@ -26,23 +29,51 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      # Reuses compiled dependencies across runs; the Tauri dep tree dominates
+      # build time and is unchanged between most commits.
+      - uses: Swatinem/rust-cache@v2
       - run: npm ci
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # `eslint.config.js` now exists, so this genuinely lints rather than exiting
+      # early and skipping every step after it.
       - run: npm run lint
-      # Guarded so the lint step above, which cannot run at all until the repo
-      # gains an eslint flat config, stops skipping everything after it. The job
-      # still reports failure; these just stop being invisible.
+      - run: npx tsc --noEmit
       - run: npm run test
-        if: ${{ !cancelled() }}
+
+  # Packaging is slow and rarely breaks independently of the checks above, so it
+  # runs on main and on demand rather than on every PR. Previously this ran in the
+  # same job on all three platforms, making the whole matrix wait on it.
+  bundle:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install system deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
       - name: Tauri build check
-        if: ${{ !cancelled() }}
         run: npx tauri build --debug
         env:
           TAURI_SIGNING_PRIVATE_KEY: ""

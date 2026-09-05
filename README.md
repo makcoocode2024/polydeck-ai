@@ -41,7 +41,8 @@ one / low / medium / high / xhigh / max）。
  - Terra（均衡档）：动态自适应最高至 xhigh，防止越界 400 报错。
  - Luna（极速低成本档）：最高自适应至 high。
 - **Gemini Thinking 预算自适应**：智能将 Minimal / Low / Medium / High 映射为符合 Google API 规范的 hinkingBudget 与配置，杜绝 Thinking level MINIMAL is not supported 报错。
-- **DeepSeek & QwQ & Claude 3.7+ 深度思考适配**：自动探测并适配 easoning_content、 hinking 参数与预算。
+- **DeepSeek & QwQ & Claude 3.7+ 深度思考适配**：自动探测并适配 
+easoning_content、 hinking 参数与预算。
 
 #### 3. 🎯 客户端一键感知与原子配置注入
 - 自动识别并管理 **OpenAI Codex CLI**、**Claude Code CLI**、**Claude Desktop**、**Cursor**、**Windsurf**、**Hermes** 等主流开发工具。
@@ -54,7 +55,7 @@ one / low / medium / high / xhigh / max）。
 
 #### 5. 🔐 操作系统级安全凭据托管
 - **Keyring 原生安全存储**：API Key 与 WebDAV 凭据统一存入 Windows Credential Manager / macOS Keychain / Linux Secret Service，配置文件仅记录凭据引用，杜绝落盘泄露。
-- **XChaCha20-Poly1305 加密备份**：会话历史与配置支持高强度加密导出与云端 WebDAV 同步。
+- **XChaCha20-Poly1305 加密备份**：会话历史与配置支持高强度加密导出，并可通过 WebDAV 上传/下载 `state.json`。
 - **严格安全限制**：本地网关仅监听 127.0.0.1 环回接口，Tauri 启用了严苛的 CSP。
 
 #### 6. 🧩 丰富的扩展生态与开发者工具
@@ -75,8 +76,7 @@ polydeck/
 │ └── inject/ # CDP 注入层与 Stepwise 推理辅助
 ├── src-tauri/ # Tauri 2 宿主容器与 IPC 命令分发
 ├── src/ # React 19 + TypeScript + Jotai + Tailwind 前端 UI
-├── scripts/ # 构建与环境维护脚本
-└── docs/ # 用户手册与开发者文档
+└── scripts/ # 构建与环境维护脚本
 `
 
 ---
@@ -102,8 +102,13 @@ npm run dev
 
 #### 3. 运行测试
 `ash
-# 运行 Rust 全工作区测试（149+ 单元与集成测试）
+# 运行 Rust 全工作区测试
 cargo test --workspace
+
+# 与 CI 一致的完整门禁
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+npm run lint && npx tsc --noEmit
 
 # 运行前端测试（Vitest）
 npm run test
@@ -115,6 +120,16 @@ npm run test
 npm run tauri build
 `
 产物生成于 arget/release/bundle/。
+
+---
+
+### 尚未实现
+
+以下能力在界面或代码中有入口，但目前没有真实实现，不要依赖：
+
+- **自动更新检查**：`ad_check_update` 不会访问 GitHub Releases，始终返回“无更新”。
+- **托盘健康图标**：`render_status_icon` 返回空字节，托盘图标不随健康状态变化。
+- **托盘状态接口**：`ad_tray_status` 返回固定的 `idle`。
 
 ---
 
