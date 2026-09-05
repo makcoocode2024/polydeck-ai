@@ -8,330 +8,28 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use ts_rs::TS;
 
-pub const CLAUDE_CODE_SONNET_ALIASES: &[&str] = &["sonnet", "default", "claude-sonnet"];
-pub const CLAUDE_CODE_OPUS_ALIASES: &[&str] = &["opus", "opusplan", "claude-opus"];
-pub const CLAUDE_CODE_HAIKU_ALIASES: &[&str] = &["haiku", "claude-haiku"];
-
-// Names Claude Code is shown for each tier when the provider does not override
-// them. They have to be current built-in Anthropic IDs: Claude Code decides a
-// model's context window, price and feature set from the name, and falls back to
-// a 200K unknown-model profile for anything it does not recognise.
-//
-// Bump these when Anthropic ships a new generation. Fable and Mythos are absent
-// on purpose — Claude Code has no alias tier for them.
-pub const DEFAULT_OPUS_DISPLAY_NAME: &str = "claude-opus-5";
-pub const DEFAULT_SONNET_DISPLAY_NAME: &str = "claude-sonnet-5";
-/// Haiku 4.5 caps at 200K, so this tier has no `[1m]` form.
-pub const DEFAULT_HAIKU_DISPLAY_NAME: &str = "claude-haiku-4-5";
-
 /// Loopback port the built-in gateway listens on.
 ///
 /// Public because the clients PolyDeck cannot write a config file for still need
 /// this address surfaced for the user to paste in by hand.
 pub const GATEWAY_PORT: u16 = 18888;
 
-/// Point every `keys` entry at `wire` in a `modelOverrides` map.
-///
-/// A `[1m]` key keeps its suffix only when `tier_supports_1m`; otherwise it
-/// collapses onto the plain wire name, since asking for a context window the
-/// upstream cannot serve fails the request outright.
-fn insert_tier(
-    overrides: &mut serde_json::Map<String, serde_json::Value>,
-    keys: &[&str],
-    wire: &str,
-    tier_supports_1m: bool,
-) {
-    let wire_1m = format!("{wire}[1m]");
-    for key in keys {
-        let value = if key.ends_with("[1m]") && tier_supports_1m && !wire.ends_with("[1m]") {
-            wire_1m.as_str()
-        } else {
-            wire
-        };
-        overrides.insert(
-            (*key).to_string(),
-            serde_json::Value::String(value.to_string()),
-        );
-    }
-}
+mod claude_tiers;
+mod codex_catalog;
 
-/// Trimmed `value`, or `fallback` when it is absent or blank.
-fn trimmed_or<'a>(value: Option<&'a str>, fallback: &'a str) -> &'a str {
-    value
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(fallback)
-}
+// Re-exported at the old paths: these are part of the crate's public surface, used
+// by the gateway and the Tauri command layer.
+pub use claude_tiers::{
+    claude_display_names, claude_tier_candidates, claude_tier_warnings, claude_wire_names,
+    CLAUDE_CODE_HAIKU_ALIASES, CLAUDE_CODE_OPUS_ALIASES, CLAUDE_CODE_SONNET_ALIASES,
+    DEFAULT_HAIKU_DISPLAY_NAME, DEFAULT_OPUS_DISPLAY_NAME, DEFAULT_SONNET_DISPLAY_NAME,
+};
+pub use codex_catalog::{build_codex_catalog, build_codex_catalog_with_1m};
 
-/// The `(opus, sonnet, haiku)` names Claude Code is shown for this provider.
-///
-/// The gateway has to resolve the same names this module writes into
-/// `~/.claude.json`, so both sides read them from here.
-pub fn claude_display_names(provider: &crate::profile::ProviderConfig) -> (&str, &str, &str) {
-    (
-        trimmed_or(
-            provider.opus_display_name.as_deref(),
-            DEFAULT_OPUS_DISPLAY_NAME,
-        ),
-        trimmed_or(
-            provider.sonnet_display_name.as_deref(),
-            DEFAULT_SONNET_DISPLAY_NAME,
-        ),
-        trimmed_or(
-            provider.haiku_display_name.as_deref(),
-            DEFAULT_HAIKU_DISPLAY_NAME,
-        ),
-    )
-}
-
-/// The model a client should default to for this provider.
-///
-/// Shared so the tier resolution below and `write_claude_config` cannot drift
-/// apart on which model counts as the default.
-fn claude_default_model(provider: &crate::profile::ProviderConfig) -> &str {
-    if !provider.default_model.trim().is_empty() {
-        provider.default_model.trim()
-    } else if let Some(first) = provider.models.first().filter(|s| !s.trim().is_empty()) {
-        first.trim()
-    } else {
-        // Last-resort fallback: use the generic "sonnet" alias rather than a
-        // pinned retired ID like claude-3-7-sonnet-latest, which would make
-        // Claude Code show a retirement banner.
-        "sonnet"
-    }
-}
-
-/// Pick the model that best serves a tier among those matching it.
-///
-/// Relays decorate names freely (`claude-opus-5-A`, `Claude-5-opus-preview`,
-/// `Claude-Opus-5-thinking`), so a catalog often matches one tier several times.
-/// Taking the first match made the answer depend on catalog order, which then
-/// decided whether the tier could keep its canonical display name — the same two
-/// models in the other order produced a different picker label.
-///
-/// So prefer, in order: the tier's canonical name exactly, then the least
-/// decorated match (shortest, ties by catalog order). The plain `claude-opus-5`
-/// wins over `claude-opus-5-A` however the relay lists them, and a decorated
-/// name is still picked when it is all there is.
-fn pick_tier_model<'a>(
-    models: &'a [String],
-    canonical: &str,
-    matches_tier: impl Fn(&str) -> bool,
-) -> Option<&'a str> {
-    let candidates: Vec<&'a str> = models
-        .iter()
-        .map(|m| m.trim())
-        .filter(|m| !m.is_empty() && matches_tier(&m.to_ascii_lowercase()))
-        .collect();
-
-    candidates
-        .iter()
-        .find(|m| m.eq_ignore_ascii_case(canonical))
-        .or_else(|| candidates.iter().min_by_key(|m| m.len()))
-        .copied()
-}
-
-/// The `(opus, sonnet, haiku)` provider models that actually serve each Claude
-/// Code tier: the explicit `*_model` override when set, else a name-based guess.
-///
-/// The guess is keyword-based and case-insensitive, so irregular relay spellings
-/// (`Claude-5-opus`, `claude-opus-5-A`, `anthropic/claude-opus-5`) still land on
-/// the right tier. A catalog whose names carry no tier word at all cannot be
-/// guessed — every tier then falls back to one model, and the `*_model` fields
-/// are the only way to spread the tiers out.
-pub fn claude_tier_candidates(provider: &crate::profile::ProviderConfig) -> (&str, &str, &str) {
-    let model_to_use = claude_default_model(provider);
-
-    let sonnet = provider
-        .sonnet_model
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| {
-            pick_tier_model(&provider.models, DEFAULT_SONNET_DISPLAY_NAME, |lower| {
-                lower.contains("sonnet")
-                    || lower.contains("claude-3-7")
-                    || lower.contains("claude-3.7")
-            })
-            .unwrap_or_else(|| {
-                if model_to_use.to_ascii_lowercase().contains("sonnet") {
-                    model_to_use
-                } else {
-                    provider
-                        .models
-                        .first()
-                        .map(|s| s.as_str())
-                        .unwrap_or(model_to_use)
-                }
-            })
-        });
-
-    let opus = provider
-        .opus_model
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| {
-            pick_tier_model(&provider.models, DEFAULT_OPUS_DISPLAY_NAME, |lower| {
-                lower.contains("opus")
-            })
-            .unwrap_or(sonnet)
-        });
-
-    let haiku = provider
-        .haiku_model
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| {
-            pick_tier_model(&provider.models, DEFAULT_HAIKU_DISPLAY_NAME, |lower| {
-                lower.contains("haiku") || lower.contains("flash") || lower.contains("mini")
-            })
-            .unwrap_or(sonnet)
-        });
-
-    (opus, sonnet, haiku)
-}
-
-/// The `(opus, sonnet, haiku)` names that travel on the wire when the gateway is
-/// in front, which are also the names Claude Code shows.
-///
-/// Normally this is the display name: it has to be a built-in Anthropic ID or
-/// Claude Code cannot size or price the model, and the gateway maps it back to
-/// the provider's real model.
-///
-/// A display name that collides with a *different* provider model is the one
-/// case where that breaks down. Redirecting it would make the collided-with
-/// model unreachable — nobody could address the real `claude-opus-5` once it
-/// resolves to `claude-opus-5-max` — so this tier carries its upstream name
-/// instead. That name is one the provider serves, so the gateway's own
-/// passthrough rule routes it, the picker label matches what runs, and every
-/// provider model stays independently addressable.
-///
-/// The rule is structural, not tied to any naming convention: it asks only
-/// whether the shown name would shadow a different model, so `-max`, `-ultra`,
-/// `:max` and names with no tier word behave the same way.
-///
-/// Note this also overrides an *explicitly configured* display name when that
-/// name collides. Keeping it would strand the model it shadows, and a display
-/// name pointing at another of the provider's own models is a misconfiguration
-/// either way — but it does mean the setting is silently not honored.
-///
-/// The gateway has to resolve the same names this module writes, so both sides
-/// read them from here.
-pub fn claude_wire_names<'a>(
-    provider: &'a crate::profile::ProviderConfig,
-) -> (&'a str, &'a str, &'a str) {
-    let (opus_display, sonnet_display, haiku_display) = claude_display_names(provider);
-    let (opus_candidate, sonnet_candidate, haiku_candidate) = claude_tier_candidates(provider);
-    let served: HashSet<&str> = provider.models.iter().map(|m| m.trim()).collect();
-
-    let resolve = |display: &'a str, candidate: &'a str| -> &'a str {
-        if display != candidate && served.contains(display) {
-            candidate
-        } else {
-            display
-        }
-    };
-
-    (
-        resolve(opus_display, opus_candidate),
-        resolve(sonnet_display, sonnet_candidate),
-        resolve(haiku_display, haiku_candidate),
-    )
-}
-
-/// Warnings worth surfacing when a profile is activated, about how its tier
-/// wiring actually resolves.
-///
-/// Two silent failure modes get a message here:
-/// - Two tiers landing on one provider model, at least one of them guessed.
-///   A catalog with no tier words in its names hands every tier the same
-///   fallback, and nothing in the UI says the tiers are not actually spread
-///   out. Both explicitly pinned to one model is the user's own choice and
-///   stays quiet.
-/// - An explicit `*_display_name` that `claude_wire_names` had to override
-///   because it collided with a different provider model. The setting is
-///   silently not honored otherwise.
-pub fn claude_tier_warnings(provider: &crate::profile::ProviderConfig) -> Vec<String> {
-    let (opus, sonnet, haiku) = claude_tier_candidates(provider);
-    let explicitly_set = |v: &Option<String>| {
-        v.as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .is_some()
-    };
-
-    let mut warnings = Vec::new();
-
-    // Collapsed tiers, one message per model they share.
-    let mut by_model: Vec<(&str, Vec<(&str, bool)>)> = Vec::new();
-    for (label, model, is_explicit) in [
-        ("Opus", opus, explicitly_set(&provider.opus_model)),
-        ("Sonnet", sonnet, explicitly_set(&provider.sonnet_model)),
-        ("Haiku", haiku, explicitly_set(&provider.haiku_model)),
-    ] {
-        match by_model.iter_mut().find(|(m, _)| *m == model) {
-            Some((_, labels)) => labels.push((label, is_explicit)),
-            None => by_model.push((model, vec![(label, is_explicit)])),
-        }
-    }
-    for (model, labels) in by_model {
-        if labels.len() > 1 && labels.iter().any(|(_, is_explicit)| !is_explicit) {
-            let names = labels
-                .iter()
-                .map(|(label, _)| *label)
-                .collect::<Vec<_>>()
-                .join("、");
-            warnings.push(format!(
-                "档位 {names} 都解析到模型 {model}，分档未生效；若目录里没有能区分档位的模型名，请在配置中分别指定 opus_model / sonnet_model / haiku_model"
-            ));
-        }
-    }
-
-    // Explicit display names the wire path had to give up because they collided
-    // with another provider model.
-    let (opus_display, sonnet_display, haiku_display) = claude_display_names(provider);
-    let (opus_wire, sonnet_wire, haiku_wire) = claude_wire_names(provider);
-    for (label, display, wire, is_explicit) in [
-        (
-            "Opus",
-            opus_display,
-            opus_wire,
-            explicitly_set(&provider.opus_display_name),
-        ),
-        (
-            "Sonnet",
-            sonnet_display,
-            sonnet_wire,
-            explicitly_set(&provider.sonnet_display_name),
-        ),
-        (
-            "Haiku",
-            haiku_display,
-            haiku_wire,
-            explicitly_set(&provider.haiku_display_name),
-        ),
-    ] {
-        if is_explicit && display != wire {
-            warnings.push(format!(
-                "{label} 档位的显示名 {display} 与提供方另一个模型重名，为避免它不可寻址，已改用上游名 {wire} 展示"
-            ));
-        }
-    }
-
-    warnings
-}
-
-/// Strip a trailing `/v1` (and any trailing slashes) from an Anthropic base URL.
-///
-/// Claude Code talks to Anthropic-shaped endpoints through the official SDK,
-/// which appends the `/v1/...` path segment on its own. Keeping a `/v1` suffix
-/// in `ANTHROPIC_BASE_URL` makes it request `/v1/v1/messages`, which 404s.
-fn strip_anthropic_version_suffix(base_url: &str) -> String {
-    let trimmed = base_url.trim().trim_end_matches('/');
-    match trimmed.strip_suffix("/v1") {
-        Some(stripped) => stripped.trim_end_matches('/').to_string(),
-        None => trimmed.to_string(),
-    }
-}
+use claude_tiers::{claude_default_model, insert_tier, strip_anthropic_version_suffix};
+use codex_catalog::{
+    codex_context_window, codex_wire_api, get_model_reasoning_config, model_window,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -520,326 +218,6 @@ fn client_auth(client_id: &str, profile_id: &str, gateway_enabled: bool) -> AppR
         .to_string())
 }
 
-/// The conservative effort ladder handed to models no rule recognises.
-///
-/// An empty `supported_reasoning_levels` leaves Codex's effort submenu with
-/// nothing to select, and the menu then cannot be committed or dismissed except
-/// with Esc. Third-party relay catalogs are full of names no pattern here
-/// matches (`deepseek-v4-pro-0813`, `qwen3.8-max`), so they get low/medium/high
-/// — the subset essentially every reasoning-capable upstream accepts.
-fn fallback_reasoning_levels() -> serde_json::Value {
-    serde_json::json!([
-        { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
-        { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
-        { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" }
-    ])
-}
-
-/// A model's documented token limits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ModelWindow {
-    /// Total window, input plus output.
-    context: u64,
-    /// Ceiling on a single response.
-    max_output: u64,
-}
-
-impl ModelWindow {
-    /// The whole-session window to hand Claude Code.
-    ///
-    /// Auto-compact fires in the low-90s percent of whatever number it is given,
-    /// so passing the full context leaves less than one max-length response
-    /// between the compaction point and the upstream's hard ceiling. Reserving
-    /// the output budget moves compaction early enough that a full-length reply
-    /// still fits.
-    fn claude_budget(self) -> u64 {
-        self.context.saturating_sub(self.max_output)
-    }
-}
-
-/// A model's published limits, or `None` when no rule here covers the name.
-///
-/// Only names with a documented figure belong here. A guess would be worse than
-/// the fallback: it travels into `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, and one that
-/// reads high lets a session run past what the upstream accepts.
-fn model_window(slug: &str) -> Option<ModelWindow> {
-    let lower = slug.to_ascii_lowercase();
-
-    // Agnes AI. The two families differ, so `supports_1m_context` cannot express
-    // this catalogue with one flag: the Pro pair is 1M, the Flash pair 512K.
-    if lower.starts_with("agnes-") {
-        if lower.contains("-pro") {
-            return Some(ModelWindow {
-                context: 1_000_000,
-                max_output: 65_536,
-            });
-        }
-        if lower.contains("-flash") {
-            return Some(ModelWindow {
-                context: 512_000,
-                max_output: 65_536,
-            });
-        }
-    }
-
-    None
-}
-
-/// The context window to advertise to Codex for `slug`.
-///
-/// Codex applies its own `effective_context_window_percent`, so it gets the full
-/// context rather than the reserved budget Claude Code needs.
-fn codex_context_window(slug: &str, supports_1m: bool) -> i64 {
-    let fallback = if supports_1m { 1_000_000 } else { 200_000 };
-    model_window(slug).map(|w| w.context).unwrap_or(fallback) as i64
-}
-
-fn get_model_reasoning_config(slug: &str) -> (serde_json::Value, serde_json::Value, bool) {
-    let lower = slug.to_ascii_lowercase();
-
-    // Check if explicitly non-reasoning model
-    let is_explicit_non_reasoning = lower.starts_with("gpt-4o")
-        || lower.starts_with("gpt-4-")
-        || lower.starts_with("gpt-3.5")
-        || lower.starts_with("claude-3-5")
-        || lower.starts_with("claude-3.5")
-        || lower.starts_with("claude-3-opus")
-        || lower.starts_with("claude-3-haiku")
-        || lower.starts_with("deepseek-chat")
-        || lower.starts_with("deepseek-v3")
-        || lower.starts_with("deepseek-coder")
-        || lower.starts_with("glm-4")
-        || lower.starts_with("qwen-2.5")
-        || lower.starts_with("llama");
-
-    if is_explicit_non_reasoning {
-        // Still hand Codex one selectable entry: `supported_reasoning_levels: []`
-        // leaves its effort submenu empty and the menu stops responding to
-        // anything but Esc. `none` is the honest level for these models.
-        let levels = serde_json::json!([
-            { "effort": "none", "description": "关闭推理思考 (No reasoning)" }
-        ]);
-        return (serde_json::json!("none"), levels, false);
-    }
-
-    // 1. Sol family (旗舰: 支持 none, low, medium, high, xhigh, max)
-    if lower.contains("sol") {
-        let levels = serde_json::json!([
-            { "effort": "none", "description": "关闭推理思考 (No reasoning)" },
-            { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
-            { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
-            { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" },
-            { "effort": "xhigh", "description": "极限深度推理 (Extended reasoning depth for hard tasks)" },
-            { "effort": "max", "description": "最大极限推理 (Maximum reasoning budget for toughest challenges)" }
-        ]);
-        return (serde_json::json!("high"), levels, true);
-    }
-
-    // 2. Terra family (均衡: 支持 none, low, medium, high, xhigh，不支持 max)
-    if lower.contains("terra") {
-        let levels = serde_json::json!([
-            { "effort": "none", "description": "关闭推理思考 (No reasoning)" },
-            { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
-            { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
-            { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" },
-            { "effort": "xhigh", "description": "极限深度推理 (Extended reasoning depth for hard tasks)" }
-        ]);
-        return (serde_json::json!("high"), levels, true);
-    }
-
-    // 3. Luna family (高速低成本: 支持 none, low, medium, high，不支持 xhigh/max)
-    if lower.contains("luna") {
-        let levels = serde_json::json!([
-            { "effort": "none", "description": "关闭推理思考 (No reasoning)" },
-            { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
-            { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
-            { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" }
-        ]);
-        return (serde_json::json!("medium"), levels, true);
-    }
-
-    // 4. Other GPT-5 series (如 gpt-5.4, gpt-5.5)
-    if lower.starts_with("gpt-5") {
-        let levels = serde_json::json!([
-            { "effort": "none", "description": "关闭推理思考 (No reasoning)" },
-            { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
-            { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
-            { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" },
-            { "effort": "xhigh", "description": "极限深度推理 (Extended reasoning depth for hard tasks)" }
-        ]);
-        return (serde_json::json!("high"), levels, true);
-    }
-
-    // 5. Google Gemini family (只支持 low, medium, high；不支持 minimal/none/xhigh/max)
-    if lower.contains("gemini") {
-        let levels = serde_json::json!([
-            { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
-            { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
-            { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" }
-        ]);
-        return (serde_json::json!("high"), levels, true);
-    }
-
-    // 6. Claude 3.7+ / Claude 4+ / Claude 5+ / Opus / Sonnet / Extended Thinking models (支持 none, low, medium, high, xhigh, max)
-    let is_claude_thinking = lower.contains("claude-3-7")
-        || lower.contains("claude-3.7")
-        || lower.contains("claude-4")
-        || lower.contains("claude-5")
-        || lower.contains("claude-opus")
-        || lower.contains("claude-sonnet")
-        || lower.contains("sonnet-3-7")
-        || lower.contains("sonnet-3.7")
-        || lower.contains("sonnet-4")
-        || lower.contains("sonnet-5")
-        || lower.contains("opus-4")
-        || lower.contains("opus-5")
-        || lower.contains("model-s")
-        || lower.contains("model-o");
-
-    if is_claude_thinking {
-        let levels = serde_json::json!([
-            { "effort": "none", "description": "关闭推理思考 (No reasoning)" },
-            { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
-            { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
-            { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" },
-            { "effort": "xhigh", "description": "极限深度推理 (Extended reasoning depth for hard tasks)" },
-            { "effort": "max", "description": "最大极限推理 (Maximum reasoning budget for toughest challenges)" }
-        ]);
-        return (serde_json::json!("high"), levels, true);
-    }
-
-    // 7. Other reasoning patterns (o1, o3, o4, thinking, reasoner, r1, qwq)
-    let is_reasoning = lower.starts_with("o1")
-        || lower.starts_with("o3")
-        || lower.starts_with("o4")
-        || lower.contains("thinking")
-        || lower.contains("reasoner")
-        || lower.contains("reasoning")
-        || lower.contains("r1")
-        || lower.contains("qwq");
-
-    if is_reasoning {
-        let levels = serde_json::json!([
-            { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
-            { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
-            { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" },
-            { "effort": "xhigh", "description": "极限深度推理 (Extended reasoning depth for hard tasks)" }
-        ]);
-        (serde_json::json!("high"), levels, true)
-    } else {
-        // Unrecognised name: assume a reasoning model with the safe three-level
-        // ladder rather than declaring no levels, which hangs Codex's menu.
-        (
-            serde_json::json!("medium"),
-            fallback_reasoning_levels(),
-            true,
-        )
-    }
-}
-
-pub fn build_codex_catalog(
-    provider_name: &str,
-    default_model: &str,
-    models: &[String],
-) -> serde_json::Value {
-    build_codex_catalog_with_1m(provider_name, default_model, models, false)
-}
-
-pub fn build_codex_catalog_with_1m(
-    provider_name: &str,
-    default_model: &str,
-    models: &[String],
-    supports_1m: bool,
-) -> serde_json::Value {
-    let mut catalog_models: Vec<String> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-
-    let primary_model = if !default_model.trim().is_empty()
-        && default_model.trim() != "codex-auto-review"
-        && !default_model.trim().ends_with("auto-review")
-    {
-        default_model.trim()
-    } else if let Some(first) = models.iter().find(|s| {
-        !s.trim().is_empty()
-            && s.trim() != "codex-auto-review"
-            && !s.trim().ends_with("auto-review")
-    }) {
-        first.trim()
-    } else {
-        "gpt-4o"
-    };
-
-    if !primary_model.is_empty() && seen.insert(primary_model.to_string()) {
-        catalog_models.push(primary_model.to_string());
-    }
-
-    for m in models {
-        let trimmed = m.trim();
-        if trimmed == "codex-auto-review" || trimmed.ends_with("auto-review") {
-            continue;
-        }
-        if !trimmed.is_empty() && seen.insert(trimmed.to_string()) {
-            catalog_models.push(trimmed.to_string());
-        }
-    }
-
-    if catalog_models.is_empty() {
-        catalog_models.push("gpt-4o".to_string());
-    }
-
-    let models_json: Vec<serde_json::Value> = catalog_models
-        .iter()
-        .filter(|slug| *slug != "codex-auto-review" && !slug.ends_with("auto-review"))
-        .enumerate()
-        .map(|(i, slug)| {
-            let context_window = codex_context_window(slug, supports_1m);
-            let (default_reasoning, supported_reasoning, supports_reasoning) = get_model_reasoning_config(slug);
-            serde_json::json!({
-                "slug": slug,
-                "display_name": slug,
-                "description": format!("{slug} via {provider_name}"),
-                "default_reasoning_level": default_reasoning,
-                "default_reasoning_summary": "none",
-                "default_verbosity": "medium",
-                "context_window": context_window,
-                "max_context_window": context_window,
-                "effective_context_window_percent": 95,
-                "priority": i,
-                "input_modalities": ["text"],
-                "service_tiers": [],
-                "additional_speed_tiers": [],
-                "shell_type": "shell_command",
-                "apply_patch_tool_type": "freeform",
-                "web_search_tool_type": "text",
-                "supported_in_api": true,
-                "support_verbosity": true,
-                "supports_image_detail_original": false,
-                "supports_parallel_tool_calls": true,
-                "supports_reasoning_summaries": supports_reasoning,
-                "supports_search_tool": true,
-                "tool_mode": null,
-                "upgrade": null,
-                "visibility": "list",
-                "availability_nux": null,
-                "minimal_client_version": "0.0.1",
-                "use_responses_lite": false,
-                "available_in_plans": ["free", "pro", "team", "enterprise", "edu", "anon"],
-                "truncation_policy": {
-                    "limit": 10000,
-                    "mode": "tokens"
-                },
-                "supported_reasoning_levels": supported_reasoning,
-                "base_instructions": "You are Codex, a coding agent. Work carefully in the user's current workspace, follow the user's instructions, inspect existing code before editing, preserve unrelated changes, use available tools when needed, and verify completed work before reporting it.",
-                "experimental_supported_tools": []
-            })
-        })
-        .collect();
-
-    serde_json::json!({
-        "models": models_json
-    })
-}
-
 async fn write_codex_config(
     provider: &crate::profile::ProviderConfig,
     auth: &str,
@@ -940,7 +318,10 @@ async fn write_codex_config(
         let mut provider_table = toml_edit::Table::new();
         provider_table.insert("name", toml_edit::value(&provider.name));
         provider_table.insert("base_url", toml_edit::value(&target_base_url));
-        provider_table.insert("wire_api", toml_edit::value("responses"));
+        provider_table.insert(
+            "wire_api",
+            toml_edit::value(codex_wire_api(provider, gateway_enabled)),
+        );
         provider_table.insert("requires_openai_auth", toml_edit::value(false));
 
         if !auth.is_empty() {
@@ -2850,6 +2231,137 @@ mod tests {
             codex_bearer(&crate::user_home_dir().unwrap()),
             UPSTREAM,
             "直连模式下 Codex 应直接持有上游 key"
+        );
+    }
+
+    /// `wire_api` decides which endpoint Codex POSTs to, so it has to follow the
+    /// protocol the user picked once no gateway is there to translate. It used to be
+    /// the literal `"responses"` in every case, which pointed Codex at
+    /// `/v1/responses` on chat-only upstreams and got the request rejected with
+    /// `model_not_supported_on_endpoint`.
+    #[test]
+    fn test_codex_wire_api_follows_protocol_in_direct_mode() {
+        use crate::types::{CodexToolCompat, ProtocolKind};
+
+        let with = |protocol: ProtocolKind, compat: CodexToolCompat| {
+            let mut p = agnes_like_provider(vec!["m".into()], "m");
+            p.protocol = protocol;
+            p.codex_compat = compat;
+            p
+        };
+
+        // Gateway in front: always Responses. It serves that endpoint whatever the
+        // upstream speaks, and it is the only shape carrying Codex's custom tools.
+        for (protocol, compat) in [
+            (ProtocolKind::OpenAI, CodexToolCompat::ChatFunction),
+            (ProtocolKind::OpenAI, CodexToolCompat::None),
+            (ProtocolKind::Responses, CodexToolCompat::ResponsesCustom),
+            (ProtocolKind::Anthropic, CodexToolCompat::Unknown),
+        ] {
+            assert_eq!(
+                codex_wire_api(&with(protocol, compat), true),
+                "responses",
+                "网关模式下 {protocol:?}/{compat:?} 必须走 responses，由网关做翻译"
+            );
+        }
+
+        // Direct mode: name the endpoint the upstream actually serves.
+        for (protocol, compat, expected, why) in [
+            (
+                ProtocolKind::OpenAI,
+                CodexToolCompat::ChatFunction,
+                "chat",
+                "探测判定只有 chat 线可用",
+            ),
+            (
+                ProtocolKind::OpenAI,
+                CodexToolCompat::None,
+                "chat",
+                "无兼容判定时以协议字段为准",
+            ),
+            (
+                ProtocolKind::OpenAI,
+                CodexToolCompat::Unknown,
+                "chat",
+                "未探测时同样以协议字段为准",
+            ),
+            (
+                ProtocolKind::OpenAI,
+                CodexToolCompat::ResponsesCustom,
+                "responses",
+                "已实测 /v1/responses 可用，兼容判定优先于协议字段",
+            ),
+            (
+                ProtocolKind::OpenAI,
+                CodexToolCompat::ResponsesFunction,
+                "responses",
+                "已实测 /v1/responses 可用",
+            ),
+            (
+                ProtocolKind::Responses,
+                CodexToolCompat::ResponsesCustom,
+                "responses",
+                "原生 Responses 上游",
+            ),
+            (
+                ProtocolKind::Responses,
+                CodexToolCompat::ChatFunction,
+                "chat",
+                "兼容判定说只有 chat 线有工具，优先于协议字段",
+            ),
+        ] {
+            assert_eq!(
+                codex_wire_api(&with(protocol, compat), false),
+                expected,
+                "直连模式下 {protocol:?}/{compat:?} 应走 {expected}：{why}"
+            );
+        }
+    }
+
+    /// Guards the write itself, not just the decision: the value has to survive
+    /// into `~/.codex/config.toml`, since that file is the only thing Codex reads.
+    #[tokio::test]
+    async fn test_codex_config_writes_chat_wire_api_when_direct() {
+        let _home_guard = lock_home_env();
+
+        async fn wire_api_after_write(gateway_enabled: bool) -> String {
+            let temp_home = tempfile::tempdir().unwrap();
+            std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
+            let mut provider = agnes_like_provider(vec!["glm-5.3-flash".into()], "glm-5.3-flash");
+            provider.protocol = crate::types::ProtocolKind::OpenAI;
+            provider.codex_compat = crate::types::CodexToolCompat::ChatFunction;
+
+            write_codex_config(&provider, "sk-test", gateway_enabled)
+                .await
+                .unwrap();
+
+            let raw = std::fs::read_to_string(temp_home.path().join(".codex").join("config.toml"))
+                .unwrap();
+            let doc = raw.parse::<toml_edit::DocumentMut>().unwrap();
+            let wire_api = doc["model_providers"]
+                .as_table()
+                .unwrap()
+                .iter()
+                .next()
+                .unwrap()
+                .1
+                .get("wire_api")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string();
+            wire_api
+        }
+
+        assert_eq!(
+            wire_api_after_write(false).await,
+            "chat",
+            "直连 chat-only 上游时必须写 chat，否则 Codex 会打 /v1/responses 被上游拒绝"
+        );
+        assert_eq!(
+            wire_api_after_write(true).await,
+            "responses",
+            "网关模式仍写 responses，由网关翻译"
         );
     }
 

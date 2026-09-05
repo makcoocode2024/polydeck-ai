@@ -19,7 +19,6 @@ use axum::{
 use bytes::Bytes;
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
-use polydeck_core::messages_stream::{Emit, MessagesStreamRepair};
 use polydeck_core::responses_chat::{chat_to_response, responses_to_chat, StreamAdapter, ToolMap};
 use polydeck_core::responses_stream::ResponsesStreamRepair;
 use polydeck_core::types::ThinkingSupport;
@@ -30,7 +29,24 @@ use std::{
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, info, warn};
-use uuid::Uuid;
+
+mod effort;
+mod models;
+mod respond;
+mod sse;
+
+pub use effort::{effort_to_budget_tokens, inject_thinking_if_needed};
+
+use effort::{inject_max_price, normalize_effort, sanitize_messages_effort};
+use models::handle_models;
+#[cfg(test)]
+use models::{synthesize_models_response, upstream_serves_max_effort};
+#[cfg(test)]
+use polydeck_core::messages_stream::MessagesStreamRepair;
+use respond::{error_from_body, json_error, passthrough_error, response_with_body, sse_error};
+#[cfg(test)]
+use sse::repair_sse_block;
+use sse::{parse_sse_block, passthrough_messages_stream, take_sse_block};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -318,272 +334,6 @@ pub fn build_router(health: HealthState, table: SharedRouteTable) -> Router {
         .merge(api_router)
         .layer(middleware::from_fn(logging_middleware))
         .layer(middleware::from_fn(loopback_only_middleware))
-}
-
-pub fn effort_to_budget_tokens(effort: &str) -> Option<u64> {
-    match effort.trim().to_ascii_lowercase().as_str() {
-        "none" | "off" | "0" | "false" => None,
-        "low" => Some(2048),
-        "medium" => Some(8192),
-        "high" => Some(16384),
-        "xhigh" => Some(32768),
-        "max" => Some(63999),
-        other => other.parse::<u64>().ok().filter(|&b| b >= 1024),
-    }
-}
-
-/// Turn on extended thinking, but only when the upstream is known to support it.
-///
-/// Both gates must pass. Injecting against an upstream that returns thinking
-/// blocks without a `signature` breaks the client outright: it cannot persist an
-/// unsigned block, so the turn never finalizes, its `tool_use` never gets a
-/// `tool_result`, and every later request in that session carries an orphaned
-/// `tool_use` the upstream rejects. Not injecting only costs reasoning depth, so
-/// missing information must mean off.
-pub fn inject_thinking_if_needed(
-    body: &mut Value,
-    default_effort_level: Option<&str>,
-    thinking_support: ThinkingSupport,
-) {
-    if body.get("thinking").is_some() {
-        return;
-    }
-
-    let Some(effort) = default_effort_level else {
-        return;
-    };
-    if !thinking_support.is_injectable() {
-        debug!(
-            "thinking injection skipped: upstream thinking support is {:?}",
-            thinking_support
-        );
-        return;
-    }
-    let Some(budget_tokens) = effort_to_budget_tokens(effort) else {
-        return;
-    };
-
-    let max_tokens = body.get("max_tokens").and_then(|v| v.as_u64());
-
-    let effective_budget = match max_tokens {
-        Some(max) if max <= 1024 => {
-            return;
-        }
-        Some(max) if budget_tokens >= max => max.saturating_sub(1).max(1024),
-        _ => budget_tokens,
-    };
-
-    body["thinking"] = serde_json::json!({
-        "type": "enabled",
-        "budget_tokens": effective_budget
-    });
-
-    if let Some(temp) = body.get_mut("temperature") {
-        *temp = serde_json::json!(1.0);
-    }
-}
-
-fn inject_max_price(body: &mut Value, max_price: Option<f64>) {
-    if let Some(price) = max_price {
-        if let Some(obj) = body.as_object_mut() {
-            obj.entry("max_price_per_request")
-                .or_insert_with(|| Value::from(price));
-        }
-    }
-}
-
-/// The effort values every supported upstream is expected to accept.
-const EFFORT_WHITELIST: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
-
-/// Capability-normalize a reasoning effort before it leaves the gateway.
-///
-/// Upstreams 400 on effort values they do not support (DeepSeek rejects
-/// anything outside low/medium/high/xhigh/max), and Claude Code sends values
-/// like `minimal` or `none` that mean nothing upstream. Returns the rewritten
-/// effort to send, or `None` when the field should be dropped.
-fn normalize_effort(effort: &str, model: &str) -> Option<String> {
-    let clean = effort.trim().to_ascii_lowercase();
-    // Auto-thinking models (DeepSeek reasoner/R1, QwQ) ignore effort and error
-    // if forced; drop it before the whitelist so even a valid level is stripped.
-    let model_lower = model.to_ascii_lowercase();
-    if model_lower.contains("reasoner") || model_lower.contains("r1") || model_lower.contains("qwq")
-    {
-        warn!("Model {model} runs its own thinking; dropping reasoning_effort={effort}");
-        return None;
-    }
-    if EFFORT_WHITELIST.iter().any(|&l| l == clean) {
-        return Some(clean);
-    }
-    match clean.as_str() {
-        "minimal" => Some("low".to_string()),
-        // DeepSeek non-reasoner models accept the full range; unknown values
-        // here are an upstream contract violation and must not 400.
-        "none" | "off" | "0" | "false" => None,
-        other => {
-            warn!("Dropping unsupported reasoning_effort={other} for model {model}");
-            None
-        }
-    }
-}
-
-/// Sanitize reasoning effort on an Anthropic Messages body (top-level field).
-/// Returns the rewritten effort value if the field was kept.
-fn sanitize_messages_effort(body: &mut Value, model: &str) -> Option<String> {
-    let effort = body.get("reasoning_effort").and_then(Value::as_str)?;
-    match normalize_effort(effort, model) {
-        Some(clean) => {
-            body["reasoning_effort"] = Value::String(clean.clone());
-            Some(clean)
-        }
-        None => {
-            body.as_object_mut().map(|o| o.remove("reasoning_effort"));
-            None
-        }
-    }
-}
-
-async fn handle_models(Extension(state): Extension<Arc<AppState>>) -> Response<Body> {
-    state.health.increment_connections();
-    let _guard = ConnectionGuard(&state.health);
-    debug!("Processing GET /models request");
-    let upstream_resp = match state.upstream.get_models().await {
-        Ok(resp) => resp,
-        Err(e) => {
-            return json_error(
-                StatusCode::BAD_GATEWAY,
-                format!("Failed to fetch models: {}", e),
-            )
-        }
-    };
-    if !upstream_resp.status().is_success() {
-        return passthrough_verbatim(upstream_resp).await;
-    }
-    let json: Value = match upstream_resp.json().await {
-        Ok(v) => v,
-        Err(_) => return json_error(StatusCode::BAD_GATEWAY, "Invalid models upstream response"),
-    };
-    let response = synthesize_models_response(json);
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(response.to_string()))
-        .unwrap()
-}
-
-/// Separators relays put between a model name and an effort suffix.
-const EFFORT_SUFFIX_SEPARATORS: [char; 3] = ['-', '_', ':'];
-
-/// Whether this upstream deals in `max` effort at all.
-///
-/// Relays that serve the level expose it as its own model id, so the signal is a
-/// `…-max` id **whose base model is also advertised** — `claude-opus-5` next to
-/// `claude-opus-5-max` means the suffix selects an effort level. Requiring the
-/// pair is what separates that from a product name: `qwen-max` and `glm-4-max`
-/// end the same way but are model tiers, and offering `max` there would only
-/// produce requests the upstream rejects.
-///
-/// Asked per response rather than assumed, because most upstreams have no `max`.
-fn upstream_serves_max_effort(data: &[Value]) -> bool {
-    let ids: Vec<String> = data
-        .iter()
-        .filter_map(|m| m.get("id").and_then(Value::as_str))
-        .map(|id| id.trim().to_ascii_lowercase())
-        .collect();
-
-    // A context marker such as `[1m]` sits outside the effort suffix, so compare
-    // on the part before it: a relay may advertise only `claude-opus-5-max[1m]`.
-    let core = |id: &str| id.split('[').next().unwrap_or(id).to_string();
-
-    ids.iter().any(|id| {
-        EFFORT_SUFFIX_SEPARATORS.iter().any(|sep| {
-            core(id)
-                .strip_suffix(&format!("{sep}max"))
-                .is_some_and(|base| !base.is_empty() && ids.iter().any(|other| core(other) == base))
-        })
-    })
-}
-
-/// Default capability blob for models that carry no capability metadata.
-///
-/// Claude Code decides whether a model gets an effort picker from
-/// `capabilities.effort.supported`, not from the model name, so third-party
-/// names (gpt-5.6-luna, deepseek-v4-pro-0813) need this synthesized or the
-/// picker never appears.
-fn synthesize_capabilities(serves_max: bool) -> Value {
-    serde_json::json!({
-        "effort": {
-            "supported": true,
-            "low": {"supported": true},
-            "medium": {"supported": true},
-            "high": {"supported": true},
-            "xhigh": {"supported": true},
-            "max": {"supported": serves_max}
-        },
-        "thinking": {
-            "supported": true,
-            "types": {
-                "enabled": {"supported": true},
-                "adaptive": {"supported": true}
-            }
-        },
-        "image_input": {"supported": true},
-        "pdf_input": {"supported": false},
-        "batch": {"supported": false},
-        "citations": {"supported": false},
-        "code_execution": {"supported": false},
-        "context_management": {"supported": false}
-    })
-}
-
-/// Turn a raw upstream `/models` payload into the shape Claude Code consumes.
-///
-/// Upstreams return either an OpenAI list (`{"data":[{id,...}]}`) or an
-/// Anthropic page (`{"data":[...], "has_more":...}`). We walk `data[]`, inject
-/// capabilities, prefix non-Claude model ids with `claude-code/` (Claude Code's
-/// model picker filters on that prefix), and always emit an Anthropic page.
-/// Build the Anthropic-shaped `/v1/models` page Claude Code's discovery expects.
-///
-/// Ids are passed through verbatim. A `claude-code/` namespace prefix was tried
-/// here first, on the assumption Claude Code needed third-party names marked as
-/// foreign; the picker silently dropped every prefixed entry instead, so a
-/// 7-model catalog showed only the 3 whose names already began with `claude-`.
-/// Requests still accept the prefix (see `strip_claude_code_prefix`) so a name
-/// persisted by an older build keeps resolving.
-fn synthesize_models_response(raw: Value) -> Value {
-    let data = raw
-        .get("data")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let serves_max = upstream_serves_max_effort(&data);
-    let models: Vec<Value> = data
-        .into_iter()
-        .map(|mut m| {
-            if m.get("capabilities").is_none() {
-                m["capabilities"] = synthesize_capabilities(serves_max);
-            }
-            if !m.get("max_input_tokens").and_then(Value::as_u64).is_some() {
-                m["max_input_tokens"] = serde_json::json!(200000);
-            }
-            if !m.get("max_tokens").and_then(Value::as_u64).is_some() {
-                m["max_tokens"] = serde_json::json!(32000);
-            }
-            m
-        })
-        .collect();
-
-    let mut resp = serde_json::json!({
-        "data": models,
-        "has_more": false,
-        "first_id": models.first().and_then(|m| m.get("id")).cloned().unwrap_or(Value::String(String::new())),
-        "last_id": models.last().and_then(|m| m.get("id")).cloned().unwrap_or(Value::String(String::new())),
-        "object": "list"
-    });
-    // Preserve an upstream pagination cursor when present.
-    if let Some(last_id) = raw.get("last_id") {
-        resp["last_id"] = last_id.clone();
-    }
-    resp
 }
 
 /// Strip a `claude-code/` discovery prefix from a model id, returning the
@@ -945,7 +695,7 @@ pub const SSE_STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::fr
 /// between two `reasoning_summary_text.delta` events, with no terminal event; the
 /// client then discards the whole turn. Synthesising the `response.completed` the
 /// upstream owed keeps the partial reasoning and text that did arrive.
-fn passthrough_raw_stream(upstream_response: reqwest::Response) -> Response<Body> {
+pub(super) fn passthrough_raw_stream(upstream_response: reqwest::Response) -> Response<Body> {
     let status = StatusCode::from_u16(upstream_response.status().as_u16())
         .unwrap_or(StatusCode::BAD_GATEWAY);
     let content_type = upstream_response
@@ -1017,187 +767,6 @@ fn passthrough_raw_stream(upstream_response: reqwest::Response) -> Response<Body
         .header(header::CACHE_CONTROL, "no-cache")
         .header(header::CONNECTION, "keep-alive");
     builder
-        .body(Body::from_stream(ReceiverStream::new(rx)))
-        .unwrap()
-}
-
-/// Split off the first complete SSE block in `buf`, returning its bytes.
-///
-/// A block ends at the first blank line. Both `\n\n` and `\r\n\r\n` terminate
-/// one, so whichever *ends* earlier wins — testing `\n\n` first would split a
-/// CRLF block through its own middle.
-fn take_sse_block(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
-    let lf = buf.windows(2).position(|w| w == b"\n\n").map(|i| i + 2);
-    let crlf = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4);
-    let end = match (lf, crlf) {
-        (Some(a), Some(b)) => a.min(b),
-        (Some(a), None) => a,
-        (None, Some(b)) => b,
-        (None, None) => return None,
-    };
-    Some(buf.drain(..end).collect())
-}
-
-/// Read the `event:` name and `data:` payload out of one raw SSE block.
-///
-/// The event name is optional in SSE; Anthropic also carries a `type` in the
-/// payload, so fall back to that when the field is absent.
-fn parse_sse_block(block: &[u8]) -> Option<(String, Value)> {
-    let text = std::str::from_utf8(block).ok()?;
-    let mut name: Option<&str> = None;
-    let mut data = String::new();
-    for line in text.lines() {
-        if let Some(v) = line.strip_prefix("event:") {
-            name = Some(v.trim());
-        } else if let Some(v) = line.strip_prefix("data:") {
-            if !data.is_empty() {
-                data.push('\n');
-            }
-            data.push_str(v.trim_start());
-        }
-    }
-    let parsed: Value = serde_json::from_str(&data).ok()?;
-    let resolved = name
-        .filter(|n| !n.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            parsed
-                .get("type")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })?;
-    Some((resolved, parsed))
-}
-
-/// Feed one raw SSE block through the repair, returning the bytes to write.
-///
-/// The original block is always forwarded verbatim, so a conforming upstream —
-/// and any block that does not parse — reaches the client byte-for-byte.
-fn repair_sse_block(repair: &mut MessagesStreamRepair, block: Vec<u8>) -> Vec<Vec<u8>> {
-    let Some((name, data)) = parse_sse_block(&block) else {
-        // Distinguishes "the upstream omitted an event" from "this gateway split a
-        // block through its middle". Both end as an unopened index at the client,
-        // but only the second is ours to fix, so the raw bytes have to be visible.
-        warn!(
-            "unparseable SSE block, {} bytes: {:?}",
-            block.len(),
-            String::from_utf8_lossy(&block[..block.len().min(200)])
-        );
-        return vec![block];
-    };
-    match repair.observe(&name, &data) {
-        Emit::Passthrough => vec![block],
-        Emit::InsertBefore(inserts) => {
-            let mut out: Vec<Vec<u8>> = inserts.into_iter().map(String::into_bytes).collect();
-            out.push(block);
-            out
-        }
-    }
-}
-
-/// Stream `/v1/messages` while supplying the `message_delta` Agnes omits.
-///
-/// Same passthrough as [`passthrough_raw_stream`], except the bytes are split on
-/// SSE boundaries so [`MessagesStreamRepair`] can see the events. Without the
-/// synthesised `message_delta` the client has no `stop_reason` and fails the turn
-/// with `API Error: Content block not found`.
-fn passthrough_messages_stream(upstream_response: reqwest::Response) -> Response<Body> {
-    let status = StatusCode::from_u16(upstream_response.status().as_u16())
-        .unwrap_or(StatusCode::BAD_GATEWAY);
-    let content_type = upstream_response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .cloned();
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(100);
-    tokio::spawn(async move {
-        let mut byte_stream = upstream_response.bytes_stream();
-        let mut repair = MessagesStreamRepair::new();
-        let mut buf: Vec<u8> = Vec::new();
-        loop {
-            let next_item = tokio::time::timeout(SSE_STREAM_IDLE_TIMEOUT, byte_stream.next()).await;
-            match next_item {
-                Ok(Some(Ok(bytes))) => {
-                    buf.extend_from_slice(&bytes);
-                    while let Some(block) = take_sse_block(&mut buf) {
-                        for out in repair_sse_block(&mut repair, block) {
-                            if tx.send(Ok(Bytes::from(out))).await.is_err() {
-                                // The client hung up mid-stream. That is what a
-                                // client-side turn failure looks like from here, so
-                                // the index state at that moment is the evidence.
-                                warn!(
-                                    "client disconnected mid-stream; orphans {:?}; opened {:?}; blocks {:?}",
-                                    repair.orphan_indices(),
-                                    repair.open_indices(),
-                                    repair.block_types()
-                                );
-                                return;
-                            }
-                        }
-                    }
-                }
-                // Both of these used to emit a bare `data: {"error":...}` frame,
-                // which is not an Anthropic event at all — the client cannot parse
-                // it, and the turn ended with no `message_stop` either way. Falling
-                // through to finish_truncated below closes the turn instead, so the
-                // text that did arrive survives.
-                Ok(Some(Err(e))) => {
-                    warn!("Upstream messages stream read error: {e}");
-                    break;
-                }
-                Ok(None) => break,
-                Err(_elapsed) => {
-                    warn!("Upstream messages stream idle timeout (25s without data)");
-                    break;
-                }
-            }
-        }
-        // A final block without its blank line still has to reach the client.
-        if !buf.is_empty() {
-            for out in repair_sse_block(&mut repair, std::mem::take(&mut buf)) {
-                if tx.send(Ok(Bytes::from(out))).await.is_err() {
-                    return;
-                }
-            }
-        }
-        for out in repair.finish_truncated() {
-            if tx.send(Ok(Bytes::from(out))).await.is_err() {
-                return;
-            }
-        }
-        if repair.truncated() {
-            warn!(
-                "Messages stream ended with no message_stop; closed the turn, \
-                 open blocks {:?}",
-                repair.open_indices()
-            );
-        }
-        if repair.repaired() {
-            debug!("Supplied a message_delta the upstream omitted");
-        }
-        // An orphan index is the client's `Content block not found` condition, seen
-        // from this side. Logged at warn because the client fails the whole turn.
-        if !repair.orphan_indices().is_empty() {
-            warn!(
-                "orphan content_block indices {:?}; opened {:?}; blocks {:?}",
-                repair.orphan_indices(),
-                repair.open_indices(),
-                repair.block_types()
-            );
-        } else {
-            debug!(
-                "content_block indices paired; opened {:?}",
-                repair.open_indices()
-            );
-        }
-    });
-    Response::builder()
-        .status(status)
-        .header(
-            header::CONTENT_TYPE,
-            content_type.unwrap_or(header::HeaderValue::from_static("text/event-stream")),
-        )
-        .header(header::CACHE_CONTROL, "no-cache")
-        .header(header::CONNECTION, "keep-alive")
         .body(Body::from_stream(ReceiverStream::new(rx)))
         .unwrap()
 }
@@ -1460,7 +1029,7 @@ async fn passthrough_stream(
         .unwrap()
 }
 
-async fn passthrough_verbatim(upstream_response: reqwest::Response) -> Response<Body> {
+pub(super) async fn passthrough_verbatim(upstream_response: reqwest::Response) -> Response<Body> {
     let status = StatusCode::from_u16(upstream_response.status().as_u16())
         .unwrap_or(StatusCode::BAD_GATEWAY);
     let content_type = upstream_response
@@ -1473,150 +1042,6 @@ async fn passthrough_verbatim(upstream_response: reqwest::Response) -> Response<
         builder = builder.header(header::CONTENT_TYPE, ct);
     }
     builder.body(Body::from(body_bytes)).unwrap()
-}
-
-fn response_with_body(
-    status: reqwest::StatusCode,
-    headers: &HeaderMap,
-    body: Bytes,
-) -> Response<Body> {
-    let status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    let mut builder = Response::builder().status(status);
-    if let Some(ct) = headers.get(header::CONTENT_TYPE) {
-        builder = builder.header(header::CONTENT_TYPE, ct);
-    }
-    builder.body(Body::from(body)).unwrap()
-}
-
-fn json_error(status: StatusCode, message: impl Into<String>) -> Response<Body> {
-    let body = serde_json::json!({
-        "error": { "message": message.into(), "type": "gateway_error", "code": status.as_u16() }
-    });
-    Response::builder()
-        .status(status)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap()
-}
-
-/// Report a failure to a client that asked for `stream: true`.
-///
-/// Three shapes were tried against Codex, in this order:
-///
-/// 1. `application/json` with the error status — what the gateway did originally.
-///    A streaming client is reading an SSE body, so it never saw a terminal event
-///    and the session just stopped: the transcript ended after the tool output
-///    with no assistant message and no error.
-/// 2. `event: error` plus a terminal `event: response.failed`. Worse. Codex
-///    treats `response.failed` as a *retryable* stream failure, not an end, and
-///    reports `stream disconnected before completion: response.failed event
-///    received`. Measured: it retried once a minute for 18 minutes, then gave up
-///    with no message at all.
-/// 3. This one. `response.completed` is the only event Codex accepts as a clean
-///    end of turn, so the failure is delivered as a completed turn whose assistant
-///    text *is* the error. The turn is still failed — nothing here pretends the
-///    request succeeded — but the reason lands in front of the user in one turn
-///    instead of after an 18-minute retry loop, and `error` is still emitted
-///    first for clients that read it.
-fn sse_error(
-    status: StatusCode,
-    message: impl Into<String>,
-    upstream_body: Option<&str>,
-) -> Response<Body> {
-    let message = message.into();
-    let mut detail = serde_json::json!({
-        "message": message,
-        "type": "gateway_error",
-        "code": status.as_u16(),
-    });
-    // Keep the upstream's own error verbatim when there is one, so the cause is
-    // not lost in translation.
-    if let Some(raw) = upstream_body {
-        let parsed: Option<Value> = serde_json::from_str(raw).ok();
-        detail["upstream"] =
-            parsed.unwrap_or_else(|| Value::String(raw.chars().take(2000).collect()));
-    }
-
-    // Surface the upstream's own message when it has one; a bare "Upstream
-    // returned 503" tells the user nothing actionable.
-    let upstream_note = detail
-        .get("upstream")
-        .and_then(|u| u.pointer("/error/message").and_then(Value::as_str))
-        .map(|m| format!("\n\n上游返回：{m}"))
-        .unwrap_or_default();
-    let visible = format!("⚠ 网关无法完成这一轮请求。\n\n{message}{upstream_note}");
-
-    let response_id = format!("resp_ad_{}", Uuid::new_v4().simple());
-    let item_id = format!("msg_ad_{}", Uuid::new_v4().simple());
-    let message_item = serde_json::json!({
-        "id": item_id,
-        "type": "message",
-        "status": "completed",
-        "role": "assistant",
-        "content": [{ "type": "output_text", "annotations": [], "logprobs": [], "text": visible }]
-    });
-    let completed = serde_json::json!({
-        "type": "response.completed",
-        "response": {
-            "id": response_id,
-            "object": "response",
-            "status": "completed",
-            "output": [message_item],
-            "parallel_tool_calls": true,
-            "tools": [],
-            // The failure is recorded here as well, so a client that inspects the
-            // response rather than the text can still tell this turn failed.
-            "gateway_error": detail.clone(),
-        }
-    });
-    let body = format!(
-        "event: error\ndata: {}\n\nevent: response.completed\ndata: {}\n\n",
-        serde_json::json!({ "type": "error", "error": detail }),
-        completed
-    );
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/event-stream")
-        .header(header::CACHE_CONTROL, "no-cache")
-        .body(Body::from(body))
-        .unwrap()
-}
-
-/// Forward an upstream failure, framed as SSE when the client is streaming.
-///
-/// Same behaviour as [`passthrough_error`], but takes an already-read body so the
-/// caller can log the upstream's error text before it is turned into a response.
-fn error_from_body(status: reqwest::StatusCode, raw: String, is_stream: bool) -> Response<Body> {
-    let status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    if !is_stream {
-        return Response::builder()
-            .status(status)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(raw))
-            .unwrap();
-    }
-    warn!(
-        "Upstream returned {} on a streaming request; reporting it as SSE so the client sees a terminal event",
-        status
-    );
-    sse_error(status, format!("Upstream returned {status}"), Some(&raw))
-}
-
-async fn passthrough_error(
-    upstream_response: reqwest::Response,
-    is_stream: bool,
-) -> Response<Body> {
-    if !is_stream {
-        return passthrough_verbatim(upstream_response).await;
-    }
-    let status = StatusCode::from_u16(upstream_response.status().as_u16())
-        .unwrap_or(StatusCode::BAD_GATEWAY);
-    let raw = upstream_response.text().await.unwrap_or_default();
-    warn!(
-        "Upstream returned {} on a streaming request; reporting it as SSE so the client sees a terminal event",
-        status
-    );
-    sse_error(status, format!("Upstream returned {status}"), Some(&raw))
 }
 
 struct ConnectionGuard<'a>(&'a HealthState);
