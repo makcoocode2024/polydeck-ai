@@ -4,7 +4,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { backend } from "@/services/backend";
-import type { SessionSummary } from "@/domain/history";
+import type { ConsolidateReport, SessionSummary } from "@/domain/history";
 import {
   History,
   Download,
@@ -16,6 +16,8 @@ import {
   Clock,
   Layers,
   FolderOpen,
+  Combine,
+  Server,
   CheckCircle2,
   AlertCircle,
 } from "lucide-react";
@@ -25,6 +27,9 @@ export default function HistoryPage() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedClient, setSelectedClient] = useState<string>("all");
+  const [consolidating, setConsolidating] = useState(false);
+  const [consolidateResult, setConsolidateResult] = useState<ConsolidateReport | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   // Backup modal state
   const [showBackupModal, setShowBackupModal] = useState(false);
@@ -42,10 +47,10 @@ export default function HistoryPage() {
   const loadHistory = async () => {
     setLoading(true);
     try {
-      const data = await backend.queryHistory();
-      setSessions(data);
+      setSessions(await backend.queryHistory());
+      setHistoryError(null);
     } catch (err) {
-      console.error("Failed to query history:", err);
+      setHistoryError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -111,6 +116,24 @@ export default function HistoryPage() {
     }
   };
 
+  const handleConsolidate = async () => {
+    setConsolidating(true);
+    setConsolidateResult(null);
+    try {
+      // Re-index first: a conversation whose file exists but was never indexed is
+      // not a duplicate to merge, it is simply missing, and merging alone would not
+      // bring it back.
+      await backend.syncHistory();
+      setConsolidateResult(await backend.consolidateHistory());
+      await loadHistory();
+      setHistoryError(null);
+    } catch (err) {
+      setHistoryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setConsolidating(false);
+    }
+  };
+
   const filteredSessions = useMemo(() => {
     return sessions.filter((s) => {
       const matchSearch =
@@ -158,6 +181,17 @@ export default function HistoryPage() {
           <Button variant="outline" size="sm" onClick={() => setShowRestoreModal(true)} className="text-xs">
             <FolderOpen className="h-3.5 w-3.5 mr-1" />
             还原备份
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleConsolidate}
+            disabled={consolidating}
+            className="text-xs"
+            title="重新索引会话文件，并把同一会话在不同 id 方案下的重复记录合并为一条"
+          >
+            <Combine className={`h-3.5 w-3.5 mr-1 ${consolidating ? "animate-spin" : ""}`} />
+            {consolidating ? "整合中…" : "整合会话"}
           </Button>
           <Button variant="ghost" size="sm" onClick={loadHistory} disabled={loading} className="text-xs">
             <RotateCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
@@ -242,6 +276,30 @@ export default function HistoryPage() {
         )}
       </div>
 
+      {historyError && (
+        <div className="p-3 rounded-lg border border-destructive/40 bg-destructive/5 text-xs text-destructive" role="alert">
+          读取或整合历史失败：{historyError}
+        </div>
+      )}
+
+      {consolidateResult && (
+        <div className="p-3 rounded-lg border border-emerald-500/40 bg-emerald-500/5 text-xs space-y-1">
+          <div className="flex items-center gap-2 font-semibold text-emerald-600 dark:text-emerald-400">
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            整合完成，当前共 {consolidateResult.sessionsAfter} 个会话
+          </div>
+          <div className="text-muted-foreground">
+            {consolidateResult.duplicatesMerged > 0
+              ? `合并重复记录 ${consolidateResult.duplicatesMerged} 条`
+              : "没有发现重复记录"}
+            {consolidateResult.clientsNormalized > 0 &&
+              `，统一客户端名称 ${consolidateResult.clientsNormalized} 条`}
+            {consolidateResult.timestampsNormalized > 0 &&
+              `，修正时间格式 ${consolidateResult.timestampsNormalized} 条`}
+          </div>
+        </div>
+      )}
+
       {/* Session List */}
       <Card className="border-border/60 shadow-sm">
         <CardHeader className="pb-3">
@@ -272,6 +330,27 @@ export default function HistoryPage() {
                       <span>{s.messageCount} 消息</span>
                       <span>·</span>
                       <span>{s.totalTokens.toLocaleString()} tokens</span>
+                      {s.providerId && (
+                        <>
+                          <span>·</span>
+                          <span className="flex items-center gap-1" title={`Provider: ${s.providerId}`}>
+                            <Server className="h-3 w-3" />
+                            {s.providerId}
+                          </span>
+                        </>
+                      )}
+                      {s.mergedFrom > 1 && (
+                        <>
+                          <span>·</span>
+                          <span
+                            className="flex items-center gap-1 text-sky-500"
+                            title="该会话由多份不同 id 方案的记录合并而来"
+                          >
+                            <Combine className="h-3 w-3" />
+                            合并 {s.mergedFrom} 份
+                          </span>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>

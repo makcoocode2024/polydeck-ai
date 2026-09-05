@@ -289,6 +289,14 @@ const mockResponses: Record<string, unknown> = {
       scope: "global",
     },
   ],
+  ad_consolidate_history: {
+    clientsNormalized: 0,
+    timestampsNormalized: 0,
+    identitiesFilled: 0,
+    duplicatesMerged: 0,
+    sessionsAfter: 2,
+  },
+  ad_sync_history: 2,
   ad_query_history: [
     {
       id: "sess_1",
@@ -298,6 +306,9 @@ const mockResponses: Record<string, unknown> = {
       totalTokens: 3420,
       createdAt: "2026-08-18T10:00:00Z",
       updatedAt: "2026-08-18T10:30:00Z",
+      providerId: "prov_1",
+      profileId: "prof_default",
+      mergedFrom: 1,
     },
   ],
   export_history: '{"sessions": []}',
@@ -356,8 +367,8 @@ const mockResponses: Record<string, unknown> = {
     },
     message: "Repaired",
   },
-  ad_tray_status: { status: "idle" },
-  ad_autolaunch_status: { enabled: true, method: "Registry" },
+  ad_tray_status: { status: "healthy", gatewayRunning: true, activeProfile: "方案Alpha" },
+  ad_autolaunch_status: { enabled: true, method: "registry", supported: true, command: "\"C:\\\\polydeck.exe\"" },
   ad_set_autolaunch: null,
   ad_detect_proxy: {
     tools: [
@@ -383,7 +394,21 @@ const mockResponses: Record<string, unknown> = {
     timestamp: "2026-08-18T12:00:00Z",
   },
   ad_check_update: { available: false, version: null },
-  ad_get_logs: ["[INFO] PolyDeck core initialized", "[INFO] Gateway listening on 127.0.0.1:18888"],
+  // Structured entries, matching what LogStore::get_logs returns.
+  ad_get_logs: [
+    {
+      timestamp: "2026-09-05T10:00:00Z",
+      level: "INFO",
+      message: "PolyDeck core initialized",
+      target: "polydeck_core",
+    },
+    {
+      timestamp: "2026-09-05T10:00:01Z",
+      level: "INFO",
+      message: "Gateway listening on 127.0.0.1:18888",
+      target: "polydeck_gateway",
+    },
+  ],
   ad_detect_importable: [],
   ad_import_from_provider_deck: null,
   ad_force_chinese_status: {

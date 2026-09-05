@@ -2,8 +2,8 @@
 import type { DetectedClient } from "@/domain/client";
 import type { Profile, ProfileTemplate, ProbeResult, ProfileUpdate, ChatTestResult, ProtocolKind, RateLimitRecommendation, ThinkingSupport, ClientBindingView, ClientConnectionInfo, SwitchResult } from "@/domain/profile";
 import type { McpServer, ManagedSkill, PromptTemplate } from "@/domain/extensions";
-import type { SessionSummary } from "@/domain/history";
-import type { DiagnosticReport, UpdateInfo, AutoLaunchStatus, ClientRuleStatus } from "@/domain/ops";
+import type { ConsolidateReport, SessionSummary } from "@/domain/history";
+import type { DiagnosticReport, UpdateInfo, AutoLaunchStatus, ClientRuleStatus, LogEntry } from "@/domain/ops";
 import type { ProxyStatus } from "@/domain/proxy";
 import type { FailoverStatus } from "@/domain/failover";
 import type { InjectStatus } from "@/domain/injection";
@@ -141,6 +141,16 @@ export const backend = {
 
   // History
   queryHistory: () => invoke<SessionSummary[]>("ad_query_history"),
+  consolidateHistory: () =>
+    invoke<ConsolidateReport>("ad_consolidate_history").then((value) => {
+      invalidateReads("history");
+      return value;
+    }),
+  syncHistory: () =>
+    invoke<number>("ad_sync_history").then((value) => {
+      invalidateReads("history");
+      return value;
+    }),
   exportHistory: (format: string) => invoke<string>("ad_export_history", { format }),
   createEncryptedBackup: (password: string) => invoke<string>("ad_create_encrypted_backup", { password }),
   restoreEncryptedBackup: (path: string, password: string) =>
@@ -156,7 +166,12 @@ export const backend = {
   injectRepair: () => invoke<InjectStatus>("ad_inject_repair"),
 
   // System
-  trayStatus: () => invoke<{ status: string }>("ad_tray_status"),
+  trayStatus: () =>
+    invoke<{
+      status: "healthy" | "degraded" | "failed" | "offline";
+      gatewayRunning: boolean;
+      activeProfile: string | null;
+    }>("ad_tray_status"),
   handleDeepLink: (url: string) => invoke<unknown>("ad_handle_deep_link", { url }),
   autolaunchStatus: () => cachedRead("autolaunch", () => invoke<AutoLaunchStatus>("ad_autolaunch_status")),
   setAutolaunch: (enabled: boolean) =>
@@ -185,7 +200,7 @@ export const backend = {
   // Ops
   runDiagnostics: () => invoke<DiagnosticReport>("ad_run_diagnostics"),
   checkUpdate: () => invoke<UpdateInfo>("ad_check_update"),
-  getLogs: (limit: number) => invoke<string[]>("ad_get_logs", { limit }),
+  getLogs: (limit: number) => invoke<LogEntry[]>("ad_get_logs", { limit }),
 
   // Importer
   detectImportable: () => cachedRead("importable", () => invoke<string[]>("ad_detect_importable"), 10_000),

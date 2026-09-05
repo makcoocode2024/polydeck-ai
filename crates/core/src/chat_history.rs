@@ -22,6 +22,22 @@ pub struct SessionSummary {
     pub total_tokens: usize,
     pub created_at: String,
     pub updated_at: String,
+    /// The provider node this conversation ran against, when known.
+    ///
+    /// Recorded so switching providers or rotating a key stops looking like data
+    /// loss: the session stays in one list and carries where it came from, rather
+    /// than the app inferring provenance from whatever is configured right now.
+    #[serde(default)]
+    pub provider_id: Option<String>,
+    /// The profile bound to the client when this conversation was indexed.
+    #[serde(default)]
+    pub profile_id: Option<String>,
+    /// How many on-disk session files were merged into this row.
+    ///
+    /// Above 1 means the same conversation existed under several id schemes and was
+    /// consolidated; surfaced so a merge is visible rather than silent.
+    #[serde(default)]
+    pub merged_from: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -56,6 +72,177 @@ pub struct UsageStats {
     pub total_tokens: usize,
     pub sessions_by_client: HashMap<String, usize>,
     pub sessions_by_date: Vec<(String, usize)>,
+}
+
+/// The canonical client id for a session row.
+///
+/// The database on disk carries four spellings for two clients (`Codex`/`codex`,
+/// `Claude Code`/`claude-code`): earlier versions wrote display names, later ones
+/// wrote detector ids. Filtering by client then splits one client into two buckets,
+/// and the counts never add up. Everything is normalized onto the detector ids that
+/// `client_detector::detect_all` produces, since those are what the rest of the app
+/// keys on.
+/// Read a column that may hold either TEXT or INTEGER as a string.
+///
+/// SQLite columns are typed per value, not per column, and this database has 623
+/// rows whose `created_at`/`updated_at` are stored as INTEGER Unix seconds next to
+/// 387 rows holding ISO TEXT. Asking for a `String` on an INTEGER value returns
+/// `InvalidColumnType`, and because the read path used `rows.flatten()` those rows
+/// were dropped silently — the same 623 conversations that appeared to have gone
+/// missing. Reading through `ValueRef` accepts either representation.
+fn text_or_number(row: &rusqlite::Row<'_>, idx: usize) -> Result<String, rusqlite::Error> {
+    use rusqlite::types::ValueRef;
+    Ok(match row.get_ref(idx)? {
+        ValueRef::Null => String::new(),
+        ValueRef::Integer(n) => n.to_string(),
+        ValueRef::Real(f) => f.to_string(),
+        ValueRef::Text(bytes) => String::from_utf8_lossy(bytes).to_string(),
+        ValueRef::Blob(bytes) => String::from_utf8_lossy(bytes).to_string(),
+    })
+}
+
+/// Read an integer column that may have been stored as TEXT.
+fn number_or_text(row: &rusqlite::Row<'_>, idx: usize) -> Result<i64, rusqlite::Error> {
+    use rusqlite::types::ValueRef;
+    Ok(match row.get_ref(idx)? {
+        ValueRef::Integer(n) => n,
+        ValueRef::Real(f) => f as i64,
+        ValueRef::Text(bytes) => String::from_utf8_lossy(bytes).trim().parse().unwrap_or(0),
+        _ => 0,
+    })
+}
+
+/// Map one `sessions` row onto a summary, normalizing as it goes.
+///
+/// Column order must match the SELECT lists in `list_summaries` and `query`. Every
+/// column is read tolerantly: this database spans several schema generations, and a
+/// strict read drops rows rather than reporting a problem.
+fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<SessionSummary, rusqlite::Error> {
+    Ok(SessionSummary {
+        id: text_or_number(row, 0)?,
+        client: normalize_client(&text_or_number(row, 1)?),
+        title: text_or_number(row, 2)?,
+        message_count: number_or_text(row, 3)?.max(0) as usize,
+        total_tokens: number_or_text(row, 4)?.max(0) as usize,
+        created_at: normalize_timestamp(&text_or_number(row, 5)?),
+        updated_at: normalize_timestamp(&text_or_number(row, 6)?),
+        provider_id: row.get(7).ok().flatten(),
+        profile_id: row.get(8).ok().flatten(),
+        merged_from: number_or_text(row, 9)?.max(1) as usize,
+    })
+}
+
+/// Whether a title is one of the generated fallbacks rather than real content.
+///
+/// The parsers synthesize "Codex 会话 (abc12345)" when no user message is found.
+/// Merging must not let such a placeholder overwrite a title recovered from a
+/// richer copy of the same conversation.
+fn is_placeholder_title(title: &str) -> bool {
+    let t = title.trim();
+    t.is_empty()
+        || t == "对话会话"
+        || t == "Hermes 会话"
+        || ((t.starts_with("Codex 会话 (") || t.starts_with("Claude 会话 (")) && t.ends_with(')'))
+}
+
+/// The earlier of two RFC 3339 timestamps, ignoring blanks.
+fn earliest(a: &str, b: &str) -> String {
+    match (a.trim().is_empty(), b.trim().is_empty()) {
+        (true, _) => b.to_string(),
+        (_, true) => a.to_string(),
+        _ => {
+            if a <= b {
+                a.to_string()
+            } else {
+                b.to_string()
+            }
+        }
+    }
+}
+
+/// The later of two RFC 3339 timestamps, ignoring blanks.
+fn latest(a: &str, b: &str) -> String {
+    match (a.trim().is_empty(), b.trim().is_empty()) {
+        (true, _) => b.to_string(),
+        (_, true) => a.to_string(),
+        _ => {
+            if a >= b {
+                a.to_string()
+            } else {
+                b.to_string()
+            }
+        }
+    }
+}
+
+pub fn normalize_client(raw: &str) -> String {
+    let lower = raw.trim().to_ascii_lowercase().replace(' ', "-");
+    match lower.as_str() {
+        "codex" | "codex-cli" => "codex-cli".to_string(),
+        "claude" | "claude-code" => "claude-code".to_string(),
+        "claude-desktop" => "claude-desktop".to_string(),
+        "hermes" => "hermes".to_string(),
+        // A row with no client is kept rather than dropped, under a name that makes
+        // the gap visible in the filter list.
+        "" => "unknown".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// The conversation identity inside a session id, independent of id scheme.
+///
+/// Session ids have been written three ways over time: a bare uuid, a
+/// `rollout-<date>-<uuid>` filename stem, and a `codex_`/`claude_` prefixed uuid.
+/// All three can name the *same* conversation, which is how 325 conversations came
+/// to be stored twice in one database — once under a bare uuid and once prefixed.
+/// The embedded uuid is the stable part, so it is the merge key; ids without one
+/// fall back to themselves and simply never merge.
+pub fn session_identity(id: &str) -> String {
+    let bytes = id.as_bytes();
+    let is_hex = |b: u8| b.is_ascii_hexdigit();
+    // Scan for a 8-4-4-4-12 uuid anywhere in the id.
+    if bytes.len() >= 36 {
+        for start in 0..=bytes.len() - 36 {
+            let w = &bytes[start..start + 36];
+            let shaped = w[8] == b'-'
+                && w[13] == b'-'
+                && w[18] == b'-'
+                && w[23] == b'-'
+                && w[..8].iter().all(|&b| is_hex(b))
+                && w[9..13].iter().all(|&b| is_hex(b))
+                && w[14..18].iter().all(|&b| is_hex(b))
+                && w[19..23].iter().all(|&b| is_hex(b))
+                && w[24..].iter().all(|&b| is_hex(b));
+            if shaped {
+                return id[start..start + 36].to_ascii_lowercase();
+            }
+        }
+    }
+    id.trim().to_ascii_lowercase()
+}
+
+/// Coerce a stored timestamp into RFC 3339.
+///
+/// Older rows stored Unix seconds in what is now a TEXT column, newer rows store
+/// ISO strings. `ORDER BY updated_at DESC` compares them as text, so every numeric
+/// timestamp sorts *below* every ISO one: with `LIMIT 500` over 1010 rows, 623
+/// numeric rows fell off the end of the list and looked deleted. Normalizing on
+/// read and on write makes one ordering apply to all of them.
+pub fn normalize_timestamp(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    // Purely numeric means Unix seconds (or milliseconds, for a few writers).
+    if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        if let Ok(n) = trimmed.parse::<i64>() {
+            let secs = if n > 100_000_000_000 { n / 1000 } else { n };
+            if let Some(dt) = chrono::DateTime::from_timestamp(secs, 0) {
+                return dt.to_rfc3339();
+            }
+        }
+    }
+    trimmed.to_string()
 }
 
 pub struct HistoryStore {
@@ -102,6 +289,22 @@ impl HistoryStore {
         Ok(store)
     }
 
+    /// Open a specific database file and migrate its schema, without indexing.
+    ///
+    /// `open` syncs on the way in, which rewrites rows before a caller can inspect
+    /// them. Verifying a migration, or consolidating a database whose session files
+    /// are not on this machine, needs the two steps separable.
+    pub fn open_at(path: &Path) -> AppResult<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let conn = Connection::open(path)
+            .map_err(|e| AppError::Storage(format!("打开历史库 {} 失败: {e}", path.display())))?;
+        let store = Self { conn };
+        store.init_tables()?;
+        Ok(store)
+    }
+
     pub fn open_in_memory() -> AppResult<Self> {
         let conn = Connection::open_in_memory()
             .map_err(|e| AppError::Storage(format!("创建内存数据库失败: {e}")))?;
@@ -119,16 +322,44 @@ impl HistoryStore {
                 "CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
                     client TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    message_count INTEGER NOT NULL,
-                    total_tokens INTEGER NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
+                    -- Nullable to match databases written by earlier versions, which
+                    -- left the title unset on 623 rows. The read path substitutes an
+                    -- empty string, so a fresh database and an upgraded one behave
+                    -- identically.
+                    title TEXT,
+                    message_count INTEGER NOT NULL DEFAULT 0,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT,
+                    updated_at TEXT,
                     raw_path TEXT
                 )",
                 [],
             )
             .map_err(|e| AppError::Storage(format!("创建数据表失败: {e}")))?;
+
+        // Databases written by earlier versions predate these columns. `ALTER TABLE`
+        // errors when the column is already there, which is the common case, so the
+        // result is deliberately discarded rather than treated as a failure.
+        for column in [
+            "provider_id TEXT",
+            "profile_id TEXT",
+            "identity TEXT",
+            "merged_from INTEGER NOT NULL DEFAULT 1",
+        ] {
+            let _ = self
+                .conn
+                .execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), []);
+        }
+
+        // Grouping and filtering both hit these.
+        let _ = self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_identity ON sessions(identity)",
+            [],
+        );
+        let _ = self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_provider ON sessions(provider_id)",
+            [],
+        );
 
         let _ = self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sessions_client ON sessions(client)",
@@ -184,6 +415,14 @@ impl HistoryStore {
             }
         }
         let _ = self.conn.execute("COMMIT", []);
+
+        // Indexing writes rows keyed on whatever id scheme each file uses, so folding
+        // duplicates together belongs at the end of every sync rather than only in a
+        // manual pass. Idempotent, and a failure here must not fail the sync — the
+        // rows are already stored and remain queryable, just unmerged.
+        if let Err(e) = self.consolidate() {
+            tracing::warn!("会话整合失败，历史仍可查询但可能存在重复：{e}");
+        }
         Ok(count)
     }
 
@@ -214,10 +453,95 @@ impl HistoryStore {
         }
     }
 
+    /// Insert or merge one session.
+    ///
+    /// Keyed on `identity` rather than the raw id: the same conversation appears
+    /// under several id schemes across versions, and keying on `id` is what let one
+    /// conversation occupy two rows. When a row for this identity already exists the
+    /// two are merged — the richer title wins, counts take the larger value, and the
+    /// date range widens — so re-indexing converges instead of duplicating.
     fn upsert_session(&self, s: &SessionSummary, raw_path: &str) -> Result<(), rusqlite::Error> {
+        let identity = session_identity(&s.id);
+        let client = normalize_client(&s.client);
+        let created = normalize_timestamp(&s.created_at);
+        let updated = normalize_timestamp(&s.updated_at);
+
+        let existing: Option<(String, String, i64, i64, String, String, i64)> = self
+            .conn
+            .query_row(
+                "SELECT id, title, message_count, total_tokens, created_at, updated_at, \
+                        COALESCE(merged_from, 1)
+                 FROM sessions WHERE identity = ?1 LIMIT 1",
+                params![identity],
+                |r| {
+                    Ok((
+                        text_or_number(r, 0)?,
+                        text_or_number(r, 1)?,
+                        number_or_text(r, 2)?,
+                        number_or_text(r, 3)?,
+                        text_or_number(r, 4)?,
+                        text_or_number(r, 5)?,
+                        number_or_text(r, 6)?,
+                    ))
+                },
+            )
+            .ok();
+
+        if let Some((keep_id, old_title, old_msgs, old_tokens, old_created, old_updated, merged)) =
+            existing
+        {
+            // A generated placeholder ("Codex 会话 (abc12345)") carries no
+            // information, so a real first message replaces it; otherwise keep what
+            // is already there rather than churning the list on every re-index.
+            let title = if is_placeholder_title(&old_title) && !is_placeholder_title(&s.title) {
+                s.title.clone()
+            } else {
+                old_title
+            };
+            let created = earliest(&old_created, &created);
+            let updated = latest(&old_updated, &updated);
+            let same_row = keep_id == s.id;
+
+            self.conn.execute(
+                "UPDATE sessions SET
+                    client=?2, title=?3,
+                    message_count=MAX(?4, message_count),
+                    total_tokens=MAX(?5, total_tokens),
+                    created_at=?6, updated_at=?7, raw_path=?8,
+                    provider_id=COALESCE(?9, provider_id),
+                    profile_id=COALESCE(?10, profile_id),
+                    merged_from=?11
+                 WHERE id=?1",
+                params![
+                    keep_id,
+                    client,
+                    title,
+                    s.message_count as i64,
+                    s.total_tokens as i64,
+                    created,
+                    updated,
+                    raw_path,
+                    s.provider_id,
+                    s.profile_id,
+                    if same_row { merged } else { merged + 1 },
+                ],
+            )?;
+
+            // The duplicate row, if this identity previously had one under a
+            // different id scheme.
+            if !same_row {
+                let _ = self
+                    .conn
+                    .execute("DELETE FROM sessions WHERE id=?1", params![s.id]);
+            }
+            let _ = old_msgs;
+            let _ = old_tokens;
+            return Ok(());
+        }
+
         self.conn.execute(
-            "INSERT INTO sessions (id, client, title, message_count, total_tokens, created_at, updated_at, raw_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO sessions (id, client, title, message_count, total_tokens, created_at, updated_at, raw_path, provider_id, profile_id, identity, merged_from)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1)
              ON CONFLICT(id) DO UPDATE SET
                 client=excluded.client,
                 title=excluded.title,
@@ -225,46 +549,54 @@ impl HistoryStore {
                 total_tokens=excluded.total_tokens,
                 created_at=excluded.created_at,
                 updated_at=excluded.updated_at,
-                raw_path=excluded.raw_path",
+                raw_path=excluded.raw_path,
+                provider_id=COALESCE(excluded.provider_id, sessions.provider_id),
+                profile_id=COALESCE(excluded.profile_id, sessions.profile_id),
+                identity=excluded.identity",
             params![
                 s.id,
-                s.client,
+                client,
                 s.title,
                 s.message_count as i64,
                 s.total_tokens as i64,
-                s.created_at,
-                s.updated_at,
+                created,
+                updated,
                 raw_path,
+                s.provider_id,
+                s.profile_id,
+                identity,
             ],
         )?;
         Ok(())
     }
 
+    /// Every indexed session, newest first.
+    ///
+    /// The `LIMIT 500` this used to carry silently truncated the list: combined with
+    /// the mixed timestamp formats, which sort numeric values below every ISO
+    /// string, it hid 623 of 1010 rows on the developer's own database and read as
+    /// "my history disappeared after switching providers". Rows are normalized on
+    /// read as well as write, so a database migrated but not yet re-indexed still
+    /// sorts correctly.
     pub fn list_summaries(&self) -> AppResult<Vec<SessionSummary>> {
-        let mut stmt = self.conn
-            .prepare("SELECT id, client, title, message_count, total_tokens, created_at, updated_at FROM sessions ORDER BY updated_at DESC LIMIT 500")
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, client, title, message_count, total_tokens, created_at, updated_at, \
+                        provider_id, profile_id, COALESCE(merged_from, 1) \
+                 FROM sessions",
+            )
             .map_err(|e| AppError::Storage(format!("查询历史列表准备失败: {e}")))?;
 
         let rows = stmt
-            .query_map([], |row| {
-                let msg_count: i64 = row.get(3)?;
-                let tokens: i64 = row.get(4)?;
-                Ok(SessionSummary {
-                    id: row.get(0)?,
-                    client: row.get(1)?,
-                    title: row.get(2)?,
-                    message_count: msg_count as usize,
-                    total_tokens: tokens as usize,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
-                })
-            })
+            .query_map([], row_to_summary)
             .map_err(|e| AppError::Storage(format!("查询历史列表失败: {e}")))?;
 
-        let mut results = Vec::new();
-        for item in rows.flatten() {
-            results.push(item);
-        }
+        let mut results: Vec<SessionSummary> = rows.flatten().collect();
+        // Sorted here rather than in SQL: a database that has been migrated but not
+        // re-indexed still holds raw numeric timestamps, and only the normalized
+        // values compare correctly.
+        results.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(results)
     }
 
@@ -274,8 +606,23 @@ impl HistoryStore {
 
         if let Some(ref client) = query.client {
             if !client.trim().is_empty() && client != "all" {
-                conditions.push("client = ?");
-                params_vec.push(Box::new(client.clone()));
+                // Compared against the normalized form: rows written by earlier
+                // versions hold `Codex`/`Claude Code`, so an equality test against a
+                // detector id matched only part of one client's sessions.
+                conditions.push("LOWER(REPLACE(client, ' ', '-')) IN (?, REPLACE(?, '-cli', ''))");
+                let normalized = normalize_client(client);
+                params_vec.push(Box::new(normalized.clone()));
+                params_vec.push(Box::new(normalized));
+            }
+        }
+
+        // `provider` has been on HistoryQuery since the type was introduced but was
+        // never read, so filtering by it silently returned everything. Now that rows
+        // carry provenance it does what it says.
+        if let Some(ref provider) = query.provider {
+            if !provider.trim().is_empty() && provider != "all" {
+                conditions.push("provider_id = ?");
+                params_vec.push(Box::new(provider.clone()));
             }
         }
 
@@ -330,7 +677,9 @@ impl HistoryStore {
         let offset = (page - 1) * page_size;
 
         let query_sql = format!(
-            "SELECT id, client, title, message_count, total_tokens, created_at, updated_at FROM sessions {where_clause} ORDER BY updated_at DESC LIMIT {page_size} OFFSET {offset}"
+            "SELECT id, client, title, message_count, total_tokens, created_at, updated_at, \
+                    provider_id, profile_id, COALESCE(merged_from, 1) \
+             FROM sessions {where_clause}"
         );
 
         let mut stmt = self
@@ -340,25 +689,14 @@ impl HistoryStore {
         let params_refs: Vec<&dyn rusqlite::ToSql> =
             params_vec.iter().map(|b| b.as_ref()).collect();
         let rows = stmt
-            .query_map(rusqlite::params_from_iter(params_refs), |row| {
-                let msg_count: i64 = row.get(3)?;
-                let tokens: i64 = row.get(4)?;
-                Ok(SessionSummary {
-                    id: row.get(0)?,
-                    client: row.get(1)?,
-                    title: row.get(2)?,
-                    message_count: msg_count as usize,
-                    total_tokens: tokens as usize,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
-                })
-            })
+            .query_map(rusqlite::params_from_iter(params_refs), row_to_summary)
             .map_err(|e| AppError::Storage(e.to_string()))?;
 
-        let mut items = Vec::new();
-        for item in rows.flatten() {
-            items.push(item);
-        }
+        // Ordering and paging happen after normalization for the same reason as in
+        // `list_summaries`: raw numeric timestamps do not sort against ISO ones.
+        let mut all: Vec<SessionSummary> = rows.flatten().collect();
+        all.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        let items: Vec<SessionSummary> = all.into_iter().skip(offset).take(page_size).collect();
 
         Ok(HistoryPage {
             items,
@@ -467,6 +805,245 @@ impl HistoryStore {
             let _ = store.upsert_session(&s, path);
         }
         Ok(())
+    }
+}
+
+/// What a consolidation pass changed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsolidateReport {
+    /// Rows whose `client` spelling was rewritten to a detector id.
+    pub clients_normalized: usize,
+    /// Rows whose timestamp was converted from Unix seconds to RFC 3339.
+    pub timestamps_normalized: usize,
+    /// Rows that gained an `identity` value.
+    pub identities_filled: usize,
+    /// Duplicate rows removed after being merged into a surviving row.
+    pub duplicates_merged: usize,
+    /// Sessions remaining after the pass.
+    pub sessions_after: usize,
+}
+
+impl HistoryStore {
+    /// Fold duplicate rows together and normalize the columns they are compared on.
+    ///
+    /// Idempotent, and safe to run on an already-clean database: every step is a
+    /// no-op when its precondition is already met. Reports what it touched instead
+    /// of returning a bare success, since "consolidated 0 things" and "consolidated
+    /// 325 things" are very different outcomes for the user.
+    ///
+    /// Merging keeps the row with the most messages and widens its date range,
+    /// because the id schemes carry no ordering: neither a bare uuid nor a prefixed
+    /// one is inherently the newer copy.
+    pub fn consolidate(&self) -> AppResult<ConsolidateReport> {
+        let mut report = ConsolidateReport::default();
+
+        // 1. Client spellings. Done in Rust rather than SQL so one normalization
+        //    function governs both this and the read path.
+        let rows: Vec<(String, String)> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, client FROM sessions")
+                .map_err(|e| AppError::Storage(e.to_string()))?;
+            let mapped = stmt
+                .query_map([], |r| Ok((text_or_number(r, 0)?, text_or_number(r, 1)?)))
+                .map_err(|e| AppError::Storage(e.to_string()))?;
+            mapped.flatten().collect()
+        };
+        for (id, client) in rows {
+            let normalized = normalize_client(&client);
+            if normalized != client {
+                let _ = self.conn.execute(
+                    "UPDATE sessions SET client=?2 WHERE id=?1",
+                    params![id, normalized],
+                );
+                report.clients_normalized += 1;
+            }
+        }
+
+        // 2. Timestamps.
+        let stamps: Vec<(String, String, String)> = {
+            let mut stmt = self
+                .conn
+                .prepare(
+                    "SELECT id, COALESCE(created_at,''), COALESCE(updated_at,'') FROM sessions",
+                )
+                .map_err(|e| AppError::Storage(e.to_string()))?;
+            let mapped = stmt
+                .query_map([], |r| {
+                    Ok((
+                        text_or_number(r, 0)?,
+                        text_or_number(r, 1)?,
+                        text_or_number(r, 2)?,
+                    ))
+                })
+                .map_err(|e| AppError::Storage(e.to_string()))?;
+            mapped.flatten().collect()
+        };
+        for (id, created, updated) in stamps {
+            let nc = normalize_timestamp(&created);
+            let nu = normalize_timestamp(&updated);
+            if nc != created || nu != updated {
+                let _ = self.conn.execute(
+                    "UPDATE sessions SET created_at=?2, updated_at=?3 WHERE id=?1",
+                    params![id, nc, nu],
+                );
+                report.timestamps_normalized += 1;
+            }
+        }
+
+        // 3. Identity, which is what the merge groups on.
+        let ids: Vec<(String, Option<String>)> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, identity FROM sessions")
+                .map_err(|e| AppError::Storage(e.to_string()))?;
+            let mapped = stmt
+                .query_map([], |r| {
+                    Ok((
+                        text_or_number(r, 0)?,
+                        r.get::<_, Option<String>>(1).ok().flatten(),
+                    ))
+                })
+                .map_err(|e| AppError::Storage(e.to_string()))?;
+            mapped.flatten().collect()
+        };
+        for (id, identity) in ids {
+            let want = session_identity(&id);
+            if identity.as_deref() != Some(want.as_str()) {
+                let _ = self.conn.execute(
+                    "UPDATE sessions SET identity=?2 WHERE id=?1",
+                    params![id, want],
+                );
+                report.identities_filled += 1;
+            }
+        }
+
+        // 4. Merge groups sharing an identity.
+        let groups: Vec<String> = {
+            let mut stmt = self
+                .conn
+                .prepare(
+                    "SELECT identity FROM sessions WHERE identity IS NOT NULL \
+                     GROUP BY identity HAVING COUNT(*) > 1",
+                )
+                .map_err(|e| AppError::Storage(e.to_string()))?;
+            let mapped = stmt
+                .query_map([], |r| r.get(0))
+                .map_err(|e| AppError::Storage(e.to_string()))?;
+            mapped.flatten().collect()
+        };
+
+        for identity in groups {
+            let members: Vec<(String, String, i64, i64, String, String)> = {
+                let mut stmt = self
+                    .conn
+                    .prepare(
+                        "SELECT id, COALESCE(title,''), message_count, total_tokens, \
+                                COALESCE(created_at,''), COALESCE(updated_at,'') \
+                         FROM sessions WHERE identity=?1 ORDER BY message_count DESC",
+                    )
+                    .map_err(|e| AppError::Storage(e.to_string()))?;
+                let mapped = stmt
+                    .query_map(params![identity], |r| {
+                        Ok((
+                            text_or_number(r, 0)?,
+                            text_or_number(r, 1)?,
+                            number_or_text(r, 2)?,
+                            number_or_text(r, 3)?,
+                            text_or_number(r, 4)?,
+                            text_or_number(r, 5)?,
+                        ))
+                    })
+                    .map_err(|e| AppError::Storage(e.to_string()))?;
+                mapped.flatten().collect()
+            };
+            if members.len() < 2 {
+                continue;
+            }
+
+            // Richest row survives; it already sorts first.
+            let keep = &members[0];
+            let mut title = keep.1.clone();
+            let mut msgs = keep.2;
+            let mut tokens = keep.3;
+            let mut created = keep.4.clone();
+            let mut updated = keep.5.clone();
+
+            for other in &members[1..] {
+                if is_placeholder_title(&title) && !is_placeholder_title(&other.1) {
+                    title = other.1.clone();
+                }
+                msgs = msgs.max(other.2);
+                tokens = tokens.max(other.3);
+                created = earliest(&created, &other.4);
+                updated = latest(&updated, &other.5);
+            }
+
+            let merged_count = members.len();
+            let _ = self.conn.execute(
+                "UPDATE sessions SET title=?2, message_count=?3, total_tokens=?4, \
+                        created_at=?5, updated_at=?6, merged_from=?7 WHERE id=?1",
+                params![
+                    keep.0,
+                    title,
+                    msgs,
+                    tokens,
+                    created,
+                    updated,
+                    merged_count as i64
+                ],
+            );
+
+            for other in &members[1..] {
+                // Re-point any recorded source files at the surviving row before the
+                // duplicate goes away, so the merge does not lose provenance.
+                let _ = self.conn.execute(
+                    "UPDATE session_sources SET session_id=?2 WHERE session_id=?1",
+                    params![other.0, keep.0],
+                );
+                if self
+                    .conn
+                    .execute("DELETE FROM sessions WHERE id=?1", params![other.0])
+                    .is_ok()
+                {
+                    report.duplicates_merged += 1;
+                }
+            }
+        }
+
+        report.sessions_after = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get::<_, i64>(0))
+            .unwrap_or(0) as usize;
+        Ok(report)
+    }
+
+    /// Record which provider and profile a client's sessions are currently running
+    /// against.
+    ///
+    /// Called when a profile is bound or a key rotated, so sessions indexed from that
+    /// point carry provenance. Only rows with no provider yet are stamped: a
+    /// conversation that already ran against another provider is history, and
+    /// rewriting it would misattribute what actually happened.
+    pub fn stamp_provenance(
+        &self,
+        client: &str,
+        profile_id: &str,
+        provider_id: &str,
+    ) -> AppResult<usize> {
+        let normalized = normalize_client(client);
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE sessions SET provider_id=?3, profile_id=?2 \
+                 WHERE LOWER(REPLACE(client, ' ', '-')) IN (?1, REPLACE(?1, '-cli', '')) \
+                   AND provider_id IS NULL",
+                params![normalized, profile_id, provider_id],
+            )
+            .map_err(|e| AppError::Storage(format!("写入会话归属失败: {e}")))?;
+        Ok(changed)
     }
 }
 
@@ -653,6 +1230,11 @@ pub fn parse_codex_session_file(path: &Path) -> Option<SessionSummary> {
         total_tokens,
         created_at,
         updated_at,
+        // Provenance is attached by the caller, which knows the bound profile; the
+        // parsers only see files on disk.
+        provider_id: None,
+        profile_id: None,
+        merged_from: 1,
     })
 }
 
@@ -749,6 +1331,11 @@ pub fn parse_claude_session_file(path: &Path) -> Option<SessionSummary> {
         total_tokens,
         created_at,
         updated_at,
+        // Provenance is attached by the caller, which knows the bound profile; the
+        // parsers only see files on disk.
+        provider_id: None,
+        profile_id: None,
+        merged_from: 1,
     })
 }
 
@@ -801,12 +1388,376 @@ pub fn parse_hermes_session_file(path: &Path) -> Option<SessionSummary> {
         total_tokens,
         created_at,
         updated_at,
+        // Provenance is attached by the caller, which knows the bound profile; the
+        // parsers only see files on disk.
+        provider_id: None,
+        profile_id: None,
+        merged_from: 1,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn summary(id: &str, client: &str, title: &str, msgs: usize, updated: &str) -> SessionSummary {
+        SessionSummary {
+            id: id.into(),
+            client: client.into(),
+            title: title.into(),
+            message_count: msgs,
+            total_tokens: msgs * 100,
+            created_at: updated.into(),
+            updated_at: updated.into(),
+            provider_id: None,
+            profile_id: None,
+            merged_from: 1,
+        }
+    }
+
+    /// The four spellings the real database carries must collapse onto two clients.
+    /// Filtering by `codex-cli` previously matched only the rows written with that
+    /// exact string, leaving the `Codex`-spelled ones invisible.
+    #[test]
+    fn client_spellings_collapse_onto_detector_ids() {
+        for raw in ["Codex", "codex", "codex-cli", " CODEX "] {
+            assert_eq!(normalize_client(raw), "codex-cli", "输入：{raw:?}");
+        }
+        for raw in ["Claude Code", "claude-code", "claude"] {
+            assert_eq!(normalize_client(raw), "claude-code", "输入：{raw:?}");
+        }
+        assert_eq!(normalize_client(""), "unknown");
+    }
+
+    /// The three id schemes seen in the wild name the same conversation when they
+    /// share a uuid. This is the merge key, so it has to be scheme-independent.
+    #[test]
+    fn session_identity_ignores_the_id_scheme() {
+        let uuid = "019578a4-58eb-4c1c-8f46-c20c63bb598b";
+        let variants = [
+            uuid.to_string(),
+            format!("claude_{uuid}"),
+            format!("codex_{uuid}"),
+            format!("rollout-2026-05-29T08-29-39-{uuid}"),
+        ];
+        for v in &variants {
+            assert_eq!(session_identity(v), uuid, "输入：{v}");
+        }
+        // No uuid means no merging, rather than collapsing unrelated sessions.
+        assert_eq!(session_identity("hermes-session"), "hermes-session");
+    }
+
+    /// Unix seconds sort below every ISO string as text, which is what pushed 623
+    /// rows past `LIMIT 500` and made them look deleted.
+    #[test]
+    fn timestamps_normalize_to_one_comparable_format() {
+        let iso = normalize_timestamp("1780014673");
+        assert!(iso.starts_with("2026-"), "期望 RFC3339，得到 {iso}");
+        // Already-ISO values pass through untouched.
+        assert_eq!(
+            normalize_timestamp("2026-08-19T17:52:38+00:00"),
+            "2026-08-19T17:52:38+00:00"
+        );
+        assert_eq!(normalize_timestamp("  "), "");
+        // Ordering now works across both original formats.
+        assert!(
+            normalize_timestamp("1780014673") < normalize_timestamp("2026-08-19T00:00:00+00:00")
+        );
+    }
+
+    /// Two rows for one conversation must become one, keeping the richer title and
+    /// the widest date range. This is the case that made history look lost.
+    #[test]
+    fn consolidate_merges_duplicate_id_schemes() {
+        let store = HistoryStore::open_in_memory().unwrap();
+        let uuid = "019578a4-58eb-4c1c-8f46-c20c63bb598b";
+
+        // Written straight to the table, bypassing `upsert_session`: that path now
+        // merges on write, so it cannot produce the duplicate state this pass exists
+        // to repair. This reproduces what earlier versions actually left on disk —
+        // one conversation as a bare uuid with a Unix timestamp and no title, and
+        // again under a prefixed id with the real title.
+        let raw_insert = |id: &str, client: &str, title: &str, msgs: i64, ts: &str| {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO sessions (id, client, title, message_count, total_tokens, \
+                                           created_at, updated_at, raw_path) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, '/x.jsonl')",
+                    params![id, client, title, msgs, msgs * 100, ts],
+                )
+                .unwrap();
+        };
+        raw_insert(uuid, "codex", "Codex 会话 (019578a4)", 0, "1780014673");
+        raw_insert(
+            &format!("codex_{uuid}"),
+            "Codex",
+            "真实的第一条用户消息",
+            17,
+            "2026-08-19T17:52:38+00:00",
+        );
+
+        // Two rows for one conversation, which is the state users are sitting on.
+        assert_eq!(
+            store.list_summaries().unwrap().len(),
+            2,
+            "前置条件：应有两行重复"
+        );
+
+        let report = store.consolidate().unwrap();
+        let list = store.list_summaries().unwrap();
+
+        assert_eq!(list.len(), 1, "同一会话必须合并为一行，实际 {}", list.len());
+        let merged = &list[0];
+        assert_eq!(merged.title, "真实的第一条用户消息", "必须保留有内容的标题");
+        assert_eq!(merged.message_count, 17, "消息数取较大值");
+        assert_eq!(merged.client, "codex-cli", "客户端名必须归一化");
+        assert!(
+            merged.created_at.starts_with("2026-05-"),
+            "创建时间应取更早的那个，实际 {}",
+            merged.created_at
+        );
+        assert_eq!(
+            merged.updated_at, "2026-08-19T17:52:38+00:00",
+            "更新时间应取更晚的那个"
+        );
+        assert_eq!(report.sessions_after, 1);
+        assert!(report.duplicates_merged >= 1, "应报告合并了重复行");
+    }
+
+    /// Running the pass twice must not change anything the second time, since it runs
+    /// after every sync.
+    #[test]
+    fn consolidate_is_idempotent() {
+        let store = HistoryStore::open_in_memory().unwrap();
+        let uuid = "04a11c4c-8f73-4193-aeb9-880dea6faab6";
+        store
+            .upsert_session(&summary(uuid, "claude", "", 0, "1780016928"), "/a.jsonl")
+            .unwrap();
+        store
+            .upsert_session(
+                &summary(
+                    &format!("claude_{uuid}"),
+                    "Claude Code",
+                    "真实标题",
+                    9,
+                    "2026-08-19T16:04:43+00:00",
+                ),
+                "/b.jsonl",
+            )
+            .unwrap();
+
+        store.consolidate().unwrap();
+        let first = store.list_summaries().unwrap();
+        let second_report = store.consolidate().unwrap();
+        let second = store.list_summaries().unwrap();
+
+        assert_eq!(first.len(), second.len(), "重复运行不应改变行数");
+        assert_eq!(second_report.duplicates_merged, 0, "第二次不应再合并任何行");
+        assert_eq!(first[0].title, second[0].title);
+    }
+
+    /// Unrelated conversations must never be folded together, whatever their ids.
+    #[test]
+    fn consolidate_leaves_distinct_sessions_alone() {
+        let store = HistoryStore::open_in_memory().unwrap();
+        store
+            .upsert_session(
+                &summary(
+                    "019578a4-58eb-4c1c-8f46-c20c63bb598b",
+                    "codex",
+                    "会话甲",
+                    3,
+                    "2026-08-01T00:00:00+00:00",
+                ),
+                "/a.jsonl",
+            )
+            .unwrap();
+        store
+            .upsert_session(
+                &summary(
+                    "04a11c4c-8f73-4193-aeb9-880dea6faab6",
+                    "codex",
+                    "会话乙",
+                    4,
+                    "2026-08-02T00:00:00+00:00",
+                ),
+                "/b.jsonl",
+            )
+            .unwrap();
+
+        store.consolidate().unwrap();
+        assert_eq!(store.list_summaries().unwrap().len(), 2, "不同会话不得合并");
+    }
+
+    /// SQLite types values per row, not per column, and this database holds 623 rows
+    /// whose timestamps are INTEGER Unix seconds beside 387 holding ISO TEXT. Reading
+    /// such a column as `String` returns `InvalidColumnType`, and the read path used
+    /// `rows.flatten()`, so those rows were dropped without a word — the actual
+    /// mechanism behind "my history disappeared". Rows must survive either storage
+    /// type.
+    #[test]
+    fn rows_stored_as_integers_are_not_silently_dropped() {
+        let store = HistoryStore::open_in_memory().unwrap();
+
+        // NULL title and INTEGER timestamps, exactly as the legacy rows are stored.
+        store
+            .conn
+            .execute(
+                "INSERT INTO sessions (id, client, title, message_count, total_tokens, \
+                                       created_at, updated_at, raw_path) \
+                 VALUES ('019578a4-58eb-4c1c-8f46-c20c63bb598b', 'codex', NULL, 0, 0, \
+                         1780014673, 1780014673, '/legacy.jsonl')",
+                [],
+            )
+            .unwrap();
+        // A modern row alongside it.
+        store
+            .upsert_session(
+                &summary(
+                    "04a11c4c-8f73-4193-aeb9-880dea6faab6",
+                    "codex-cli",
+                    "新格式会话",
+                    5,
+                    "2026-08-19T17:52:38+00:00",
+                ),
+                "/modern.jsonl",
+            )
+            .unwrap();
+
+        let list = store.list_summaries().unwrap();
+        assert_eq!(
+            list.len(),
+            2,
+            "INTEGER 时间戳的行不得被丢弃，实际读到 {}",
+            list.len()
+        );
+
+        let legacy = list
+            .iter()
+            .find(|s| s.id.starts_with("019578a4"))
+            .expect("旧格式行必须能被读出");
+        assert!(
+            legacy.updated_at.starts_with("2026-"),
+            "旧行时间戳应转为 RFC3339，实际 {}",
+            legacy.updated_at
+        );
+
+        // And ordering has to hold across the two original storage types.
+        assert!(
+            list[0].updated_at >= list[1].updated_at,
+            "混合存储类型下排序仍须单调"
+        );
+
+        // consolidate() reads the same columns and must see both rows too.
+        let report = store.consolidate().unwrap();
+        assert_eq!(report.sessions_after, 2, "整合不得漏掉 INTEGER 行");
+        assert_eq!(report.timestamps_normalized, 1, "应修正那一行的时间格式");
+    }
+
+    /// Provenance answers "which provider did this run against", so it must not
+    /// rewrite sessions that already carry one — that would misattribute history
+    /// every time the user switched providers.
+    #[test]
+    fn stamping_provenance_never_overwrites_recorded_history() {
+        let store = HistoryStore::open_in_memory().unwrap();
+        store
+            .upsert_session(
+                &summary(
+                    "019578a4-58eb-4c1c-8f46-c20c63bb598b",
+                    "codex",
+                    "旧会话",
+                    2,
+                    "2026-08-01T00:00:00+00:00",
+                ),
+                "/a.jsonl",
+            )
+            .unwrap();
+
+        assert_eq!(
+            store
+                .stamp_provenance("codex-cli", "prof_a", "prov_a")
+                .unwrap(),
+            1,
+            "首次应写入归属"
+        );
+        assert_eq!(
+            store
+                .stamp_provenance("codex-cli", "prof_b", "prov_b")
+                .unwrap(),
+            0,
+            "已有归属的会话不得被改写"
+        );
+
+        let list = store.list_summaries().unwrap();
+        assert_eq!(list[0].provider_id.as_deref(), Some("prov_a"));
+        assert_eq!(list[0].profile_id.as_deref(), Some("prof_a"));
+    }
+
+    /// Filtering by client has to reach rows written under the old display-name
+    /// spelling, which is where "my Codex history vanished" came from.
+    #[test]
+    fn query_by_client_matches_legacy_spellings() {
+        let store = HistoryStore::open_in_memory().unwrap();
+        store
+            .upsert_session(
+                &summary(
+                    "019578a4-58eb-4c1c-8f46-c20c63bb598b",
+                    "Codex",
+                    "旧拼写",
+                    2,
+                    "2026-08-01T00:00:00+00:00",
+                ),
+                "/a.jsonl",
+            )
+            .unwrap();
+        store
+            .upsert_session(
+                &summary(
+                    "04a11c4c-8f73-4193-aeb9-880dea6faab6",
+                    "codex-cli",
+                    "新拼写",
+                    2,
+                    "2026-08-02T00:00:00+00:00",
+                ),
+                "/b.jsonl",
+            )
+            .unwrap();
+
+        let page = store
+            .query(&HistoryQuery {
+                client: Some("codex-cli".into()),
+                provider: None,
+                search: None,
+                date_from: None,
+                date_to: None,
+                page: 1,
+                page_size: 50,
+            })
+            .unwrap();
+        assert_eq!(page.total, 2, "两种拼写都应被 codex-cli 命中");
+    }
+
+    /// The list must not silently truncate; the old `LIMIT 500` is what hid rows.
+    #[test]
+    fn list_returns_more_than_the_old_five_hundred_limit() {
+        let store = HistoryStore::open_in_memory().unwrap();
+        for i in 0..640 {
+            // Distinct uuids so nothing merges.
+            let id = format!("{:08x}-0000-4000-8000-000000000000", i);
+            store
+                .upsert_session(
+                    &summary(&id, "codex", &format!("会话 {i}"), 1, "1780014673"),
+                    "/x.jsonl",
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            store.list_summaries().unwrap().len(),
+            640,
+            "不得截断到 500 条"
+        );
+    }
 
     #[test]
     fn test_memory_store() {
@@ -819,6 +1770,9 @@ mod tests {
             total_tokens: 1500,
             created_at: "2026-08-20T10:00:00Z".into(),
             updated_at: "2026-08-20T10:30:00Z".into(),
+            provider_id: None,
+            profile_id: None,
+            merged_from: 1,
         };
         store
             .upsert_session(&summary, "/path/to/file.jsonl")

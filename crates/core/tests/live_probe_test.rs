@@ -26,14 +26,15 @@ async fn test_chat_history_db() {
         stats.total_sessions, stats.total_messages, stats.total_tokens
     );
 
-    // Holds on an empty host too. `list_summaries` caps at 500 rows while the
-    // stats count the whole table, so they agree exactly only below the cap.
-    const SUMMARY_LIMIT: usize = 500;
-    let expected = stats.total_sessions.min(SUMMARY_LIMIT);
+    // The list used to be capped at 500 rows while the stats counted the whole
+    // table, and this assertion encoded that cap as intended behaviour. It was not:
+    // on a database holding 1010 rows the cap hid 623 of them, which is what "my
+    // history disappeared after switching providers" turned out to be. The two must
+    // now agree exactly, at any size.
     assert_eq!(
-        expected,
+        stats.total_sessions,
         list.len(),
-        "usage stats report {} sessions, so the summary list should hold {expected} (capped at {SUMMARY_LIMIT}), got {}",
+        "usage stats report {} sessions but the summary list holds {}; the list must not truncate",
         stats.total_sessions,
         list.len()
     );
