@@ -1,11 +1,61 @@
-use crate::state::ProfileState;
+use crate::state::{FailoverState, GatewayState, ProfileState};
 use polydeck_core::client_rules::RuleKind;
+use polydeck_core::tray_state::{TrayState, TrayStatus};
 use tauri::command;
 use tauri::State;
 
+/// Health as the tray would show it, derived from the running gateway and the
+/// failover chain.
+///
+/// Returned a constant `{"status": "idle"}` before, which never changed regardless
+/// of whether the gateway was up or an upstream had been circuit-broken.
 #[command]
-pub async fn ad_tray_status() -> Result<serde_json::Value, String> {
-    Ok(serde_json::json!({"status": "idle"}))
+pub async fn ad_tray_status(
+    gw: State<'_, GatewayState>,
+    pm: State<'_, ProfileState>,
+    failover: State<'_, FailoverState>,
+) -> Result<serde_json::Value, String> {
+    let running = gw.lock().await.as_ref().is_some_and(|s| s.is_running());
+
+    // No manager means failover is off, which is not an unhealthy state — only a
+    // manager that reports a tripped chain is.
+    let failover_ok = match failover.get().await {
+        Some(manager) => {
+            let status = manager.status().await;
+            !status.all_providers_failed && !status.on_backup
+        }
+        None => true,
+    };
+
+    let mut state = TrayState::new();
+    state.update_status(running, failover_ok);
+    state.active_profile = {
+        let pm_guard = pm.lock().await;
+        let names: Vec<String> = pm_guard
+            .bindings()
+            .into_iter()
+            .filter_map(|b| pm_guard.get_profile(&b.profile_id).map(|p| p.name))
+            .collect();
+        let mut unique: Vec<String> = Vec::new();
+        for name in names {
+            if !unique.contains(&name) {
+                unique.push(name);
+            }
+        }
+        (!unique.is_empty()).then(|| unique.join("、"))
+    };
+
+    let status = match state.status {
+        TrayStatus::Healthy => "healthy",
+        TrayStatus::Degraded => "degraded",
+        TrayStatus::Failed => "failed",
+        TrayStatus::Offline => "offline",
+    };
+    Ok(serde_json::json!({
+        "status": status,
+        "gatewayRunning": state.gateway_running,
+        "activeProfile": state.active_profile,
+    }))
 }
 
 #[command]

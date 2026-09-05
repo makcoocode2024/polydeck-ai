@@ -45,6 +45,10 @@ impl TrayState {
     }
 }
 
-pub fn render_status_icon(_status: TrayStatus) -> Vec<u8> {
-    vec![] // TODO: Generate tray icon based on status
+/// Not implemented: no per-status icon is generated yet.
+///
+/// Returns `None` rather than an empty `Vec<u8>`, which a caller would have handed
+/// to the tray as if it were a valid PNG.
+pub fn render_status_icon(_status: TrayStatus) -> Option<Vec<u8>> {
+    None
 }

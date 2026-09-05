@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { backend } from "@/services/backend";
 import { useAtom } from "jotai";
 import { themeAtom } from "@/state/theme";
-import type { DiagnosticReport, UpdateInfo, AutoLaunchStatus, ClientRuleStatus } from "@/domain/ops";
+import type { DiagnosticReport, UpdateInfo, AutoLaunchStatus, ClientRuleStatus, LogEntry } from "@/domain/ops";
 import type { ProxyStatus } from "@/domain/proxy";
 import {
   Settings,
@@ -30,14 +30,18 @@ import {
 
 export default function SettingsPage() {
   const [theme, setTheme] = useAtom(themeAtom);
-  const [version, setVersion] = useState("2.0.0");
+  // Filled by ad_get_version; no baked-in number to drift from Cargo.toml.
+  const [version, setVersion] = useState("");
   const [autolaunch, setAutolaunch] = useState<AutoLaunchStatus | null>(null);
+  const [autolaunchError, setAutolaunchError] = useState<string | null>(null);
+  const [savingAutolaunch, setSavingAutolaunch] = useState(false);
   const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticReport | null>(null);
   const [runningDiag, setRunningDiag] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
-  const [logs, setLogs] = useState<string[]>([]);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logsError, setLogsError] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
   const [loadingLogs, setLoadingLogs] = useState(false);
   const [importable, setImportable] = useState<string[]>([]);
@@ -52,7 +56,15 @@ export default function SettingsPage() {
 
   useEffect(() => {
     backend.getVersion().then(setVersion).catch(() => {});
-    backend.autolaunchStatus().then(setAutolaunch).catch(() => {});
+    backend
+      .autolaunchStatus()
+      .then((status) => {
+        setAutolaunch(status);
+        setAutolaunchError(null);
+      })
+      .catch((err) =>
+        setAutolaunchError(err instanceof Error ? err.message : String(err)),
+      );
     backend.detectProxy().then(setProxyStatus).catch(() => {});
     backend.detectImportable().then(setImportable).catch(() => []);
     // The toggle stays disabled until this resolves, so a swallowed failure
@@ -102,13 +114,19 @@ export default function SettingsPage() {
   };
 
   const handleToggleAutolaunch = async () => {
-    if (!autolaunch) return;
-    const nextState = !autolaunch.enabled;
+    if (!autolaunch || !autolaunch.supported) return;
+    setSavingAutolaunch(true);
     try {
-      await backend.setAutolaunch(nextState);
-      setAutolaunch({ ...autolaunch, enabled: nextState });
+      await backend.setAutolaunch(!autolaunch.enabled);
+      // Re-read rather than assuming the write took: the previous version set the
+      // toggle optimistically over a backend that only logged, so it showed
+      // "enabled" until the next restart proved otherwise.
+      setAutolaunch(await backend.autolaunchStatus());
+      setAutolaunchError(null);
     } catch (err) {
-      alert(`设置开机自启失败: ${err instanceof Error ? err.message : String(err)}`);
+      setAutolaunchError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingAutolaunch(false);
     }
   };
 
@@ -139,11 +157,14 @@ export default function SettingsPage() {
   const handleLoadLogs = async () => {
     setLoadingLogs(true);
     try {
-      const data = await backend.getLogs(100);
-      setLogs(data);
+      setLogs(await backend.getLogs(100));
+      setLogsError(null);
       setShowLogs(true);
     } catch (err) {
-      console.error("Failed to get logs:", err);
+      // The log view is the thing users open when something else already broke,
+      // so a silent console.error was the wrong place for this.
+      setLogsError(err instanceof Error ? err.message : String(err));
+      setShowLogs(true);
     } finally {
       setLoadingLogs(false);
     }
@@ -228,8 +249,20 @@ export default function SettingsPage() {
             <div className="flex items-center justify-between">
               <CardTitle className="text-base font-semibold">开机启动与后台托管</CardTitle>
               {autolaunch && (
-                <Badge variant={autolaunch.enabled ? "success" : "secondary"}>
-                  {autolaunch.enabled ? "已启用" : "已关闭"}
+                <Badge
+                  variant={
+                    !autolaunch.supported
+                      ? "secondary"
+                      : autolaunch.enabled
+                        ? "success"
+                        : "secondary"
+                  }
+                >
+                  {!autolaunch.supported
+                    ? "当前平台不支持"
+                    : autolaunch.enabled
+                      ? "已启用"
+                      : "已关闭"}
                 </Badge>
               )}
             </div>
@@ -238,14 +271,31 @@ export default function SettingsPage() {
             <p className="text-muted-foreground">
               系统登录时自动启动并在后台托盘静默运行网关服务。
             </p>
+            {autolaunch?.command && (
+              <p className="text-muted-foreground font-mono text-[11px] break-all">
+                登录时执行：{autolaunch.command}
+              </p>
+            )}
+            {autolaunchError && (
+              <p className="text-destructive" role="alert">
+                {autolaunchError}
+              </p>
+            )}
             <Button
               variant={autolaunch?.enabled ? "outline" : "default"}
               size="sm"
               onClick={handleToggleAutolaunch}
+              disabled={!autolaunch?.supported || savingAutolaunch}
               className="text-xs w-full"
             >
               <Power className="h-3.5 w-3.5 mr-1.5" />
-              {autolaunch?.enabled ? "禁用开机自启" : "启用开机自启"}
+              {!autolaunch?.supported
+                ? "当前平台暂不支持"
+                : savingAutolaunch
+                  ? "正在写入…"
+                  : autolaunch?.enabled
+                    ? "禁用开机自启"
+                    : "启用开机自启"}
             </Button>
           </CardContent>
         </Card>
@@ -656,11 +706,29 @@ export default function SettingsPage() {
           </CardHeader>
           <CardContent>
             <div className="bg-muted/80 p-3 rounded-lg font-mono text-[11px] max-h-60 overflow-y-auto space-y-1">
-              {logs.length === 0 ? (
+              {logsError ? (
+                <div className="text-destructive text-center py-4" role="alert">
+                  读取日志失败：{logsError}
+                </div>
+              ) : logs.length === 0 ? (
                 <div className="text-muted-foreground text-center py-4">暂无日志记录</div>
               ) : (
-                logs.map((line, idx) => (
-                  <div key={idx} className="leading-tight text-foreground/90">{line}</div>
+                logs.map((entry, idx) => (
+                  <div key={idx} className="leading-tight text-foreground/90">
+                    <span className="text-muted-foreground">{entry.timestamp}</span>{" "}
+                    <span
+                      className={
+                        entry.level === "ERROR"
+                          ? "text-destructive"
+                          : entry.level === "WARN"
+                            ? "text-amber-500"
+                            : "text-muted-foreground"
+                      }
+                    >
+                      [{entry.level}]
+                    </span>{" "}
+                    {entry.message}
+                  </div>
                 ))
               )}
             </div>

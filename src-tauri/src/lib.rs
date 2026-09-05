@@ -8,7 +8,7 @@ mod tray;
 
 use polydeck_core::profile::ProfileManager;
 use polydeck_inject::InjectionManager;
-use state::{GatewayState, InjectState, ProfileState};
+use state::{FailoverState, GatewayState, InjectState, ProfileState};
 use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::Mutex;
@@ -30,12 +30,15 @@ pub fn run() {
     let gateway_state: GatewayState = Arc::new(Mutex::new(None));
     let inject_state: InjectState =
         Arc::new(Mutex::new(InjectionManager::new(INJECT_SCRIPT_SOURCE)));
+    // Empty until a bound profile enables failover; `refresh_gateway` fills it.
+    let failover_state: FailoverState = Arc::new(polydeck_gateway::FailoverSlot::new());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(profile_state)
         .manage(gateway_state)
         .manage(inject_state)
+        .manage(failover_state)
         .setup(|app| {
             // Setup system tray
             let _ = tray::create_tray(app.handle());
@@ -43,9 +46,10 @@ pub fn run() {
             // Auto-start gateway if active profile has gateway enabled
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                if let (Some(pm), Some(gw)) = (
+                if let (Some(pm), Some(gw), Some(failover)) = (
                     app_handle.try_state::<ProfileState>(),
                     app_handle.try_state::<GatewayState>(),
+                    app_handle.try_state::<FailoverState>(),
                 ) {
                     // A migrated state.json has bindings, but the clients' config
                     // files still carry the pre-binding bearer that the gateway will
@@ -83,7 +87,7 @@ pub fn run() {
                         }
                     }
 
-                    if let Err(e) = crate::commands::gateway::refresh_gateway(&gw, &pm).await {
+                    if let Err(e) = crate::commands::gateway::refresh_gateway(&gw, &pm, &failover).await {
                         tracing::warn!("启动时网关未能就绪：{e}");
                     }
                 }
@@ -135,6 +139,8 @@ pub fn run() {
             commands::extensions::ad_list_prompts,
             // history
             commands::history::ad_query_history,
+            commands::history::ad_consolidate_history,
+            commands::history::ad_sync_history,
             commands::history::ad_export_history,
             commands::history::ad_create_encrypted_backup,
             commands::history::ad_restore_encrypted_backup,

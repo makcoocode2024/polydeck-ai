@@ -48,9 +48,15 @@ impl UpdateStore {
         )
     }
 
+    /// Not implemented.
+    ///
+    /// Returned `Ok(None)` before, which the Settings page renders as "已是最新
+    /// 稳定版本" — a claim nothing had checked. An error is the honest answer until
+    /// this queries the releases API.
     pub async fn check_for_update(&mut self) -> AppResult<Option<String>> {
-        // TODO: Check GitHub releases API
         self.config.last_check = Some(chrono::Utc::now().to_rfc3339());
-        Ok(None)
+        Err(crate::error::AppError::Internal(
+            "自动更新检查尚未实现，请前往 GitHub Releases 手动查看".to_string(),
+        ))
     }
 }

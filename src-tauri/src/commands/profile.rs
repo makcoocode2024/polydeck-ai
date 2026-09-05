@@ -1,4 +1,4 @@
-use crate::state::{GatewayState, ProfileState};
+use crate::state::{FailoverState, GatewayState, ProfileState};
 use polydeck_core::profile::Profile;
 use tauri::{command, State};
 
@@ -62,6 +62,7 @@ pub async fn ad_create_profile(
 pub async fn ad_update_profile(
     pm: State<'_, ProfileState>,
     gw: State<'_, GatewayState>,
+    failover: State<'_, FailoverState>,
     id: String,
     update: polydeck_core::profile::ProfileUpdate,
 ) -> Result<Profile, String> {
@@ -84,7 +85,7 @@ pub async fn ad_update_profile(
     };
 
     if is_active {
-        let _ = crate::commands::gateway::refresh_gateway(&gw, &pm).await;
+        let _ = crate::commands::gateway::refresh_gateway(&gw, &pm, &failover).await;
     }
 
     Ok(updated)
@@ -113,6 +114,7 @@ pub async fn ad_delete_profile(pm: State<'_, ProfileState>, id: String) -> Resul
 pub async fn ad_activate_profile(
     pm: State<'_, ProfileState>,
     gw: State<'_, GatewayState>,
+    failover: State<'_, FailoverState>,
     id: String,
     clients: Option<Vec<String>>,
 ) -> Result<polydeck_core::profile_switch::SwitchResult, String> {
@@ -130,11 +132,48 @@ pub async fn ad_activate_profile(
         (result, active)
     };
 
+    // Record which provider these clients are now running against, and fold any
+    // duplicate session rows together while doing it.
+    //
+    // Without this, history carried no provenance at all, so a session indexed
+    // before a provider switch was indistinguishable from one after it — the reason
+    // rotating a key looked like it discarded conversations. Stamping only fills rows
+    // that have no provider yet, so past conversations keep the provider they
+    // actually ran against.
+    if let Some(profile) = &active_opt {
+        let provider_id = profile
+            .providers
+            .iter()
+            .find(|p| p.is_primary)
+            .or_else(|| profile.providers.first())
+            .map(|p| p.id.clone());
+        if let Some(provider_id) = provider_id {
+            let bound = result.clients_written.clone();
+            let profile_id = profile.id.clone();
+            // Off the command path: indexing walks every session file, which is slow
+            // enough that activation should not wait on it. A failure here costs
+            // provenance on new rows, not the switch itself.
+            tauri::async_runtime::spawn(async move {
+                match polydeck_core::chat_history::HistoryStore::open() {
+                    Ok(store) => {
+                        for client in &bound {
+                            if let Err(e) =
+                                store.stamp_provenance(client, &profile_id, &provider_id)
+                            {
+                                tracing::warn!("{client} 的会话归属写入失败：{e}");
+                            }
+                        }
+                    }
+                    Err(e) => tracing::warn!("无法打开历史库以记录会话归属：{e}"),
+                }
+            });
+        }
+    }
+
     // Unconditional: the profile just activated may have the gateway off while
     // another bound profile has it on, so the listener's fate depends on the whole
     // binding set rather than on this one profile.
-    let _ = active_opt;
-    if let Err(e) = crate::commands::gateway::refresh_gateway(&gw, &pm).await {
+    if let Err(e) = crate::commands::gateway::refresh_gateway(&gw, &pm, &failover).await {
         result.warnings.push(format!("网关未能同步：{e}"));
     }
 
@@ -151,6 +190,7 @@ pub async fn ad_activate_profile(
 pub async fn ad_deactivate_clients(
     pm: State<'_, ProfileState>,
     gw: State<'_, GatewayState>,
+    failover: State<'_, FailoverState>,
     clients: Vec<String>,
 ) -> Result<Vec<String>, String> {
     let released = {
@@ -161,7 +201,7 @@ pub async fn ad_deactivate_clients(
     };
     // Drop the released clients' routes, so their old token stops working rather
     // than continuing to reach the profile they were just unbound from.
-    let _ = crate::commands::gateway::refresh_gateway(&gw, &pm).await;
+    let _ = crate::commands::gateway::refresh_gateway(&gw, &pm, &failover).await;
     Ok(released)
 }
 

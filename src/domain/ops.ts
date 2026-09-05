@@ -24,6 +24,18 @@ export interface UpdateInfo {
 export interface AutoLaunchStatus {
   enabled: boolean;
   method: string;
+  /** False where no implementation exists, so the toggle can be disabled. */
+  supported: boolean;
+  /** The command registered to run at logon, when enabled. */
+  command: string | null;
+}
+
+/** One line from the rotated JSON Lines log files, already redacted. */
+export interface LogEntry {
+  timestamp: string;
+  level: string;
+  message: string;
+  target: string;
 }
 
 /** State of one rule in one client's global instructions file. */

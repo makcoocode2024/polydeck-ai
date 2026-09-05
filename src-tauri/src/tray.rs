@@ -1,6 +1,6 @@
 //! System tray implementation for AI Deck
 
-use crate::state::{GatewayState, ProfileState};
+use crate::state::{FailoverState, GatewayState, ProfileState};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
@@ -145,9 +145,10 @@ pub fn handle_menu_event(app: &AppHandle, menu_id: &str) {
             let profile_id = s.trim_start_matches("switch_profile:").to_string();
             let app_handle = app.clone();
             tauri::async_runtime::spawn(async move {
-                if let (Some(pm), Some(gw)) = (
+                if let (Some(pm), Some(gw), Some(failover)) = (
                     app_handle.try_state::<ProfileState>(),
                     app_handle.try_state::<GatewayState>(),
+                    app_handle.try_state::<FailoverState>(),
                 ) {
                     let mut pm_guard = pm.lock().await;
                     // The tray row means "put this profile's own clients on it",
@@ -164,7 +165,8 @@ pub fn handle_menu_event(app: &AppHandle, menu_id: &str) {
                             // Release the lock before reconciling: `refresh_gateway`
                             // takes it itself, and holding it here would deadlock.
                             drop(pm_guard);
-                            let _ = crate::commands::gateway::refresh_gateway(&gw, &pm).await;
+                            let _ = crate::commands::gateway::refresh_gateway(&gw, &pm, &failover)
+                                .await;
                         }
                     }
                 }
