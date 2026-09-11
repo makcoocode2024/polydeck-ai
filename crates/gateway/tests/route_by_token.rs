@@ -132,6 +132,7 @@ fn upstream(base_url: &str, token: &str, mode: ResponsesMode) -> UpstreamConfig 
         local_token: token.into(),
         max_price_per_request: None,
         responses_mode: mode,
+        relay_chat_compat: Default::default(),
         rate_limit: Default::default(),
         default_effort_level: None,
         thinking_support: polydeck_core::types::ThinkingSupport::Unprobed,

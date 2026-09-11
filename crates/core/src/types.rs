@@ -118,6 +118,38 @@ impl ThinkingSupport {
     }
 }
 
+/// How to obtain a *non-streaming* Chat Completions answer from an upstream.
+///
+/// Many relays return a malformed body for a non-streaming `/chat/completions`
+/// call — fields missing, or SSE frames served as a JSON body — while their
+/// streaming path is correct. `Buffered` asks for a stream and reassembles it
+/// into the JSON body the client expects.
+///
+/// Written by `protocol::probe`, like [`CodexToolCompat`], so the user never has
+/// to know this exists; the profile editor exposes it only so a wrong verdict
+/// can be corrected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum RelayChatCompat {
+    /// Not probed. Sends the plain non-streaming request, so an upstream that
+    /// was never measured is never put behind the workaround on a guess.
+    #[default]
+    Auto,
+    /// Ask for a stream and reassemble it into a non-streaming body.
+    Buffered,
+    /// Send the plain non-streaming request.
+    Direct,
+}
+
+impl RelayChatCompat {
+    /// Whether a non-streaming Chat Completions request should be sent as a
+    /// stream and buffered back.
+    pub fn should_buffer(self) -> bool {
+        matches!(self, Self::Buffered)
+    }
+}
+
 /// Codex tool compatibility level (from Provider Deck).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -138,6 +170,25 @@ pub enum CodexToolCompat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only `Buffered` engages the workaround. An unprobed provider (`Auto`)
+    /// must not be put behind it on a guess.
+    #[test]
+    fn only_buffered_engages_the_workaround() {
+        assert!(RelayChatCompat::Buffered.should_buffer());
+        assert!(!RelayChatCompat::Direct.should_buffer());
+        assert!(!RelayChatCompat::Auto.should_buffer());
+    }
+
+    #[test]
+    fn relay_chat_compat_defaults_to_auto() {
+        assert_eq!(RelayChatCompat::default(), RelayChatCompat::Auto);
+        // Serialised shape is what the profile JSON and the TS bindings carry.
+        assert_eq!(
+            serde_json::to_string(&RelayChatCompat::Buffered).unwrap(),
+            r#""buffered""#
+        );
+    }
 
     #[test]
     fn test_protocol_kind_serde() {

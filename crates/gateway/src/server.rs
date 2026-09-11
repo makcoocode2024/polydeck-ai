@@ -129,7 +129,8 @@ impl GatewayServer {
                         route.upstream.api_key.clone(),
                         self.config.timeout,
                         self.config.max_retries,
-                    )?;
+                    )?
+                    .with_relay_chat_compat(route.upstream.relay_chat_compat);
                     let state = Arc::new(AppState {
                         upstream,
                         rewriter: ModelRewriter::new(&route.model_rewrites)?,
@@ -227,6 +228,7 @@ mod tests {
             rate_limit: polydeck_core::profile::RateLimitSettings::default(),
             default_effort_level: None,
             thinking_support: polydeck_core::types::ThinkingSupport::default(),
+            relay_chat_compat: Default::default(),
         }
     }
 

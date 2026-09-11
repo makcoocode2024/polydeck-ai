@@ -13,6 +13,13 @@ export type ReasoningConfidence = "unknown" | "declared" | "validated" | "verifi
  * cannot be persisted or replayed, so the client fails the whole turn.
  */
 export type ThinkingSupport = "unprobed" | "signed" | "unsigned" | "absent";
+
+/**
+ * How to get a non-streaming Chat Completions answer out of an upstream.
+ * Written by the probe: `buffered` where the upstream's non-streaming body came
+ * back malformed, `direct` where it was fine, `auto` when never probed.
+ */
+export type RelayChatCompat = "auto" | "buffered" | "direct";
 export type Confidence = "unknown" | "low" | "medium" | "high" | "certain";
 
 export interface ModelInfo {
@@ -30,6 +37,7 @@ export interface ProbeResult {
   codexCompat: CodexToolCompat;
   baseUrl: string;
   supportsStreaming: boolean;
+  relayChatCompat?: RelayChatCompat;
 }
 
 export interface ChatTestResult {
@@ -66,6 +74,11 @@ export interface ProviderConfig {
   codexCompat: CodexToolCompat;
   reasoningConfidence: ReasoningConfidence;
   thinkingSupport?: ThinkingSupport;
+  /**
+   * Non-streaming Chat Completions handling for this upstream. The probe sets
+   * it; the profile editor exposes it only so a wrong verdict can be corrected.
+   */
+  relayChatCompat?: RelayChatCompat;
   acceptInvalidCerts: boolean;
   maxPricePerRequest: number | null;
   rateLimit?: RateLimitSettings;

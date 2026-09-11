@@ -18,6 +18,11 @@ pub struct ProviderConfig {
     pub base_url: String,
     pub api_key: String,
     pub default_model: String,
+    /// Carried through so a failover target gets the same relay workaround its
+    /// profile was probed into; without it a failover would silently drop back
+    /// to the plain non-streaming request this provider cannot answer.
+    #[serde(default)]
+    pub relay_chat_compat: polydeck_core::types::RelayChatCompat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,7 +178,8 @@ impl FailoverManager {
                     provider.api_key.clone(),
                     Duration::from_secs(120),
                     0,
-                )?,
+                )?
+                .with_relay_chat_compat(provider.relay_chat_compat),
             );
             health.insert(
                 provider.id.clone(),
@@ -554,6 +560,7 @@ mod tests {
             base_url: "http://127.0.0.1:9".into(),
             api_key: "k".into(),
             default_model: "m".into(),
+            relay_chat_compat: Default::default(),
         }
     }
 

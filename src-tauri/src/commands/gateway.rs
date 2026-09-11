@@ -64,6 +64,7 @@ pub fn build_gateway_config(
             rate_limit: primary.rate_limit.clone(),
             default_effort_level: primary.default_effort_level.clone(),
             thinking_support: primary.thinking_support,
+            relay_chat_compat: primary.relay_chat_compat,
         },
         polydeck_gateway::model_rewrite::generate_provider_model_rewrites_with_overrides(
             &primary.models,
@@ -155,6 +156,7 @@ pub async fn refresh_gateway(
             rate_limit: Default::default(),
             default_effort_level: None,
             thinking_support: Default::default(),
+            relay_chat_compat: Default::default(),
         },
         vec![],
     );
@@ -239,6 +241,7 @@ fn build_failover_manager(
             base_url: p.base_url.clone(),
             api_key: api_key.clone(),
             default_model: p.default_model.clone(),
+            relay_chat_compat: p.relay_chat_compat,
         };
 
     let primary = profile

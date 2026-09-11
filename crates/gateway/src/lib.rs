@@ -14,6 +14,7 @@ pub mod replay;
 pub mod router;
 pub mod server;
 
+pub use client::{should_buffer_chat, uses_custom_openai_base_url};
 pub use config::{GatewayConfig, ModelRewriteRule, ResponsesMode, RouteConfig, UpstreamConfig};
 pub use failover::{
     FailoverEvent, FailoverManager, FailoverOptions, FailoverSlot, FailoverStatus, HealthStatus,

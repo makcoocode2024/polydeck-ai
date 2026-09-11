@@ -1,7 +1,9 @@
 //! Built-in profile templates for common providers.
 
 use crate::profile::{ProfileCreate, ProviderConfig};
-use crate::types::{CodexToolCompat, ProtocolKind, ReasoningConfidence, ThinkingSupport};
+use crate::types::{
+    CodexToolCompat, ProtocolKind, ReasoningConfidence, RelayChatCompat, ThinkingSupport,
+};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -76,6 +78,9 @@ fn agnes_provider(id: &str, name: &str, base_url: &str) -> ProviderConfig {
         // all and so reports `Absent`; either way the gate stays shut, and a real
         // probe overwrites this seed value.
         thinking_support: ThinkingSupport::Unsigned,
+        // Seed value: a real probe overwrites this. `Auto` sends the plain
+        // non-streaming request, which is the safe assumption for a template.
+        relay_chat_compat: RelayChatCompat::Auto,
         accept_invalid_certs: false,
         max_price_per_request: None,
         rate_limit: crate::profile::RateLimitSettings {
@@ -111,6 +116,7 @@ pub fn builtin_templates() -> Vec<ProfileTemplate> {
                 codex_compat: CodexToolCompat::ResponsesCustom,
                 reasoning_confidence: ReasoningConfidence::Unknown,
                 thinking_support: ThinkingSupport::Unprobed,
+                relay_chat_compat: RelayChatCompat::Auto,
                 accept_invalid_certs: false,
                 max_price_per_request: None,
                 rate_limit: crate::profile::RateLimitSettings::default(),
@@ -139,6 +145,7 @@ pub fn builtin_templates() -> Vec<ProfileTemplate> {
                 codex_compat: CodexToolCompat::ResponsesCustom,
                 reasoning_confidence: ReasoningConfidence::Unknown,
                 thinking_support: ThinkingSupport::Unprobed,
+                relay_chat_compat: RelayChatCompat::Auto,
                 accept_invalid_certs: false,
                 max_price_per_request: None,
                 rate_limit: crate::profile::RateLimitSettings::default(),
@@ -167,6 +174,7 @@ pub fn builtin_templates() -> Vec<ProfileTemplate> {
                 codex_compat: CodexToolCompat::Unknown,
                 reasoning_confidence: ReasoningConfidence::Unknown,
                 thinking_support: ThinkingSupport::Unprobed,
+                relay_chat_compat: RelayChatCompat::Auto,
                 accept_invalid_certs: false,
                 max_price_per_request: None,
                 rate_limit: crate::profile::RateLimitSettings::default(),
@@ -195,6 +203,7 @@ pub fn builtin_templates() -> Vec<ProfileTemplate> {
                 codex_compat: CodexToolCompat::ChatFunction,
                 reasoning_confidence: ReasoningConfidence::Unknown,
                 thinking_support: ThinkingSupport::Unprobed,
+                relay_chat_compat: RelayChatCompat::Auto,
                 accept_invalid_certs: false,
                 max_price_per_request: None,
                 rate_limit: crate::profile::RateLimitSettings::default(),
@@ -236,6 +245,7 @@ pub fn builtin_templates() -> Vec<ProfileTemplate> {
                 codex_compat: CodexToolCompat::ChatFunction,
                 reasoning_confidence: ReasoningConfidence::Unknown,
                 thinking_support: ThinkingSupport::Unprobed,
+                relay_chat_compat: RelayChatCompat::Auto,
                 accept_invalid_certs: false,
                 max_price_per_request: None,
                 rate_limit: crate::profile::RateLimitSettings::default(),

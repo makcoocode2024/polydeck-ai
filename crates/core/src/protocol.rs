@@ -5,7 +5,7 @@
 //! on real HTTP responses — never inferred from model names.
 
 use crate::error::{AppError, AppResult};
-use crate::types::{CodexToolCompat, Confidence, ProtocolKind};
+use crate::types::{CodexToolCompat, Confidence, ProtocolKind, RelayChatCompat};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -22,6 +22,10 @@ pub struct ProbeResult {
     pub supports_streaming: bool,
     #[serde(default)]
     pub supports_1m_context: Option<bool>,
+    /// How to get a non-streaming Chat Completions answer out of this upstream,
+    /// as measured by [`probe_relay_chat_compat`].
+    #[serde(default)]
+    pub relay_chat_compat: RelayChatCompat,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -256,6 +260,22 @@ pub async fn probe(
         None
     };
 
+    let relay_chat_compat = match models.first() {
+        Some(first_model) => {
+            let verdict = probe_relay_chat_compat(&client, &url, api_key, &first_model.id).await;
+            match verdict {
+                RelayChatCompat::Buffered => evidence
+                    .push("非流式 /chat/completions 返回不规范，网关将改用流式缓冲后拼装".into()),
+                RelayChatCompat::Direct => {
+                    evidence.push("非流式 /chat/completions 返回正常".into())
+                }
+                RelayChatCompat::Auto => {}
+            }
+            verdict
+        }
+        None => RelayChatCompat::Auto,
+    };
+
     Ok(ProbeResult {
         protocol,
         confidence,
@@ -265,7 +285,70 @@ pub async fn probe(
         base_url: url,
         supports_streaming: true,
         supports_1m_context,
+        relay_chat_compat,
     })
+}
+
+/// Whether a plain non-streaming `/chat/completions` call yields a usable body.
+///
+/// Relays that fail this send back an SSE body for a non-streaming request, or
+/// JSON with no reachable `choices[0].message.content`. Either way the SDKs and
+/// this gateway's own parser cannot read the answer, and the fix is to ask for a
+/// stream and reassemble it — which is what `Buffered` switches on.
+///
+/// A transport failure or a non-2xx status returns `Auto` rather than
+/// `Buffered`: nothing was learned about the body shape, and engaging the
+/// workaround on an unrelated failure (bad key, model not found) would put a
+/// healthy upstream behind it.
+async fn probe_relay_chat_compat(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+) -> RelayChatCompat {
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{ "role": "user", "content": "hi" }],
+        "max_tokens": 4,
+        "stream": false,
+    });
+    let Ok(response) = client
+        .post(format!("{base_url}/v1/chat/completions"))
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+    else {
+        return RelayChatCompat::Auto;
+    };
+    if !response.status().is_success() {
+        return RelayChatCompat::Auto;
+    }
+    let Ok(raw) = response.text().await else {
+        return RelayChatCompat::Auto;
+    };
+    // SSE frames in answer to `stream: false` is the clearest failure: the body
+    // is a stream no non-streaming parser will read.
+    if raw.lines().any(|line| line.starts_with("data:")) {
+        return RelayChatCompat::Buffered;
+    }
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return RelayChatCompat::Buffered;
+    };
+    // Tool calls count as a usable answer even with empty content.
+    let has_content = parsed
+        .pointer("/choices/0/message/content")
+        .and_then(|c| c.as_str())
+        .is_some_and(|text| !text.is_empty());
+    let has_tool_calls = parsed
+        .pointer("/choices/0/message/tool_calls")
+        .and_then(|c| c.as_array())
+        .is_some_and(|calls| !calls.is_empty());
+    if has_content || has_tool_calls {
+        RelayChatCompat::Direct
+    } else {
+        RelayChatCompat::Buffered
+    }
 }
 
 /// Perform a real conversation test with a live model.

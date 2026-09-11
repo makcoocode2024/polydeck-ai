@@ -5,7 +5,14 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { backend } from "@/services/backend";
 import type { DetectedClient } from "@/domain/client";
-import type { ModelInfo, ProviderConfig, ProtocolKind, CodexToolCompat, ChatTestResult } from "@/domain/profile";
+import type {
+  ModelInfo,
+  ProviderConfig,
+  ProtocolKind,
+  CodexToolCompat,
+  RelayChatCompat,
+  ChatTestResult,
+} from "@/domain/profile";
 import {
   AGNES_CONSOLE_URL,
   AGNES_DEFAULT_MODEL,
@@ -77,6 +84,8 @@ export default function QuickSetupPage() {
 
   const [currentProtocol, setCurrentProtocol] = useState<ProtocolKind>("openai");
   const [codexCompat, setCodexCompat] = useState<CodexToolCompat>("responses_custom");
+  // Probed, not chosen: the relay's non-streaming Chat Completions verdict.
+  const [relayChatCompat, setRelayChatCompat] = useState<RelayChatCompat>("auto");
   const [gatewayEnabled, setGatewayEnabled] = useState<boolean>(true);
   const [gatewayReason, setGatewayReason] = useState<string>(
     "本地网关提供统一端口转发、协议转译、多客户端配置分发与凭据托管"
@@ -254,6 +263,9 @@ export default function QuickSetupPage() {
         if (probeRes.codexCompat && probeRes.codexCompat !== "unknown") {
           setCodexCompat(probeRes.codexCompat);
         }
+        if (probeRes.relayChatCompat && probeRes.relayChatCompat !== "auto") {
+          setRelayChatCompat(probeRes.relayChatCompat);
+        }
 
         // Smart gateway decision
         if (probeRes.codexCompat === "chat_function") {
@@ -323,6 +335,9 @@ export default function QuickSetupPage() {
       setCurrentProtocol(probeRes.protocol);
       if (probeRes.codexCompat && probeRes.codexCompat !== "unknown") {
         setCodexCompat(probeRes.codexCompat);
+      }
+      if (probeRes.relayChatCompat && probeRes.relayChatCompat !== "auto") {
+        setRelayChatCompat(probeRes.relayChatCompat);
       }
 
       if (codexNeedsGateway(probeRes.codexCompat)) {
@@ -419,6 +434,7 @@ export default function QuickSetupPage() {
           models: usableIds.length > 0 ? usableIds : [chosenModel],
           isPrimary: true,
           codexCompat,
+          relayChatCompat,
           reasoningConfidence: "validated",
           acceptInvalidCerts: false,
           maxPricePerRequest: null,

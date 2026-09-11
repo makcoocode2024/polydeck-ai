@@ -91,6 +91,11 @@ pub struct UpstreamConfig {
     /// measures the OpenAI `reasoning_effort` path.
     #[serde(default)]
     pub thinking_support: polydeck_core::types::ThinkingSupport,
+    /// How to get a non-streaming Chat Completions answer out of this upstream,
+    /// as probed into the provider's profile. Only the OpenAI Chat Completions
+    /// path reads it; the Anthropic path is unaffected.
+    #[serde(default)]
+    pub relay_chat_compat: polydeck_core::types::RelayChatCompat,
 }
 
 /// How `ModelRewriteRule::from` should be interpreted.
