@@ -539,26 +539,29 @@ pub fn chat_to_response(chat: &Value, tools: &ToolMap) -> Result<Value, AdapterE
     // non-standard `reasoning_content` field (DeepSeek's convention, also used by
     // Agnes and QwQ).
     //
-    // Folded into the message text rather than emitted as a `reasoning` item, for
-    // the same reason as the streaming path: Codex sends
+    // An item of its own does not survive: Codex sends
     // include:["reasoning.encrypted_content"] and discards reasoning items that
-    // lack that blob, so an item here is dropped and the thinking never reaches
-    // the replayed history. Keeping both paths on the same shape also means a
-    // client cannot see the thinking appear or vanish depending on `stream`.
+    // lack that blob, so the thinking never reaches the replayed history.
+    //
+    // It is therefore folded into the message text, but only when the turn has no
+    // content of its own — the same rule as `StreamAdapter::finish`, so a client
+    // cannot see the thinking appear or vanish depending on `stream`. Folding it in
+    // alongside real content buried every answer on a reasoning model.
+    let content = message
+        .get("content")
+        .and_then(Value::as_str)
+        .filter(|content| !content.is_empty());
     let reasoning = message
         .get("reasoning_content")
         .and_then(Value::as_str)
         .filter(|reasoning| !reasoning.is_empty())
+        .filter(|_| content.is_none())
         .map(|reasoning| {
             format!(
                 "{REASONING_OPEN}\n{}\n{REASONING_CLOSE}\n\n",
                 reasoning.trim()
             )
         });
-    let content = message
-        .get("content")
-        .and_then(Value::as_str)
-        .filter(|content| !content.is_empty());
     if reasoning.is_some() || content.is_some() {
         let text = format!(
             "{}{}",
@@ -730,7 +733,8 @@ impl StreamAdapter {
         events
     }
 
-    /// Move buffered `reasoning_content` into the assistant message text.
+    /// Move buffered `reasoning_content` into the assistant message text, as a
+    /// last resort for a turn that produced nothing else.
     ///
     /// Emitting it as a proper `reasoning` output item was tried first and does
     /// not survive: Codex sends `include: ["reasoning.encrypted_content"]` and
@@ -739,16 +743,18 @@ impl StreamAdapter {
     /// Measured over a 12-turn session — the gateway emitted 39 reasoning deltas
     /// and Codex stored `reasoning: 0`.
     ///
-    /// Dropping it is not free either. The client then persists an assistant
-    /// message holding only the `"\n\n"` that preceded the thinking and replays
-    /// that as history, so the model is handed its own turns with the reasoning
-    /// removed and re-derives it every time. By turn 12 that consumed the entire
-    /// output budget — 131 of 133 tokens — leaving nothing for an answer or a tool
-    /// call, which is the stall this fixes.
+    /// Folding it in unconditionally was the next attempt, and it is worse: on a
+    /// reasoning model the thinking *is* most of the output, so every answer
+    /// reached the user buried in it. Measured against glm-5.3-flash, "你好"
+    /// returned 237 output tokens of which 187 were reasoning, and the text Codex
+    /// received held no answer at all — the client rendered nothing and the turn
+    /// looked like a hang.
     ///
-    /// Folding it into the message text keeps it in history, at the cost of the
-    /// thinking being visible in the transcript. Marked so the model can tell its
-    /// own prior reasoning from its answers when the turn is replayed.
+    /// So this now runs only from [`Self::finish`], and only when the turn has no
+    /// text of its own. That keeps the case it was written for — a turn whose
+    /// whole budget went to thinking still arrives as a message rather than as an
+    /// empty one the client would replay as `"\n\n"` — while a turn that produced
+    /// a real answer delivers just the answer.
     fn flush_reasoning_into_text(&mut self) -> Vec<String> {
         if self.reasoning.is_empty() {
             return Vec::new();
@@ -784,9 +790,12 @@ impl StreamAdapter {
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
         {
-            // Reasoning arrives before content, so flush it first and the thinking
-            // reads ahead of the answer it produced.
-            events.extend(self.flush_reasoning_into_text());
+            // Reasoning is deliberately *not* flushed here. Folding it in front of
+            // the answer put the thinking in the client's transcript on every
+            // reasoning model: measured against glm-5.3-flash, a "你好" came back as
+            // 237 output tokens of which 187 were reasoning, and the assistant text
+            // Codex received was thinking prose with no answer in it. `finish` folds
+            // the buffer in only when the turn produced no text at all.
             events.extend(self.push_text(content));
         }
         for call in delta
@@ -878,10 +887,16 @@ impl StreamAdapter {
     pub fn finish(mut self) -> Vec<String> {
         let mut events = Vec::new();
         let mut indexed_output = Vec::new();
-        // A turn can end with reasoning and no content at all — that is exactly the
-        // stalling case, where the whole output budget went to thinking. Flushing
-        // here means the client still receives a message instead of nothing.
-        events.extend(self.flush_reasoning_into_text());
+        // Only when the turn produced no text of its own: a reasoning model that
+        // spent its whole budget thinking would otherwise hand the client an empty
+        // message. A turn that did answer keeps just the answer — see
+        // `flush_reasoning_into_text` for why folding it in unconditionally was
+        // worse than dropping it.
+        if self.text.is_empty() {
+            events.extend(self.flush_reasoning_into_text());
+        } else {
+            self.reasoning.clear();
+        }
         // After the flush, so the notice reads as the last thing in the turn rather
         // than sitting in front of the thinking it interrupted.
         if let Some(reason) = self.truncated.take() {
@@ -1028,11 +1043,11 @@ mod tests {
     }
 
     #[test]
-    fn folds_reasoning_into_the_message_on_the_nonstream_path() {
-        // Same shape as the streaming path: a `reasoning` item would be discarded
-        // by a client sending include:["reasoning.encrypted_content"], and having
-        // the two paths differ would make the thinking appear or vanish depending
-        // on whether `stream` was set.
+    fn an_answered_turn_drops_reasoning_on_the_nonstream_path() {
+        // Same rule as the streaming path, so the thinking cannot appear or vanish
+        // depending on whether `stream` was set: a turn that answered delivers the
+        // answer alone. Folding the thinking in alongside it buried every answer on
+        // a reasoning model — glm-5.3-flash spent 187 of 237 output tokens thinking.
         let chat = json!({
             "model": "agnes-2.5-pro",
             "choices": [{
@@ -1053,11 +1068,9 @@ mod tests {
         );
         assert_eq!(output[0]["type"], "message");
         let text = output[0]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("All but 9 ran away, so 9 stayed."));
-        assert!(text.contains("9 remain."));
-        assert!(text.contains(REASONING_OPEN) && text.contains(REASONING_CLOSE));
-        // Thinking before answer.
-        assert!(text.find("All but 9").unwrap() < text.find("9 remain.").unwrap());
+        assert_eq!(text, "9 remain.", "the answer must arrive unburied");
+        assert!(!text.contains("All but 9 ran away"));
+        assert!(!text.contains(REASONING_OPEN));
     }
 
     #[test]
@@ -1192,15 +1205,15 @@ mod tests {
     }
 
     #[test]
-    fn folds_reasoning_into_the_assistant_message() {
-        // Measured against Agnes with reasoning_effort=medium: 17 reasoning_content
-        // deltas, one content delta holding just "\n\n", then the tool call.
+    fn an_answered_turn_delivers_the_answer_without_the_reasoning() {
+        // Measured against glm-5.3-flash: a bare "你好" returned 237 output tokens of
+        // which 187 were reasoning. Folding that in ahead of the answer is what put
+        // pure thinking in front of the user — Codex rendered nothing usable and the
+        // turn read as a hang. A turn that answered now delivers just the answer.
         //
-        // Emitting a `reasoning` output item was tried and does not survive the
-        // client: Codex sends include:["reasoning.encrypted_content"] and discards
-        // reasoning items lacking that blob, which a relay cannot forge. Over a
-        // 12-turn session the gateway emitted 39 reasoning deltas and Codex stored
-        // zero. Folding the text into the message is what keeps it in history.
+        // A `reasoning` output item is still not an option: Codex sends
+        // include:["reasoning.encrypted_content"] and discards reasoning items
+        // lacking that blob, which a relay cannot forge.
         let request = json!({ "model": "m", "input": "x" });
         let converted = responses_to_chat(&request, None).unwrap();
         let mut adapter = StreamAdapter::new("m".into(), converted.tools);
@@ -1216,33 +1229,23 @@ mod tests {
         events.extend(adapter.finish());
         let full = events.join("");
 
-        // No `reasoning` item: the client would throw it away.
-        assert!(
-            !full.contains("\"type\":\"reasoning\""),
-            "reasoning item would be discarded by the client: {full}"
-        );
-        assert!(!full.contains("response.reasoning_text.delta"));
-        // The thinking has to be in the message text, delimited and intact.
-        assert!(
-            full.contains("Let me check the path"),
-            "reasoning text lost: {full}"
-        );
-        assert!(full.contains(REASONING_OPEN) && full.contains(REASONING_CLOSE));
         assert!(full.contains("found it"), "answer lost: {full}");
-        // Thinking must precede the answer it produced.
-        let think_at = full.find("Let me check the path").unwrap();
-        let answer_at = full.find("found it").unwrap();
         assert!(
-            think_at < answer_at,
-            "reasoning must come before the answer"
+            !full.contains("Let me check the path"),
+            "an answered turn must not carry the thinking: {full}"
         );
-        // One message item, not one per flush: the reasoning and the answer share
-        // it. Counting events rather than JSON substrings, since field order is
-        // not guaranteed.
+        assert!(
+            !full.contains(REASONING_OPEN),
+            "no thinking delimiters on an answered turn: {full}"
+        );
+        // Still never a reasoning item, on any path.
+        assert!(!full.contains("\"type\":\"reasoning\""));
+        assert!(!full.contains("response.reasoning_text.delta"));
+        // One message item carrying the answer.
         assert_eq!(
             full.matches("event: response.output_item.added").count(),
             1,
-            "reasoning and answer must share one message item: {full}"
+            "the answer must arrive as one message item: {full}"
         );
     }
 
