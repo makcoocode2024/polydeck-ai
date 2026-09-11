@@ -8,7 +8,9 @@ use crate::binding::ClientBinding;
 use crate::credentials;
 use crate::error::{AppError, AppResult};
 use crate::storage;
-use crate::types::{CodexToolCompat, ProtocolKind, ReasoningConfidence, ThinkingSupport};
+use crate::types::{
+    CodexToolCompat, ProtocolKind, ReasoningConfidence, RelayChatCompat, ThinkingSupport,
+};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -89,6 +91,11 @@ pub struct ProviderConfig {
     /// it only measures the OpenAI `reasoning_effort` path.
     #[serde(default)]
     pub thinking_support: ThinkingSupport,
+    /// How to get a non-streaming Chat Completions answer out of this upstream.
+    /// Written by `protocol::probe`; `Auto` means never probed, which sends the
+    /// plain non-streaming request.
+    #[serde(default)]
+    pub relay_chat_compat: RelayChatCompat,
     pub accept_invalid_certs: bool,
     pub max_price_per_request: Option<f64>,
     #[serde(default)]
@@ -576,7 +583,21 @@ impl ProfileManager {
         if let Some(providers) = update.providers {
             profile.providers = providers;
         }
+        // A client dropped from the target list has to lose its binding too.
+        // Leaving it bound stranded a binding no screen could reach: the client
+        // chips render the target list, so a client bound here but absent from it
+        // showed nowhere, while `delete_profile` still counted it and refused to
+        // delete — with nothing the user could click to fix it.
+        let mut dropped: Vec<String> = Vec::new();
         if let Some(clients) = update.clients {
+            let kept = crate::binding::normalize_client_ids(&clients);
+            dropped = self
+                .state
+                .bindings
+                .iter()
+                .filter(|b| b.profile_id == id && !kept.contains(&b.client_id))
+                .map(|b| b.client_id.clone())
+                .collect();
             profile.clients = clients;
         }
         if let Some(gw) = update.gateway_enabled {
@@ -588,6 +609,11 @@ impl ProfileManager {
         profile.updated_at = Utc::now().to_rfc3339();
 
         let result = profile.clone();
+        if !dropped.is_empty() {
+            self.state
+                .bindings
+                .retain(|b| !(b.profile_id == id && dropped.contains(&b.client_id)));
+        }
         self.save()?;
         Ok(result)
     }
@@ -659,6 +685,7 @@ impl ProfileManager {
             codex_compat: CodexToolCompat::ResponsesCustom,
             reasoning_confidence: ReasoningConfidence::Validated,
             thinking_support: ThinkingSupport::Unprobed,
+            relay_chat_compat: RelayChatCompat::Auto,
             accept_invalid_certs: false,
             max_price_per_request: None,
             rate_limit: RateLimitSettings::default(),
@@ -764,6 +791,7 @@ mod tests {
                         codex_compat: CodexToolCompat::ResponsesCustom,
                         reasoning_confidence: ReasoningConfidence::Validated,
                         thinking_support: ThinkingSupport::Unprobed,
+                        relay_chat_compat: RelayChatCompat::Auto,
                         accept_invalid_certs: false,
                         max_price_per_request: None,
                         rate_limit: RateLimitSettings::default(),
@@ -1010,6 +1038,105 @@ mod tests {
         assert!(
             !pm.any_binding_claims_desktop(),
             "解绑后不应还认为有人占着 Desktop"
+        );
+    }
+
+    /// Dropping a client from the target list unbinds it, so a binding can never
+    /// outlive its own chip.
+    ///
+    /// The measured dead end: a duplicated profile was activated for
+    /// `claude-desktop`, then edited to target only `codex-cli`. The binding
+    /// survived, the chip row renders the target list so nothing showed it, and
+    /// `delete_profile` kept refusing — with no control on any screen to release it.
+    #[test]
+    fn narrowing_the_target_list_releases_the_dropped_clients() {
+        let (mut pm, _dir) = test_pm();
+        let p = pm
+            .create_profile(ProfileCreate {
+                name: "副本".into(),
+                providers: vec![],
+                clients: vec!["claude-desktop".into(), "codex-cli".into()],
+            })
+            .unwrap();
+        pm.bind_clients(&p.id, &["claude-desktop".into(), "codex-cli".into()])
+            .unwrap();
+        assert_eq!(pm.clients_for_profile(&p.id).len(), 2);
+
+        // Drop claude-desktop from the target list.
+        pm.update_profile(
+            &p.id,
+            ProfileUpdate {
+                name: None,
+                providers: None,
+                clients: Some(vec!["codex-cli".into()]),
+                gateway_enabled: None,
+                failover_enabled: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            pm.clients_for_profile(&p.id),
+            vec!["codex-cli".to_string()],
+            "移出目标列表的客户端必须同时解绑"
+        );
+        assert!(
+            pm.profile_for_client("claude-desktop").is_none(),
+            "claude-desktop 应当彻底释放，而不是留一条看不见的绑定"
+        );
+        // The whole point: it can now be deleted once the remaining client goes.
+        pm.unbind_clients(&["codex-cli".into()]).unwrap();
+        assert!(pm.delete_profile(&p.id).is_ok(), "解绑后应当删得掉");
+    }
+
+    /// Clients that stay in the list keep their bindings — the release above must
+    /// not turn every edit into an unbind.
+    #[test]
+    fn editing_other_fields_keeps_bindings() {
+        let (mut pm, _dir) = test_pm();
+        let p = pm
+            .create_profile(ProfileCreate {
+                name: "方案".into(),
+                providers: vec![],
+                clients: vec!["codex-cli".into()],
+            })
+            .unwrap();
+        pm.bind_clients(&p.id, &["codex-cli".into()]).unwrap();
+
+        // Same list, different name: nothing may be released.
+        pm.update_profile(
+            &p.id,
+            ProfileUpdate {
+                name: Some("改名".into()),
+                providers: None,
+                clients: Some(vec!["codex-cli".into()]),
+                gateway_enabled: None,
+                failover_enabled: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            pm.clients_for_profile(&p.id),
+            vec!["codex-cli".to_string()],
+            "目标列表没变，绑定不该丢"
+        );
+
+        // `clients: None` means "leave the list alone", so it must not release either.
+        pm.update_profile(
+            &p.id,
+            ProfileUpdate {
+                name: None,
+                providers: None,
+                clients: None,
+                gateway_enabled: Some(false),
+                failover_enabled: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            pm.clients_for_profile(&p.id),
+            vec!["codex-cli".to_string()],
+            "未提供 clients 时不该动绑定"
         );
     }
 

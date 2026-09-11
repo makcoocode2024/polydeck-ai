@@ -13,6 +13,7 @@ import type {
   CodexToolCompat,
   ReasoningConfidence,
   ThinkingSupport,
+  RelayChatCompat,
   ChatTestResult,
   RateLimitSettings,
   ClientBindingView,
@@ -467,6 +468,11 @@ export default function ProfilesPage() {
       if (res.codexCompat && res.codexCompat !== "unknown") {
         handleUpdateProviderField(index, "codexCompat", res.codexCompat);
       }
+      // Only a decided verdict overwrites; `auto` means the probe could not tell
+      // and must not clobber a setting the user chose by hand.
+      if (res.relayChatCompat && res.relayChatCompat !== "auto") {
+        handleUpdateProviderField(index, "relayChatCompat", res.relayChatCompat);
+      }
       if (res.models && res.models.length > 0) {
         const ids = res.models.map((m) => m.id);
         setEditProviders((prev) =>
@@ -535,6 +541,12 @@ export default function ProfilesPage() {
     signed: "支持带签名思考 — 可以注入",
     unsigned: "返回思考但缺签名 — 不能注入",
     absent: "不返回思考块 — 不会注入",
+  };
+
+  const RELAY_CHAT_COMPAT_HINTS: Record<RelayChatCompat, string> = {
+    auto: "测试连接时自动判定。多数中转站的非流式返回不规范，探测到后会自动改用流式缓冲，无需手动设置。",
+    buffered: "非流式请求改为流式发出，缓冲后拼成标准 JSON 返回。仅在自动判定失效、非流式回答异常时选它。",
+    direct: "始终按原样发送非流式请求。仅在自动判定误判、你确认上游非流式正常时选它。",
   };
 
   const handleProbeThinkingSupport = async (index: number) => {
@@ -828,6 +840,18 @@ export default function ProfilesPage() {
   const boundClients = (profileId: string) =>
     bindings.filter((b) => b.profileId === profileId).map((b) => b.clientId);
   const bindingFor = (clientId: string) => bindings.find((b) => b.clientId === clientId);
+
+  /// Every client this profile's chips must show: the ones it targets, plus any
+  /// bound to it that the target list omits.
+  ///
+  /// Rendering the target list alone hid a binding the user could not reach: a
+  /// client bound here but dropped from the list showed no chip, so there was
+  /// nothing to click, while deletion still refused on account of it.
+  const chipClients = (profile: Profile) => {
+    const target = profile.clients ?? [];
+    const extra = boundClients(profile.id).filter((cid) => !target.includes(cid));
+    return [...target, ...extra];
+  };
 
   return (
     <div className="space-y-8 max-w-6xl mx-auto pb-12">
@@ -1223,14 +1247,14 @@ export default function ProfilesPage() {
                     <Laptop className="h-3.5 w-3.5 text-primary" />
                     目标客户端 ({selectedProfile.clients?.length ?? 0})
                   </h4>
-                  {(!selectedProfile.clients || selectedProfile.clients.length === 0) ? (
+                  {chipClients(selectedProfile).length === 0 ? (
                     <p className="text-xs text-muted-foreground">
                       此方案未选择任何客户端，激活不会生效。请先在「编辑方案 → 客户端绑定」里勾选。
                     </p>
                   ) : (
                     <>
                       <div className="flex flex-wrap gap-2">
-                        {selectedProfile.clients.map((cid) => {
+                        {chipClients(selectedProfile).map((cid) => {
                           const binding = bindingFor(cid);
                           const here = binding?.profileId === selectedProfile.id;
                           const elsewhereName = binding && !here ? binding.profileName : null;
@@ -1269,6 +1293,12 @@ export default function ProfilesPage() {
                       <p className="text-[11px] text-muted-foreground mt-2">
                         绿色为正跟随本方案；带箭头的正跟随别的方案，点一下即可改过来。
                       </p>
+                      {chipClients(selectedProfile).length >
+                        (selectedProfile.clients?.length ?? 0) && (
+                        <p className="text-[11px] text-amber-600 dark:text-amber-500 mt-1">
+                          有客户端仍跟随本方案，但已不在目标列表里。点它即可解绑——删除方案前必须先解开。
+                        </p>
+                      )}
                     </>
                   )}
                 </div>
@@ -1878,7 +1908,37 @@ export default function ProfilesPage() {
                               </span>
                             </label>
 
-                            
+                            {/* Relay non-streaming compatibility. Probe-written;
+                                shown so a wrong verdict can be corrected. */}
+                            <div className="space-y-1 pt-1">
+                              <label
+                                className="text-[11px] font-medium text-muted-foreground"
+                                htmlFor={`provider-${index}-relay-chat-compat`}
+                              >
+                                中转站非流式兼容 (Non-streaming Compatibility)
+                              </label>
+                              <select
+                                id={`provider-${index}-relay-chat-compat`}
+                                value={prov.relayChatCompat || "auto"}
+                                onChange={(e) =>
+                                  handleUpdateProviderField(
+                                    index,
+                                    "relayChatCompat",
+                                    e.target.value as RelayChatCompat
+                                  )
+                                }
+                                className="w-full h-8 text-xs rounded-md border border-input bg-background px-2.5 py-1 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                              >
+                                <option value="auto">自动 (按探测结果，推荐)</option>
+                                <option value="buffered">强制流式缓冲 (中转站返回不规范时)</option>
+                                <option value="direct">强制直连非流式 (不做任何转换)</option>
+                              </select>
+                              <p className="text-[10px] text-muted-foreground">
+                                {RELAY_CHAT_COMPAT_HINTS[prov.relayChatCompat || "auto"]}
+                              </p>
+                            </div>
+
+
                             {/* Claude Code Aliases & Thinking Section */}
                             <div className="p-3.5 rounded-lg border bg-muted/10 space-y-3">
                               <div className="flex items-center gap-2">
