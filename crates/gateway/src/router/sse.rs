@@ -143,7 +143,7 @@ pub(super) fn passthrough_messages_stream(upstream_response: reqwest::Response) 
                 }
                 Ok(None) => break,
                 Err(_elapsed) => {
-                    warn!("Upstream messages stream idle timeout (25s without data)");
+                    warn!("Upstream messages stream idle timeout (300s without data)");
                     break;
                 }
             }

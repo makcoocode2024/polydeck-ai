@@ -683,8 +683,16 @@ fn is_missing_responses_error(status: reqwest::StatusCode, body: &[u8]) -> bool 
         || SHAPE_REJECTION_MARKERS.iter().any(|m| detail.contains(m))
 }
 
-/// Universal SSE stream idle timeout (25s without data chunk).
-pub const SSE_STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+/// SSE stream idle timeout: how long an upstream may go without sending any
+/// bytes before the gateway cuts the stream and synthesises a terminal event.
+///
+/// 25s was measured to be too aggressive for OpenAI-protocol upstreams: a
+/// reasoning model's silent thinking phase, a relay that buffers before
+/// flushing, or a network stall can each exceed 25s. Anthropic upstreams were
+/// immune only because they emit periodic `ping` events that reset the timer —
+/// which is why Codex sessions dropped while Claude Code sessions held. 300s
+/// still bounds a genuinely dead connection without killing slow turns.
+pub const SSE_STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Stream `/v1/responses` verbatim, supplying a terminal event if the upstream
 /// stops mid-flight.
@@ -732,7 +740,7 @@ pub(super) fn passthrough_raw_stream(upstream_response: reqwest::Response) -> Re
                 }
                 Ok(None) => break "upstream_disconnected",
                 Err(_elapsed) => {
-                    warn!("Upstream raw stream idle timeout (25s without data)");
+                    warn!("Upstream raw stream idle timeout (300s without data)");
                     break "idle_timeout";
                 }
             }
@@ -875,17 +883,12 @@ async fn handle_responses_stream(
                             }
                         }
                     }
+                    // Skip, don't fail the turn: one unparseable chunk is a
+                    // upstream hiccup, and breaking here discards everything the
+                    // turn produced so far. Matches the passthrough paths, where
+                    // an unparseable block is forwarded verbatim and dropped.
                     Err(e) => {
-                        warn!("Upstream chunk did not parse as JSON: {e}");
-                        adapter.mark_truncated("上游返回的数据块无法解析");
-                        let err_msg =
-                            serde_json::json!({"error": format!("Parse error: {e}")}).to_string();
-                        let _ = tx
-                            .send(Ok(Bytes::from(format!(
-                                "event: error\ndata: {err_msg}\n\n"
-                            ))))
-                            .await;
-                        break;
+                        warn!("Upstream chunk did not parse as JSON, skipping: {e}");
                     }
                 },
                 Ok(Some(Err(e))) => {
@@ -902,11 +905,11 @@ async fn handle_responses_stream(
                 }
                 Ok(None) => break,
                 Err(_elapsed) => {
-                    warn!("Upstream bridged responses SSE stream idle timeout (25s without data); closing the turn");
-                    adapter.mark_truncated("上游 25 秒无数据，网关判定超时");
+                    warn!("Upstream bridged responses SSE stream idle timeout (300s without data); closing the turn");
+                    adapter.mark_truncated("上游 300 秒无数据，网关判定超时");
                     let err_msg = serde_json::json!({
                         "error": {
-                            "message": "Upstream SSE stream idle timeout: no data chunk received for 25s",
+                            "message": "Upstream SSE stream idle timeout: no data chunk received for 300s",
                             "type": "timeout_error",
                             "code": 504
                         }
@@ -994,10 +997,10 @@ async fn passthrough_stream(
                 }
                 Ok(None) => return,
                 Err(_elapsed) => {
-                    warn!("Upstream chat completions SSE stream idle timeout (25s without data); closing connection");
+                    warn!("Upstream chat completions SSE stream idle timeout (300s without data); closing connection");
                     let err_msg = serde_json::json!({
                         "error": {
-                            "message": "Upstream SSE stream idle timeout: no data chunk received for 25s",
+                            "message": "Upstream SSE stream idle timeout: no data chunk received for 300s",
                             "type": "timeout_error",
                             "code": 504
                         }
@@ -1940,24 +1943,32 @@ mod tests {
         );
     }
 
-    /// An unparseable chunk takes the same exit, and the error frame stays in
-    /// front of the terminal event for clients that read it.
+    /// An unparseable chunk is skipped and the turn completes normally: one bad
+    /// chunk is an upstream hiccup, not a reason to discard everything before it.
     #[tokio::test]
     async fn bridged_stream_unparseable_chunk_still_completes_the_turn() {
         let upstream = upstream_streaming(vec![
             "data: {\"choices\":[{\"delta\":{\"content\":\"before\"}}]}\n\n",
             "data: {not json}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\" after\"}}]}\n\n",
+            "data: [DONE]\n\n",
         ]);
         let body =
             collect_body(handle_responses_stream(upstream, "m".into(), ToolMap::default()).await)
                 .await;
 
-        let err_at = body.find("event: error").expect("no error frame:\n{body}");
-        let done_at = body
-            .find("event: response.completed")
-            .unwrap_or_else(|| panic!("no terminal event:\n{body}"));
-        assert!(err_at < done_at, "error must precede completion:\n{body}");
-        assert!(body.contains("before"), "text dropped:\n{body}");
+        assert!(
+            !body.contains("event: error"),
+            "a skipped chunk must not emit an error frame:\n{body}"
+        );
+        assert!(
+            body.contains("event: response.completed"),
+            "no terminal event:\n{body}"
+        );
+        assert!(
+            body.contains("before after"),
+            "text around the bad chunk was dropped:\n{body}"
+        );
     }
 
     /// The healthy path is unchanged: one terminal event, no error frame.
