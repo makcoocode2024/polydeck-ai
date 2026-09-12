@@ -23,6 +23,11 @@ pub struct ProviderConfig {
     /// to the plain non-streaming request this provider cannot answer.
     #[serde(default)]
     pub relay_chat_compat: polydeck_core::types::RelayChatCompat,
+    /// Carried through for the same reason, in the opposite direction: a
+    /// failover target must not quietly relax certificate validation that its
+    /// profile asked for.
+    #[serde(default)]
+    pub accept_invalid_certs: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +183,7 @@ impl FailoverManager {
                     provider.api_key.clone(),
                     Duration::from_secs(120),
                     0,
+                    provider.accept_invalid_certs,
                 )?
                 .with_relay_chat_compat(provider.relay_chat_compat),
             );
@@ -337,7 +343,11 @@ impl FailoverManager {
             .chain()
             .find(|p| p.id == provider_id)
             .ok_or_else(|| format!("Unknown provider '{}'", provider_id))?;
-        let client = crate::client::build_http_client(&provider.base_url, PROBE_TIMEOUT)?;
+        let client = crate::client::build_http_client(
+            &provider.base_url,
+            PROBE_TIMEOUT,
+            provider.accept_invalid_certs,
+        )?;
         let start = Instant::now();
         let models_url = format!("{}/v1/models", provider.base_url.trim_end_matches('/'));
         let models = client
@@ -561,6 +571,7 @@ mod tests {
             api_key: "k".into(),
             default_model: "m".into(),
             relay_chat_compat: Default::default(),
+            accept_invalid_certs: false,
         }
     }
 

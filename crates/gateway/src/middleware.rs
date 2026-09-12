@@ -222,6 +222,7 @@ mod tests {
                 "k".into(),
                 std::time::Duration::from_secs(1),
                 0,
+                false,
             )
             .unwrap(),
             rewriter: crate::model_rewrite::ModelRewriter::new(&[]).unwrap(),

@@ -133,6 +133,7 @@ fn upstream(base_url: &str, token: &str, mode: ResponsesMode) -> UpstreamConfig 
         max_price_per_request: None,
         responses_mode: mode,
         relay_chat_compat: Default::default(),
+        accept_invalid_certs: false,
         rate_limit: Default::default(),
         default_effort_level: None,
         thinking_support: polydeck_core::types::ThinkingSupport::Unprobed,

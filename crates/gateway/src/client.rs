@@ -335,7 +335,11 @@ fn error_status(error: &Value) -> u16 {
     }
 }
 
-pub(crate) fn build_http_client(base_url: &str, timeout: Duration) -> Result<Client, String> {
+pub(crate) fn build_http_client(
+    base_url: &str,
+    timeout: Duration,
+    accept_invalid_certs: bool,
+) -> Result<Client, String> {
     let connect_timeout = (timeout / 2).min(Duration::from_secs(10));
     let mut builder = Client::builder()
         // No total `.timeout()`: reqwest's read timeout applies per read, so a
@@ -352,7 +356,7 @@ pub(crate) fn build_http_client(base_url: &str, timeout: Duration) -> Result<Cli
         .http2_keep_alive_interval(Duration::from_secs(30))
         .http2_keep_alive_timeout(Duration::from_secs(10))
         .pool_idle_timeout(Duration::from_secs(90))
-        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_certs(accept_invalid_certs)
         .use_rustls_tls();
     if is_loopback_url(base_url) {
         builder = builder.no_proxy();
@@ -367,13 +371,19 @@ pub(crate) fn build_http_client(base_url: &str, timeout: Duration) -> Result<Cli
 }
 
 impl UpstreamClient {
+    /// `accept_invalid_certs` is a constructor argument rather than a `with_`
+    /// builder like [`Self::with_relay_chat_compat`]: reqwest bakes TLS policy
+    /// into the `Client` at build time, so it cannot be flipped afterwards. It
+    /// is also required rather than defaulted, so adding an upstream forces a
+    /// deliberate answer instead of inheriting a bypass by omission.
     pub fn new(
         base_url: String,
         api_key: String,
         timeout: Duration,
         max_retries: u32,
+        accept_invalid_certs: bool,
     ) -> Result<Self, String> {
-        let client = build_http_client(&base_url, timeout)?;
+        let client = build_http_client(&base_url, timeout, accept_invalid_certs)?;
         Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -612,6 +622,7 @@ mod tests {
             "test-key".into(),
             Duration::from_secs(30),
             3,
+            false,
         );
         assert!(client.is_ok());
         assert_eq!(client.unwrap().base_url(), "https://api.example.com");
@@ -624,6 +635,7 @@ mod tests {
             "k".into(),
             Duration::from_secs(30),
             3,
+            false,
         )
         .unwrap();
         assert_eq!(client.base_url(), "https://api.example.com");

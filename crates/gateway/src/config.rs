@@ -96,6 +96,11 @@ pub struct UpstreamConfig {
     /// path reads it; the Anthropic path is unaffected.
     #[serde(default)]
     pub relay_chat_compat: polydeck_core::types::RelayChatCompat,
+    /// Copied from the provider's profile. `serde(default)` lands on `false`, so
+    /// a config that predates this field validates certificates rather than
+    /// silently keeping the old blanket bypass.
+    #[serde(default)]
+    pub accept_invalid_certs: bool,
 }
 
 /// How `ModelRewriteRule::from` should be interpreted.
@@ -156,6 +161,24 @@ impl ModelRewriteRule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A config written before `accept_invalid_certs` existed must come back
+    /// validating certificates. The gateway used to bypass validation for every
+    /// upstream unconditionally, so defaulting the other way would preserve that
+    /// hole for exactly the configs that predate the fix.
+    #[test]
+    fn an_upstream_without_the_cert_field_still_validates_certificates() {
+        let upstream: UpstreamConfig = serde_json::from_str(
+            r#"{
+                "base_url": "https://relay.example",
+                "api_key": "k",
+                "protocol": "openai",
+                "local_token": "t"
+            }"#,
+        )
+        .expect("a config predating the field should still deserialize");
+        assert!(!upstream.accept_invalid_certs);
+    }
 
     #[test]
     fn creates_exact_rule() {

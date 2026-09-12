@@ -65,6 +65,7 @@ pub fn build_gateway_config(
             default_effort_level: primary.default_effort_level.clone(),
             thinking_support: primary.thinking_support,
             relay_chat_compat: primary.relay_chat_compat,
+            accept_invalid_certs: primary.accept_invalid_certs,
         },
         polydeck_gateway::model_rewrite::generate_provider_model_rewrites_with_overrides(
             &primary.models,
@@ -157,6 +158,9 @@ pub async fn refresh_gateway(
             default_effort_level: None,
             thinking_support: Default::default(),
             relay_chat_compat: Default::default(),
+            // A placeholder every route overwrites, so it validates certificates
+            // rather than handing out a bypass no profile asked for.
+            accept_invalid_certs: false,
         },
         vec![],
     );
@@ -242,6 +246,7 @@ fn build_failover_manager(
             api_key: api_key.clone(),
             default_model: p.default_model.clone(),
             relay_chat_compat: p.relay_chat_compat,
+            accept_invalid_certs: p.accept_invalid_certs,
         };
 
     let primary = profile

@@ -1194,6 +1194,7 @@ mod tests {
                 "key".into(),
                 Duration::from_secs(5),
                 0,
+                false,
             )
             .unwrap(),
             rewriter: ModelRewriter::new(&[]).unwrap(),

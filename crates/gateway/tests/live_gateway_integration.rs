@@ -53,6 +53,7 @@ async fn test_full_gateway_and_clients_flow() {
             local_token: LIVE_TOKEN.into(),
             responses_mode: ResponsesMode::Auto,
             relay_chat_compat: Default::default(),
+            accept_invalid_certs: false,
             max_price_per_request: Some(5.0),
             rate_limit: polydeck_core::profile::RateLimitSettings::default(),
             default_effort_level: None,

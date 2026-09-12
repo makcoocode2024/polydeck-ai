@@ -118,6 +118,7 @@ async fn gateway_in_front_of(upstream: String) -> (GatewayServer, String) {
             local_token: STUB_TOKEN.into(),
             responses_mode: ResponsesMode::Auto,
             relay_chat_compat: Default::default(),
+            accept_invalid_certs: false,
             max_price_per_request: None,
             rate_limit: polydeck_core::profile::RateLimitSettings::default(),
             default_effort_level: None,

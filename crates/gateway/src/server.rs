@@ -129,6 +129,7 @@ impl GatewayServer {
                         route.upstream.api_key.clone(),
                         self.config.timeout,
                         self.config.max_retries,
+                        route.upstream.accept_invalid_certs,
                     )?
                     .with_relay_chat_compat(route.upstream.relay_chat_compat);
                     let state = Arc::new(AppState {
@@ -229,6 +230,7 @@ mod tests {
             default_effort_level: None,
             thinking_support: polydeck_core::types::ThinkingSupport::default(),
             relay_chat_compat: Default::default(),
+            accept_invalid_certs: false,
         }
     }
 
