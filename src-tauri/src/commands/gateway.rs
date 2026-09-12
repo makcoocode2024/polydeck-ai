@@ -434,6 +434,7 @@ mod tests {
                 clients: None,
                 gateway_enabled: Some(gateway),
                 failover_enabled: Some(failover),
+                claude_code_params: None,
             },
         )
         .expect("更新方案失败");

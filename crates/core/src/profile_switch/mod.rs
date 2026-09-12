@@ -184,7 +184,13 @@ async fn write_client_config(client: &str, profile: &Profile) -> AppResult<()> {
     } else if crate::binding::is_claude_desktop(&clean) {
         write_claude_desktop_config(primary, &auth, profile.gateway_enabled).await
     } else if clean.contains("claude") {
-        write_claude_config(primary, &auth, profile.gateway_enabled).await
+        write_claude_config(
+            primary,
+            &profile.claude_code_params,
+            &auth,
+            profile.gateway_enabled,
+        )
+        .await
     } else if clean.contains("hermes") {
         write_hermes_config(primary, &auth, profile.gateway_enabled).await
     } else {
@@ -341,6 +347,7 @@ async fn write_codex_config(
 
 async fn write_claude_config(
     provider: &crate::profile::ProviderConfig,
+    params: &crate::profile::ClaudeCodeParams,
     auth: &str,
     gateway_enabled: bool,
 ) -> AppResult<()> {
@@ -560,6 +567,31 @@ async fn write_claude_config(
         } else {
             env_obj.remove("ANTHROPIC_API_KEY");
             env_obj.remove("ANTHROPIC_AUTH_TOKEN");
+        }
+
+        let resolved = crate::claude_code_params::resolve(provider, params);
+        env_obj.insert(
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS".into(),
+            serde_json::Value::String(resolved.max_output_tokens.to_string()),
+        );
+        match resolved.max_thinking_tokens {
+            Some(n) => {
+                env_obj.insert(
+                    "MAX_THINKING_TOKENS".into(),
+                    serde_json::Value::String(n.to_string()),
+                );
+            }
+            None => {
+                env_obj.remove("MAX_THINKING_TOKENS");
+            }
+        }
+        if resolved.disable_autoupdater {
+            env_obj.insert(
+                "DISABLE_AUTOUPDATER".into(),
+                serde_json::Value::String("1".into()),
+            );
+        } else {
+            env_obj.remove("DISABLE_AUTOUPDATER");
         }
 
         // `*_MODEL` is what actually goes on the wire when Claude Code resolves
@@ -1132,6 +1164,7 @@ mod tests {
                     ]),
                     gateway_enabled: Some(true),
                     failover_enabled: None,
+                    claude_code_params: None,
                 },
             )
             .unwrap();
@@ -1154,6 +1187,7 @@ mod tests {
                     ]),
                     gateway_enabled: Some(true),
                     failover_enabled: None,
+                    claude_code_params: None,
                 },
             )
             .unwrap();
@@ -1260,9 +1294,10 @@ mod tests {
             opus_display_name: None,
             sonnet_display_name: None,
             haiku_display_name: None,
+            probed_max_output_tokens: None,
         };
 
-        let res = write_claude_config(&provider, "adk_test", true).await;
+        let res = write_claude_config(&provider, &Default::default(), "adk_test", true).await;
         assert!(res.is_ok());
 
         let settings_path = claude_dir.join("settings.json");
@@ -1365,9 +1400,11 @@ mod tests {
             opus_display_name: None,
             sonnet_display_name: None,
             haiku_display_name: None,
+            probed_max_output_tokens: None,
         };
 
-        let res2 = write_claude_config(&custom_provider, "adk_test", true).await;
+        let res2 =
+            write_claude_config(&custom_provider, &Default::default(), "adk_test", true).await;
         assert!(res2.is_ok());
         let content2 = std::fs::read_to_string(&settings_path).unwrap();
         let parsed2: serde_json::Value = serde_json::from_str(&content2).unwrap();
@@ -1471,6 +1508,7 @@ mod tests {
             opus_display_name: None,
             sonnet_display_name: None,
             haiku_display_name: None,
+            probed_max_output_tokens: None,
         }
     }
 
@@ -1594,19 +1632,19 @@ mod tests {
                 .map(str::to_string)
         };
 
-        write_claude_config(&provider, "adk_test", true)
+        write_claude_config(&provider, &Default::default(), "adk_test", true)
             .await
             .unwrap();
         assert_eq!(read_flag(&settings_path).as_deref(), Some("1"));
 
         // Same file, gateway now off: the flag has to flip, not linger.
-        write_claude_config(&provider, "adk_test", false)
+        write_claude_config(&provider, &Default::default(), "adk_test", false)
             .await
             .unwrap();
         assert_eq!(read_flag(&settings_path).as_deref(), Some("0"));
 
         // And back on again.
-        write_claude_config(&provider, "adk_test", true)
+        write_claude_config(&provider, &Default::default(), "adk_test", true)
             .await
             .unwrap();
         assert_eq!(read_flag(&settings_path).as_deref(), Some("1"));
@@ -1704,6 +1742,7 @@ mod tests {
             opus_display_name: Some("claude-opus-4-8".into()),
             sonnet_display_name: None,
             haiku_display_name: Some("   ".into()),
+            probed_max_output_tokens: None,
         };
 
         let settings_path = claude_dir.join("settings.json");
@@ -1711,7 +1750,9 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap()
         };
 
-        write_claude_config(&base, "adk_test", true).await.unwrap();
+        write_claude_config(&base, &Default::default(), "adk_test", true)
+            .await
+            .unwrap();
         let parsed = read_config();
         let overrides = parsed
             .get("modelOverrides")
@@ -1776,7 +1817,7 @@ mod tests {
             supports_1m_context: Some(false),
             ..base.clone()
         };
-        write_claude_config(&no_1m, "adk_test", false)
+        write_claude_config(&no_1m, &Default::default(), "adk_test", false)
             .await
             .unwrap();
         let parsed = read_config();
@@ -1833,6 +1874,78 @@ mod tests {
         );
     }
 
+    /// An upstream whose thinking blocks arrive unsigned must not get
+    /// `MAX_THINKING_TOKENS`, and a leftover value from a previous profile must
+    /// be cleared rather than left behind — Claude Code would otherwise keep
+    /// requesting thinking this upstream cannot sign, failing every turn.
+    #[tokio::test]
+    async fn unsigned_thinking_clears_the_thinking_token_env() {
+        let _home_guard = lock_home_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
+        let claude_dir = temp_home.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("settings.json"),
+            r#"{"env":{"MAX_THINKING_TOKENS":"32768"}}"#,
+        )
+        .unwrap();
+
+        let mut provider = agnes_like_provider(vec!["m".into()], "m");
+        provider.thinking_support = crate::types::ThinkingSupport::Unsigned;
+        write_claude_config(&provider, &Default::default(), "adk_test", true)
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(claude_dir.join("settings.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(
+            parsed["env"].get("MAX_THINKING_TOKENS").is_none(),
+            "未签名的思考能力不得注入 MAX_THINKING_TOKENS，且必须清掉残留值"
+        );
+        assert_eq!(
+            parsed["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"].as_str(),
+            Some("8192"),
+            "不支持思考时输出上限应落到 8192"
+        );
+    }
+
+    /// Signed thinking is the only state that may inject, and a manual value
+    /// must survive detection.
+    #[tokio::test]
+    async fn signed_thinking_injects_and_manual_values_win() {
+        let _home_guard = lock_home_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
+        let claude_dir = temp_home.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+
+        let mut provider = agnes_like_provider(vec!["m".into()], "m");
+        provider.thinking_support = crate::types::ThinkingSupport::Signed;
+        let params = crate::profile::ClaudeCodeParams {
+            max_output_tokens: Some(65_536),
+            max_thinking_tokens: None,
+            disable_autoupdater: true,
+        };
+        write_claude_config(&provider, &params, "adk_test", true)
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(claude_dir.join("settings.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(
+            parsed["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"].as_str(),
+            Some("65536"),
+            "手动值必须压过推荐值"
+        );
+        assert_eq!(
+            parsed["env"]["MAX_THINKING_TOKENS"].as_str(),
+            Some("32768"),
+            "未手动设置时用推荐的思考上限"
+        );
+        assert_eq!(parsed["env"]["DISABLE_AUTOUPDATER"].as_str(), Some("1"));
+    }
+
     #[tokio::test]
     async fn test_claude_config_base_url_has_no_v1_suffix() {
         let _home_guard = lock_home_env();
@@ -1873,6 +1986,7 @@ mod tests {
             opus_display_name: None,
             sonnet_display_name: None,
             haiku_display_name: None,
+            probed_max_output_tokens: None,
         };
 
         let read_base_url = |dir: &std::path::Path| -> String {
@@ -1885,7 +1999,7 @@ mod tests {
         };
 
         // Gateway mode: must point at the bare loopback origin.
-        write_claude_config(&provider, "adk_test", true)
+        write_claude_config(&provider, &Default::default(), "adk_test", true)
             .await
             .unwrap();
         let gw_url = read_base_url(&claude_dir);
@@ -1896,7 +2010,7 @@ mod tests {
         );
 
         // Direct mode: the provider /v1 suffix must be stripped, not appended to.
-        write_claude_config(&provider, "adk_test", false)
+        write_claude_config(&provider, &Default::default(), "adk_test", false)
             .await
             .unwrap();
         let direct_url = read_base_url(&claude_dir);
@@ -1908,7 +2022,7 @@ mod tests {
 
         // Direct mode without a /v1 suffix must stay unchanged.
         provider.base_url = "https://relay.example.com".into();
-        write_claude_config(&provider, "adk_test", false)
+        write_claude_config(&provider, &Default::default(), "adk_test", false)
             .await
             .unwrap();
         assert_eq!(read_base_url(&claude_dir), "https://relay.example.com");
@@ -1951,6 +2065,7 @@ mod tests {
                     clients: Some(vec!["claude-desktop".into()]),
                     gateway_enabled: Some(true),
                     failover_enabled: None,
+                    claude_code_params: None,
                 },
             )
             .unwrap();
@@ -2014,6 +2129,7 @@ mod tests {
                     clients: Some(vec!["claude-code".into()]),
                     gateway_enabled: Some(true),
                     failover_enabled: None,
+                    claude_code_params: None,
                 },
             )
             .unwrap();
@@ -2081,6 +2197,7 @@ mod tests {
                     clients: Some(vec!["codex-cli".into(), "claude-code".into()]),
                     gateway_enabled: Some(true),
                     failover_enabled: None,
+                    claude_code_params: None,
                 },
             )
             .unwrap()
@@ -2175,6 +2292,7 @@ mod tests {
                 clients: Some(vec!["codex-cli".into(), "claude-code".into()]),
                 gateway_enabled: Some(true),
                 failover_enabled: None,
+                claude_code_params: None,
             },
         )
         .unwrap();
@@ -2226,6 +2344,7 @@ mod tests {
                 clients: Some(vec!["codex-cli".into()]),
                 gateway_enabled: Some(false),
                 failover_enabled: None,
+                claude_code_params: None,
             },
         )
         .unwrap();
@@ -2427,6 +2546,7 @@ mod tests {
             opus_display_name: None,
             sonnet_display_name: None,
             haiku_display_name: None,
+            probed_max_output_tokens: None,
         }
     }
 
@@ -2445,7 +2565,7 @@ mod tests {
         )
         .unwrap();
 
-        write_claude_config(provider, "adk_test", false)
+        write_claude_config(provider, &Default::default(), "adk_test", false)
             .await
             .unwrap();
 

@@ -401,6 +401,7 @@ pub async fn ad_probe_thinking_support(
             clients: None,
             gateway_enabled: None,
             failover_enabled: None,
+            claude_code_params: None,
         },
     )
     .map_err(|e| e.to_string())?;

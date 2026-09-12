@@ -18,6 +18,36 @@ use std::path::PathBuf;
 use ts_rs::TS;
 use uuid::Uuid;
 
+/// Claude Code launch parameters a profile writes into `~/.claude/settings.json`.
+///
+/// The token fields are `None` until the user types a value, which is what makes
+/// "manual wins" expressible: `None` means "follow whatever the model turns out
+/// to support", `Some` means the user has overridden it and detection must stop
+/// touching it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeCodeParams {
+    #[serde(default)]
+    pub max_output_tokens: Option<u64>,
+    #[serde(default)]
+    pub max_thinking_tokens: Option<u64>,
+    #[serde(default)]
+    pub disable_autoupdater: bool,
+}
+
+/// Inclusive bounds both token fields are validated against, in the UI and again
+/// on the way into `settings.json`.
+pub const CLAUDE_CODE_TOKEN_MIN: u64 = 4096;
+pub const CLAUDE_CODE_TOKEN_MAX: u64 = 262_144;
+
+/// Recommended output ceilings, used when the user has not set one and the probe
+/// reported nothing. A thinking model needs the headroom; one without it would
+/// only be given a ceiling it cannot fill.
+pub const OUTPUT_TOKENS_WITH_THINKING: u64 = 131_072;
+pub const OUTPUT_TOKENS_WITHOUT_THINKING: u64 = 8_192;
+pub const THINKING_TOKENS_DEFAULT: u64 = 32_768;
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +64,12 @@ pub struct Profile {
     pub prompts: Vec<String>,
     pub gateway_enabled: bool,
     pub failover_enabled: bool,
+    /// Claude Code launch parameters for this profile's clients. Profile-level
+    /// rather than per-provider: they configure the client process, not an
+    /// upstream, so a profile's clients should agree on them however many
+    /// providers the failover chain holds.
+    #[serde(default)]
+    pub claude_code_params: ClaudeCodeParams,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -125,6 +161,11 @@ pub struct ProviderConfig {
     pub sonnet_display_name: Option<String>,
     #[serde(default)]
     pub haiku_display_name: Option<String>,
+    /// The default model's output ceiling as the upstream reported it, kept from
+    /// the probe so the parameter panel has a measured value to recommend rather
+    /// than only its built-in table. `None` means no probe reported one.
+    #[serde(default)]
+    pub probed_max_output_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -157,6 +198,8 @@ pub struct ProfileUpdate {
     pub clients: Option<Vec<String>>,
     pub gateway_enabled: Option<bool>,
     pub failover_enabled: Option<bool>,
+    #[serde(default)]
+    pub claude_code_params: Option<ClaudeCodeParams>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -561,6 +604,7 @@ impl ProfileManager {
             prompts: vec![],
             gateway_enabled: true,
             failover_enabled: false,
+            claude_code_params: ClaudeCodeParams::default(),
             created_at: Utc::now().to_rfc3339(),
             updated_at: Utc::now().to_rfc3339(),
         };
@@ -605,6 +649,9 @@ impl ProfileManager {
         }
         if let Some(fo) = update.failover_enabled {
             profile.failover_enabled = fo;
+        }
+        if let Some(params) = update.claude_code_params {
+            profile.claude_code_params = params;
         }
         profile.updated_at = Utc::now().to_rfc3339();
 
@@ -697,6 +744,7 @@ impl ProfileManager {
             opus_display_name: None,
             sonnet_display_name: None,
             haiku_display_name: None,
+            probed_max_output_tokens: None,
         };
         self.create_profile(ProfileCreate {
             name: name.to_string(),
@@ -803,10 +851,12 @@ mod tests {
                         opus_display_name: None,
                         sonnet_display_name: None,
                         haiku_display_name: None,
+                        probed_max_output_tokens: None,
                     }]),
                     clients: None,
                     gateway_enabled: Some(false),
                     failover_enabled: None,
+                    claude_code_params: None,
                 },
             )
             .unwrap();
@@ -1071,6 +1121,7 @@ mod tests {
                 clients: Some(vec!["codex-cli".into()]),
                 gateway_enabled: None,
                 failover_enabled: None,
+                claude_code_params: None,
             },
         )
         .unwrap();
@@ -1112,6 +1163,7 @@ mod tests {
                 clients: Some(vec!["codex-cli".into()]),
                 gateway_enabled: None,
                 failover_enabled: None,
+                claude_code_params: None,
             },
         )
         .unwrap();
@@ -1130,6 +1182,7 @@ mod tests {
                 clients: None,
                 gateway_enabled: Some(false),
                 failover_enabled: None,
+                claude_code_params: None,
             },
         )
         .unwrap();

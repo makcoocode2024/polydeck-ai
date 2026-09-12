@@ -96,6 +96,56 @@ export interface ProviderConfig {
   opusDisplayName?: string | null;
   sonnetDisplayName?: string | null;
   haikuDisplayName?: string | null;
+  /**
+   * The default model's output ceiling as the upstream reported it, kept from the
+   * probe so the parameter panel can recommend a measured value.
+   */
+  probedMaxOutputTokens?: number | null;
+}
+
+/**
+ * Claude Code launch parameters, stored per profile.
+ *
+ * `null`/absent on a token field means "follow detection"; a number means the
+ * user has overridden it and detection must leave it alone.
+ */
+export interface ClaudeCodeParams {
+  maxOutputTokens?: number | null;
+  maxThinkingTokens?: number | null;
+  disableAutoupdater: boolean;
+}
+
+export const CLAUDE_CODE_TOKEN_MIN = 4096;
+export const CLAUDE_CODE_TOKEN_MAX = 262144;
+export const OUTPUT_TOKENS_WITH_THINKING = 131072;
+export const OUTPUT_TOKENS_WITHOUT_THINKING = 8192;
+export const THINKING_TOKENS_DEFAULT = 32768;
+
+/**
+ * Mirror of `claude_code_params::resolve` on the Rust side. Only `signed`
+ * thinking may be injected — an unsigned block cannot be persisted by the
+ * client, so treating it as supported poisons the session.
+ */
+export function resolveClaudeCodeParams(
+  provider: Pick<ProviderConfig, "thinkingSupport" | "probedMaxOutputTokens"> | undefined,
+  params: ClaudeCodeParams | undefined,
+): {
+  maxOutputTokens: number;
+  maxThinkingTokens: number | null;
+  thinkingSupported: boolean;
+} {
+  const thinkingSupported = provider?.thinkingSupport === "signed";
+  const maxOutputTokens =
+    params?.maxOutputTokens ??
+    provider?.probedMaxOutputTokens ??
+    (thinkingSupported ? OUTPUT_TOKENS_WITH_THINKING : OUTPUT_TOKENS_WITHOUT_THINKING);
+  return {
+    maxOutputTokens,
+    maxThinkingTokens: thinkingSupported
+      ? (params?.maxThinkingTokens ?? THINKING_TOKENS_DEFAULT)
+      : null,
+    thinkingSupported,
+  };
 }
 
 export interface McpServerConfig {
@@ -154,6 +204,8 @@ export interface Profile {
   prompts: string[];
   gatewayEnabled: boolean;
   failoverEnabled: boolean;
+  /** Claude Code launch parameters for this profile's clients. */
+  claudeCodeParams?: ClaudeCodeParams;
   createdAt: string;
   updatedAt: string;
 }
@@ -170,6 +222,7 @@ export interface ProfileUpdate {
   clients?: string[];
   gatewayEnabled?: boolean;
   failoverEnabled?: boolean;
+  claudeCodeParams?: ClaudeCodeParams;
 }
 
 export interface ProfileTemplate {

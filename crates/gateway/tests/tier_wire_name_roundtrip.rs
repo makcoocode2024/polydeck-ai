@@ -42,6 +42,7 @@ fn provider(
         opus_display_name: None,
         sonnet_display_name: None,
         haiku_display_name: None,
+        probed_max_output_tokens: None,
     }
 }
 

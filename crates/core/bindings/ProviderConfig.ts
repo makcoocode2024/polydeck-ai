@@ -30,4 +30,10 @@ relayChatCompat: RelayChatCompat, acceptInvalidCerts: boolean, maxPricePerReques
  * Only meaningful with the gateway enabled — it is what maps the display
  * name back to the provider's real model. Empty falls back to the alias.
  */
-opusDisplayName: string | null, sonnetDisplayName: string | null, haikuDisplayName: string | null, };
+opusDisplayName: string | null, sonnetDisplayName: string | null, haikuDisplayName: string | null, 
+/**
+ * The default model's output ceiling as the upstream reported it, kept from
+ * the probe so the parameter panel has a measured value to recommend rather
+ * than only its built-in table. `None` means no probe reported one.
+ */
+probedMaxOutputTokens: bigint | null, };
