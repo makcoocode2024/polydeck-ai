@@ -17,6 +17,12 @@ import type {
   ChatTestResult,
   RateLimitSettings,
   ClientBindingView,
+  ClaudeCodeParams,
+} from "@/domain/profile";
+import {
+  resolveClaudeCodeParams,
+  CLAUDE_CODE_TOKEN_MIN,
+  CLAUDE_CODE_TOKEN_MAX,
 } from "@/domain/profile";
 import {
   UserCheck,
@@ -88,7 +94,12 @@ export default function ProfilesPage() {
 
   // Edit Modal State
   const [editingProfile, setEditingProfile] = useState<Profile | null>(null);
-  const [editTab, setEditTab] = useState<"basics" | "providers" | "clients">("basics");
+  const [editTab, setEditTab] = useState<"basics" | "providers" | "clients" | "params">("basics");
+  const [editParams, setEditParams] = useState<ClaudeCodeParams>({
+    maxOutputTokens: null,
+    maxThinkingTokens: null,
+    disableAutoupdater: false,
+  });
   const [editName, setEditName] = useState("");
   const [editGatewayEnabled, setEditGatewayEnabled] = useState(true);
   const [editFailoverEnabled, setEditFailoverEnabled] = useState(false);
@@ -293,6 +304,11 @@ export default function ProfilesPage() {
     setEditFailoverEnabled(Boolean(profile.failoverEnabled));
     setEditProviders(JSON.parse(JSON.stringify(profile.providers || [])));
     setEditClients(JSON.parse(JSON.stringify(profile.clients || [])));
+    setEditParams({
+      maxOutputTokens: profile.claudeCodeParams?.maxOutputTokens ?? null,
+      maxThinkingTokens: profile.claudeCodeParams?.maxThinkingTokens ?? null,
+      disableAutoupdater: Boolean(profile.claudeCodeParams?.disableAutoupdater),
+    });
     setProbeStates({});
     setRateLimitProbeStates({});
     setNodeChatStates({});
@@ -483,7 +499,16 @@ export default function ProfilesPage() {
             // option and renders as unselected while the text field still shows
             // the old name, so the profile saves a model this provider rejects.
             const keep = ids.includes((p.defaultModel || "").trim());
-            return { ...p, models: ids, defaultModel: keep ? p.defaultModel : ids[0] };
+            const defaultModel = keep ? p.defaultModel : ids[0];
+            // Keep the chosen model's reported ceiling so the parameter panel can
+            // recommend a measured value instead of only its built-in table.
+            const reported = res.models?.find((m) => m.id === defaultModel)?.maxOutputTokens;
+            return {
+              ...p,
+              models: ids,
+              defaultModel,
+              probedMaxOutputTokens: reported == null ? null : Number(reported),
+            };
           })
         );
       }
@@ -659,6 +684,16 @@ export default function ProfilesPage() {
       alert("方案名称不能为空！");
       return;
     }
+    for (const [label, value] of [
+      ["最大输出 Token", editParams.maxOutputTokens],
+      ["最大思考 Token", editParams.maxThinkingTokens],
+    ] as const) {
+      if (value != null && (value < CLAUDE_CODE_TOKEN_MIN || value > CLAUDE_CODE_TOKEN_MAX)) {
+        alert(`${label} 需在 ${CLAUDE_CODE_TOKEN_MIN} ~ ${CLAUDE_CODE_TOKEN_MAX} 之间`);
+        setEditTab("params");
+        return;
+      }
+    }
     setSaving(true);
     try {
       const primaryKey = providerKeys[0]?.trim();
@@ -671,6 +706,7 @@ export default function ProfilesPage() {
         failoverEnabled: editFailoverEnabled,
         providers: editProviders,
         clients: editClients,
+        claudeCodeParams: editParams,
       });
       if (activate) {
         await backend.activateProfile(editingProfile.id);
@@ -1454,6 +1490,17 @@ export default function ProfilesPage() {
                 <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-muted font-mono">
                   {editClients.length}
                 </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditTab("params")}
+                className={`pb-2.5 text-xs font-medium border-b-2 transition-all ${
+                  editTab === "params"
+                    ? "border-primary text-primary font-semibold"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Claude Code 参数
               </button>
             </div>
 
@@ -2280,6 +2327,165 @@ export default function ProfilesPage() {
                   </div>
                 </div>
               )}
+
+              {editTab === "params" && (() => {
+                const primary =
+                  editProviders.find((p) => p.isPrimary) || editProviders[0];
+                const resolved = resolveClaudeCodeParams(primary, editParams);
+                const outOfRange = (v: number | null | undefined) =>
+                  v != null && (v < CLAUDE_CODE_TOKEN_MIN || v > CLAUDE_CODE_TOKEN_MAX);
+                const parseTokens = (raw: string): number | null => {
+                  const t = raw.trim();
+                  if (!t) return null;
+                  const n = Number(t);
+                  return Number.isFinite(n) ? Math.trunc(n) : null;
+                };
+                return (
+                  <div className="p-6 space-y-5">
+                    <div className="text-[11px] text-muted-foreground leading-relaxed">
+                      参数按当前模型能力自动预填充。你可以手动修改，改过之后不会被自动探测覆盖。
+                      留空即表示跟随自动检测。
+                    </div>
+
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="text-muted-foreground">模型能力</span>
+                      {resolved.thinkingSupported ? (
+                        <span className="px-2 py-0.5 rounded-full text-[11px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                          ✅ 支持思考
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded-full text-[11px] bg-muted text-muted-foreground">
+                          ❌ 无思考能力
+                        </span>
+                      )}
+                      {primary?.defaultModel && (
+                        <span className="font-mono text-[11px] text-muted-foreground">
+                          {primary.defaultModel}
+                        </span>
+                      )}
+                    </div>
+                    {!resolved.thinkingSupported && primary?.thinkingSupport === "unsigned" && (
+                      <div className="text-[11px] text-amber-600 dark:text-amber-500 leading-relaxed">
+                        该上游返回的思考块没有签名，客户端无法保存这一轮对话。按不支持处理，
+                        否则整个会话都会失败。
+                      </div>
+                    )}
+                    {primary && (primary.thinkingSupport ?? "unprobed") === "unprobed" && (
+                      <div className="text-[11px] text-muted-foreground leading-relaxed">
+                        尚未探测思考能力。到「Provider 节点」里对该节点做一次思考能力检测，
+                        这里才会给出针对性的推荐值。
+                      </div>
+                    )}
+
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium">最大输出 Token</label>
+                      <div className="flex gap-2">
+                        <input
+                          type="number"
+                          className="flex-1 px-2.5 py-1.5 text-xs rounded-md border bg-background"
+                          placeholder={`自动（${resolved.maxOutputTokens}）`}
+                          value={editParams.maxOutputTokens ?? ""}
+                          onChange={(e) =>
+                            setEditParams((p) => ({
+                              ...p,
+                              maxOutputTokens: parseTokens(e.target.value),
+                            }))
+                          }
+                        />
+                        <select
+                          className="px-2 py-1.5 text-xs rounded-md border bg-background"
+                          value=""
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            if (!v) return;
+                            setEditParams((p) => ({ ...p, maxOutputTokens: Number(v) }));
+                          }}
+                        >
+                          <option value="">预设…</option>
+                          <option value="8192">8192</option>
+                          <option value="32768">32768</option>
+                          <option value="65536">65536</option>
+                          <option value="131072">131072</option>
+                          <option value="262144">262144</option>
+                        </select>
+                      </div>
+                      {outOfRange(editParams.maxOutputTokens) && (
+                        <div className="text-[11px] text-destructive">
+                          需在 {CLAUDE_CODE_TOKEN_MIN} ~ {CLAUDE_CODE_TOKEN_MAX} 之间
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label
+                        className={`text-xs font-medium ${
+                          resolved.thinkingSupported ? "" : "text-muted-foreground"
+                        }`}
+                      >
+                        最大思考 Token
+                      </label>
+                      <input
+                        type="number"
+                        disabled={!resolved.thinkingSupported}
+                        className="w-full px-2.5 py-1.5 text-xs rounded-md border bg-background disabled:opacity-50 disabled:cursor-not-allowed"
+                        placeholder={
+                          resolved.thinkingSupported
+                            ? `自动（${resolved.maxThinkingTokens}）`
+                            : ""
+                        }
+                        value={
+                          resolved.thinkingSupported ? (editParams.maxThinkingTokens ?? "") : ""
+                        }
+                        onChange={(e) =>
+                          setEditParams((p) => ({
+                            ...p,
+                            maxThinkingTokens: parseTokens(e.target.value),
+                          }))
+                        }
+                      />
+                      {!resolved.thinkingSupported ? (
+                        <div className="text-[11px] text-muted-foreground">
+                          当前模型不支持深度思考，该参数无效
+                        </div>
+                      ) : (
+                        outOfRange(editParams.maxThinkingTokens) && (
+                          <div className="text-[11px] text-destructive">
+                            需在 {CLAUDE_CODE_TOKEN_MIN} ~ {CLAUDE_CODE_TOKEN_MAX} 之间
+                          </div>
+                        )
+                      )}
+                    </div>
+
+                    <label className="flex items-center gap-2 text-xs cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={editParams.disableAutoupdater}
+                        onChange={(e) =>
+                          setEditParams((p) => ({
+                            ...p,
+                            disableAutoupdater: e.target.checked,
+                          }))
+                        }
+                      />
+                      <span>禁用自动更新</span>
+                    </label>
+
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-muted-foreground">
+                        ANTHROPIC_BASE_URL
+                      </label>
+                      <div className="px-2.5 py-1.5 text-xs rounded-md border bg-muted/40 font-mono text-muted-foreground">
+                        {editGatewayEnabled
+                          ? "http://127.0.0.1:18888"
+                          : (primary?.baseUrl || "—")}
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">
+                        由网关开关决定，切换档案时自动写入，这里只做回显。
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
 
             {/* Modal Footer */}

@@ -293,6 +293,77 @@ describe("Frontend Pages", () => {
     updateSpy.mockRestore();
   });
 
+  it("disables the thinking token field unless the model's thinking is signed", async () => {
+    const updateSpy = vi.spyOn(backend, "updateProfile");
+
+    render(<ProfilesPage />);
+    await waitFor(() => {
+      expect(screen.getAllByText("Default Profile").length).toBeGreaterThan(0);
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: /编辑/i })[0]);
+    await waitFor(() => {
+      expect(screen.getByText("编辑配置方案")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Claude Code 参数/i }));
+
+    // The fixture provider is unprobed, so thinking must read as unsupported and
+    // the field must be locked rather than accepting a value that cannot be used.
+    expect(screen.getByText(/无思考能力/)).toBeInTheDocument();
+    expect(screen.getByText("当前模型不支持深度思考，该参数无效")).toBeInTheDocument();
+    const thinkingInput = screen
+      .getByText("最大思考 Token")
+      .parentElement!.querySelector("input") as HTMLInputElement;
+    expect(thinkingInput.disabled).toBe(true);
+
+    // The output ceiling stays editable and is what gets saved.
+    const outputInput = screen
+      .getByText("最大输出 Token")
+      .parentElement!.querySelector("input") as HTMLInputElement;
+    expect(outputInput.disabled).toBe(false);
+    fireEvent.change(outputInput, { target: { value: "65536" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /仅保存方案/i }));
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith(
+        "prof_default",
+        expect.objectContaining({
+          claudeCodeParams: expect.objectContaining({ maxOutputTokens: 65536 }),
+        }),
+      );
+    });
+
+    updateSpy.mockRestore();
+  });
+
+  it("refuses to save a token value outside the accepted range", async () => {
+    const updateSpy = vi.spyOn(backend, "updateProfile");
+    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
+
+    render(<ProfilesPage />);
+    await waitFor(() => {
+      expect(screen.getAllByText("Default Profile").length).toBeGreaterThan(0);
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: /编辑/i })[0]);
+    await waitFor(() => {
+      expect(screen.getByText("编辑配置方案")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Claude Code 参数/i }));
+
+    const outputInput = screen
+      .getByText("最大输出 Token")
+      .parentElement!.querySelector("input") as HTMLInputElement;
+    fireEvent.change(outputInput, { target: { value: "999999" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /仅保存方案/i }));
+    await waitFor(() => {
+      expect(alertSpy).toHaveBeenCalledWith(expect.stringContaining("4096"));
+    });
+    expect(updateSpy).not.toHaveBeenCalled();
+
+    updateSpy.mockRestore();
+    alertSpy.mockRestore();
+  });
 
   it("handles real chat test in QuickSetupPage", async () => {
     const chatSpy = vi.spyOn(backend, "testProviderChat");
