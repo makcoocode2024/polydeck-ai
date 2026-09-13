@@ -2,6 +2,58 @@
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-13
+
+### Added
+- **Claude Code 参数面板。** 编辑方案新增「Claude Code 参数」Tab，参数存 Profile 级。
+  输出上限与思考上限按主 provider 的实测能力预填：手填值 > 上次探测结果 > 内置表。
+  只有**带签名**的思考块才算支持（与网关的 `is_injectable` 同一判据）——未签名的思考
+  块客户端存不下这一轮，注入 `MAX_THINKING_TOKENS` 会让整个会话失败，因此按不支持处理
+- **settings.json env 回显。** 参数 Tab 底部显示 `~/.claude/settings.json` 的 `env`
+  块当前真实内容，而不只是「将要写入什么」。这个文件是合并写入而非整体替换，上一个方案
+  留下的键、或者手改的值，只能从文件本身看出来。凭证在 core 侧就打码，只报字符数，不过
+  IPC 边界；判据是键名后缀（`_API_KEY` / `_AUTH_TOKEN` / `_SECRET` / `_PASSWORD`），
+  不用 `TOKEN` 子串——那会把 `CLAUDE_CODE_MAX_OUTPUT_TOKENS` 一起盖掉。
+  只在 claude-code 确实绑在当前方案时才做一致性对照，否则每行都会「不一致」，因为文件
+  属于它当前跟随的那个方案
+- **中转站非流式响应重组。** 很多 OpenAI 兼容中转站的 `stream:false` 返回体是坏的
+  （缺字段，或把 SSE 帧当 JSON 发），流式路径却正常。连接时探一次普通非流式调用，把结论
+  记为 profile 上的 `RelayChatCompat`；判定为 `Buffered` 时改写出站请求为流式，再把
+  content、tool_calls、usage 和流内错误拼回标准 `chat.completion`。官方
+  `api.openai.com/v1` 不走这条路径。方案编辑器暴露该字段只为覆盖误判，用户不需要设环境变量
+
+### Fixed
+- **网关对所有上游无条件跳过证书校验。** `gateway/src/client.rs` 硬编码
+  `.danger_accept_invalid_certs(true)`。前端那个默认关闭、带警示的复选框和 core 侧的
+  `accept_invalid_certs`（默认 `false`）都早已存在，穿透链只在 gateway 断掉：探测请求
+  尊重开关，真实转发流量不尊重。现在证书策略走构造参数（reqwest 把 TLS 策略烧死在
+  `Client` 构建那一刻，事后改不了），且参数必填——新增上游时强制表态，避免因遗漏而继承绕过
+- **Codex 报「idle timeout waiting for SSE」并重连。** 桥接路径上
+  `reasoning_content` 增量不产生任何客户端事件，GLM 可以思考几十秒而 Codex 一个字节都
+  收不到；Anthropic 因为发 ping 所以免疫。`SSE_STREAM_IDLE_TIMEOUT` 从 25s 提到 300s，
+  单个无法解析的块跳过而非杀掉整轮，客户端静默超过 10s 就发一个 SSE 注释——按「最后一次
+  写客户端」计时，不是「最后一次收到上游字节」
+- **思考内容盖掉了答案。** glm-5.3-flash 回一句「你好」用了 237 个输出 token，其中 187
+  是推理。无条件把它折进助手文本，Codex 收到的是一轮「已完成」但正文全是思考、没有答案，
+  渲染不出东西，看起来像卡死。现在只在这一轮自己没产出文本时才折叠，流式与非流式两条路径
+  都改，纯思考预算至少还能作为一条消息到达
+- **从方案目标列表里删掉客户端，绑定却留着。** 客户端 chip 渲染的是目标列表，所以删掉后
+  没有任何界面显示这个绑定，而 `delete_profile` 仍然算它、仍然拒绝删除——复制出来的方案
+  能进入一个没有任何屏幕可以撤销的状态：「该方案仍绑定着 claude-desktop」，却没有
+  claude-desktop 的 chip 可点。`update_profile` 现在解绑新列表丢掉的客户端，chip 行改为
+  渲染目标列表与绑定的并集
+
+### Changed
+- 两个 2400 行以上的文件按职责拆成目录，公共 API 在原路径重新导出，调用方零改动：
+  `router/` 拆出 effort / models / respond / sse，`profile_switch/` 拆出
+  claude_tiers / codex_catalog
+
+### Notes
+- env 预览只在 jsdom（Vitest）里验证过，core 侧读回有真实文件系统测试，但「切到参数 Tab
+  → 面板显示正确内容」这条链路没在真实应用里跑过
+- 证书校验现在尊重 profile 配置，但没做真实自签名站点的行为验证：reqwest 的 `Client`
+  不暴露 TLS 配置，单测只能锁默认值
+
 ### Added
 - **会话整合。** `HistoryStore::consolidate` 把同一会话在不同 id 方案下的重复行合并
   为一条，统一客户端名与时间戳格式，并在每次索引后自动运行；历史页新增「整合会话」

@@ -1,8 +1,8 @@
 # CLAUDE.md ? AI Coding Assistant Guidance
 
 ## Project Overview
-PolyDeck (v2.1.1) is a Tauri 2 + React 19 desktop application that manages AI development environments.
-The version of record is `Cargo.toml` / `package.json`; do not restate it in code.
+PolyDeck is a Tauri 2 + React 19 desktop application that manages AI development environments.
+The version of record is `Cargo.toml` / `package.json`; do not restate it here or in code.
 
 ## Architecture
 - **Rust workspace** with 3 crates: `core`, `gateway`, `inject`
