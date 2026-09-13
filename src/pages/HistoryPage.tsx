@@ -149,8 +149,13 @@ export default function HistoryPage() {
     return Array.from(new Set(sessions.map((s) => s.client)));
   }, [sessions]);
 
-  const totalMessages = sessions.reduce((acc, s) => acc + (s.messageCount || 0), 0);
-  const totalTokens = sessions.reduce((acc, s) => acc + (s.totalTokens || 0), 0);
+  // Summed over the filtered set, not every session. These sit directly above the
+  // list they describe, with no wording that scoped them to "all", so filtering to
+  // one client narrowed the list while the headline numbers stayed put — read as
+  // that client's totals when they were the whole history's.
+  const totalMessages = filteredSessions.reduce((acc, s) => acc + (s.messageCount || 0), 0);
+  const totalTokens = filteredSessions.reduce((acc, s) => acc + (s.totalTokens || 0), 0);
+  const isFiltered = filteredSessions.length !== sessions.length;
 
   return (
     <div className="space-y-8 max-w-6xl mx-auto pb-12">
@@ -201,7 +206,13 @@ export default function HistoryPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <StatTile label="会话总数" value={sessions.length} icon={MessageSquare} tone="primary" />
+        <StatTile
+          label={isFiltered ? "会话数（筛选后）" : "会话总数"}
+          value={filteredSessions.length}
+          icon={MessageSquare}
+          tone="primary"
+          hint={isFiltered ? `共 ${sessions.length} 个` : undefined}
+        />
         <StatTile
           label="累计交互轮次"
           value={totalMessages.toLocaleString()}

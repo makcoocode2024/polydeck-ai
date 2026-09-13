@@ -647,6 +647,32 @@ describe("Frontend Pages", () => {
     });
   });
 
+  it("narrows the headline figures with the client filter, not just the list", async () => {
+    // The three tiles summed every session while sitting directly above the
+    // filtered list, so filtering to one client left numbers that read as that
+    // client's when they covered the whole history.
+    render(<HistoryPage />);
+    await waitFor(() => {
+      expect(screen.getByText("优化 Rust Gateway 路由")).toBeInTheDocument();
+    });
+
+    // Both fixture sessions: 14 + 6 turns, 3420 + 1080 tokens.
+    expect(screen.getByText("20")).toBeInTheDocument();
+    expect(screen.getByText("4,500")).toBeInTheDocument();
+    expect(screen.getByText("会话总数")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Claude Code" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("优化 Rust Gateway 路由")).not.toBeInTheDocument();
+    });
+    // Claude Code alone: 6 turns, 1080 tokens, 1 of 2 sessions.
+    expect(screen.getByText("6")).toBeInTheDocument();
+    expect(screen.getByText("1,080")).toBeInTheDocument();
+    expect(screen.getByText("会话数（筛选后）")).toBeInTheDocument();
+    expect(screen.getByText("共 2 个")).toBeInTheDocument();
+  });
+
   it("renders SettingsPage and displays settings modules", async () => {
     render(<SettingsPage />);
     expect(screen.getByText("系统设置与诊断")).toBeInTheDocument();

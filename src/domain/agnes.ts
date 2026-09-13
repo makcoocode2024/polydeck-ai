@@ -120,8 +120,13 @@ export const AGNES_MODELS: AgnesModelChoice[] = [
     free: false,
   },
   {
-    id: "agnes-2.5-pro-alpha",
-    label: "Agnes 2.5 Pro Alpha",
+    // Renamed from `-alpha`, which is what the docs called it until the sidebar
+    // switched to `-beta`. A wrong id here is expensive to diagnose: Agnes answers
+    // an unknown model with 503, which counts as retryable, so the failure
+    // surfaces as an upstream outage and circuit-breaks rather than saying the
+    // name is wrong.
+    id: "agnes-2.5-pro-beta",
+    label: "Agnes 2.5 Pro Beta",
     note: "1M 上下文 · 推理模型 · 按量计费",
     free: false,
   },

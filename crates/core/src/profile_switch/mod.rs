@@ -2609,7 +2609,7 @@ mod tests {
         let pro = model_window("agnes-2.5-pro").unwrap();
         assert_eq!(pro.context, 1_000_000);
         assert_eq!(pro.claude_budget(), 934_464);
-        assert_eq!(model_window("agnes-2.5-pro-alpha"), Some(pro));
+        assert_eq!(model_window("agnes-2.5-pro-beta"), Some(pro));
 
         // No documented figure, so no guess.
         assert_eq!(model_window("model-S"), None);

@@ -63,7 +63,7 @@ describe("Agnes provider constants", () => {
   it("labels paid models as paid", () => {
     const paid = AGNES_MODELS.filter((m) => !m.free).map((m) => m.id);
     expect(paid).toContain("agnes-2.5-pro");
-    expect(paid).toContain("agnes-2.5-pro-alpha");
+    expect(paid).toContain("agnes-2.5-pro-beta");
     // Every flash generation bills at ¥0 under the current promotion.
     const free = AGNES_MODELS.filter((m) => m.free).map((m) => m.id);
     expect(free).toContain("agnes-3.0-flash");

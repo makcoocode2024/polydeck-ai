@@ -48,7 +48,7 @@ fn agnes_text_models() -> Vec<String> {
         "agnes-2.5-flash".into(),
         "agnes-2.0-flash".into(),
         "agnes-2.5-pro".into(),
-        "agnes-2.5-pro-alpha".into(),
+        "agnes-2.5-pro-beta".into(),
     ]
 }
 

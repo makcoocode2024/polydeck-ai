@@ -17,6 +17,9 @@ export default tseslint.config(
       "crates/**/bindings/**",
       "src-tauri/gen/**",
       ".scratch/**",
+      // Timestamped handoff snapshots and throwaway verification scripts. Same
+      // category as .scratch: gitignored, and not source to hold to the rules.
+      ".backups/**",
       "releases/**",
       "*.config.js",
     ],

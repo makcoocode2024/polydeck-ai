@@ -308,6 +308,8 @@ const mockResponses: Record<string, unknown> = {
     sessionsAfter: 2,
   },
   ad_sync_history: 2,
+  // Two sessions on different clients with different token counts, so a client
+  // filter has something to narrow and the headline figures have to move with it.
   ad_query_history: [
     {
       id: "sess_1",
@@ -320,6 +322,18 @@ const mockResponses: Record<string, unknown> = {
       providerId: "prov_1",
       profileId: "prof_default",
       mergedFrom: 1,
+    },
+    {
+      id: "sess_2",
+      client: "Claude Code",
+      title: "重做参数面板",
+      messageCount: 6,
+      totalTokens: 1080,
+      createdAt: "2026-08-19T09:00:00Z",
+      updatedAt: "2026-08-19T09:20:00Z",
+      providerId: "prov_1",
+      profileId: "prof_default",
+      mergedFrom: 0,
     },
   ],
   export_history: '{"sessions": []}',

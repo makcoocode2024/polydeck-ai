@@ -73,8 +73,10 @@ describe("Backend API Service", () => {
 
   it("queries history and diagnostics", async () => {
     const history = await backend.queryHistory();
-    expect(history.length).toBe(1);
-    expect(history[0].client).toBe("Codex CLI");
+    // Two sessions on different clients: the history page's filter needs a set
+    // that can actually be narrowed.
+    expect(history.length).toBe(2);
+    expect(history.map((s) => s.client)).toEqual(["Codex CLI", "Claude Code"]);
 
     const diag = await backend.runDiagnostics();
     expect(diag.okCount).toBe(1);
