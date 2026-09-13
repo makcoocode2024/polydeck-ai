@@ -1,6 +1,6 @@
 # HANDOFF — 2026-09-13
 
-分支 `fix/codex-wire-api-direct-mode`，领先 `main` 13 个提交。数字会变，以 `git log --oneline main..HEAD | wc -l` 为准。
+分支 `fix/codex-wire-api-direct-mode`，领先 `main` 若干提交——数字每提交一次就变，别写死，用 `git log --oneline main..HEAD | wc -l` 现查。
 
 ## 当前状态
 
