@@ -739,6 +739,112 @@ async fn write_claude_config(
     Ok(())
 }
 
+/// What `~/.claude/settings.json` actually has in its `env` block right now.
+///
+/// Read back from disk rather than recomputed from the profile. The file is
+/// merged, not replaced, so what a profile *would* write and what is in effect can
+/// differ: a key left behind by a previous profile, or a hand edit, shows up only
+/// here.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeEnvPreview {
+    /// The file that was read, so the user can go open it.
+    pub path: String,
+    /// `false` means Claude Code has no settings file at all — distinct from a
+    /// file whose `env` block is empty, which reads as `true` with no entries.
+    pub exists: bool,
+    pub entries: Vec<ClaudeEnvEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeEnvEntry {
+    pub key: String,
+    /// Display text. For a masked entry this is a description, never the value.
+    pub value: String,
+    /// The real value is a credential, so `value` carries only its length.
+    pub masked: bool,
+}
+
+/// Whether an env key's value is a credential that must not reach the UI.
+fn is_secret_env_key(key: &str) -> bool {
+    // Suffix matches, never a substring test for "TOKEN": that would also mask
+    // CLAUDE_CODE_MAX_OUTPUT_TOKENS and MAX_THINKING_TOKENS, which are the
+    // numbers this preview exists to show.
+    key.ends_with("_API_KEY")
+        || key.ends_with("_AUTH_TOKEN")
+        || key.ends_with("_SECRET")
+        || key.ends_with("_PASSWORD")
+}
+
+pub fn read_claude_env_preview() -> AppResult<ClaudeEnvPreview> {
+    let home =
+        crate::user_home_dir().ok_or_else(|| AppError::Config("无法确定用户主目录".into()))?;
+    let config_path = home.join(".claude").join("settings.json");
+    let path = config_path.to_string_lossy().into_owned();
+
+    if !config_path.exists() {
+        return Ok(ClaudeEnvPreview {
+            path,
+            exists: false,
+            entries: Vec::new(),
+        });
+    }
+
+    let content = std::fs::read_to_string(&config_path)?;
+    // Deliberately not a lenient parse. `write_claude_config` may fall back to an
+    // empty object because it overwrites the file anyway, but a reader that
+    // answered "no env keys" for a file it could not parse would read as "nothing
+    // was written" and send the user looking in the wrong place.
+    let parsed: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| AppError::Config(format!("{path} 不是合法的 JSON：{e}")))?;
+
+    let mut entries: Vec<ClaudeEnvEntry> = parsed
+        .get("env")
+        .and_then(|v| v.as_object())
+        .map(|env| {
+            env.iter()
+                .map(|(key, value)| {
+                    let masked = is_secret_env_key(key);
+                    let rendered = if masked {
+                        let len = match value {
+                            serde_json::Value::String(s) => s.chars().count(),
+                            serde_json::Value::Null => 0,
+                            other => other.to_string().chars().count(),
+                        };
+                        if len == 0 {
+                            "（空）".to_string()
+                        } else {
+                            format!("已写入（{len} 字符）")
+                        }
+                    } else {
+                        match value {
+                            serde_json::Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        }
+                    };
+                    ClaudeEnvEntry {
+                        key: key.clone(),
+                        value: rendered,
+                        masked,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // Sorted so the panel does not reshuffle between reads, whichever map order
+    // serde_json happens to use.
+    entries.sort_by(|a, b| a.key.cmp(&b.key));
+
+    Ok(ClaudeEnvPreview {
+        path,
+        exists: true,
+        entries,
+    })
+}
+
 /// Point Claude Desktop at the profile's endpoint.
 ///
 /// Two separate surfaces, in two separate directory trees: the MCP servers below,
@@ -2611,5 +2717,145 @@ mod tests {
             None,
             "未知模型在列时不应写入窗口，且必须清掉上一个 profile 的残留值"
         );
+    }
+
+    /// A missing settings file must read as `exists: false`, not as an empty env.
+    ///
+    /// The panel says "Claude Code 还没有配置文件" for one and "env 是空的" for the
+    /// other; collapsing them would send the user looking for keys in a file that
+    /// is not there.
+    #[test]
+    fn env_preview_separates_a_missing_file_from_an_empty_env() {
+        let _home_guard = lock_home_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
+
+        let missing = read_claude_env_preview().unwrap();
+        assert!(!missing.exists);
+        assert!(missing.entries.is_empty());
+        assert!(missing.path.ends_with("settings.json"), "{}", missing.path);
+
+        let claude_dir = temp_home.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(claude_dir.join("settings.json"), r#"{"env":{}}"#).unwrap();
+
+        let empty = read_claude_env_preview().unwrap();
+        assert!(empty.exists);
+        assert!(empty.entries.is_empty());
+    }
+
+    /// Credentials must never leave the backend, but the token ceilings must.
+    #[test]
+    fn env_preview_masks_credentials_and_keeps_token_ceilings_readable() {
+        let _home_guard = lock_home_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
+        let claude_dir = temp_home.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("settings.json"),
+            r#"{
+              "env": {
+                "ANTHROPIC_AUTH_TOKEN": "adk_supersecret",
+                "ANTHROPIC_API_KEY": "sk-secret",
+                "ANTHROPIC_BASE_URL": "http://127.0.0.1:18888",
+                "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "65536",
+                "MAX_THINKING_TOKENS": "8192"
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let preview = read_claude_env_preview().unwrap();
+        let find = |key: &str| {
+            preview
+                .entries
+                .iter()
+                .find(|e| e.key == key)
+                .unwrap_or_else(|| panic!("{key} 缺失：{:?}", preview.entries))
+        };
+
+        for secret in ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"] {
+            let entry = find(secret);
+            assert!(entry.masked, "{secret} 必须打码");
+        }
+        assert!(
+            !preview
+                .entries
+                .iter()
+                .any(|e| e.value.contains("supersecret") || e.value.contains("sk-secret")),
+            "凭证原值泄漏到了预览里：{:?}",
+            preview.entries
+        );
+
+        // The two "*_TOKENS" ceilings are the numbers this panel exists to show,
+        // so a substring test for "TOKEN" would have hidden exactly the wrong ones.
+        assert_eq!(find("CLAUDE_CODE_MAX_OUTPUT_TOKENS").value, "65536");
+        assert!(!find("CLAUDE_CODE_MAX_OUTPUT_TOKENS").masked);
+        assert_eq!(find("MAX_THINKING_TOKENS").value, "8192");
+        assert!(!find("MAX_THINKING_TOKENS").masked);
+        assert_eq!(find("ANTHROPIC_BASE_URL").value, "http://127.0.0.1:18888");
+
+        // Stable order, so the rows do not reshuffle between reads.
+        let mut sorted = preview.entries.clone();
+        sorted.sort_by(|a, b| a.key.cmp(&b.key));
+        let keys: Vec<_> = preview.entries.iter().map(|e| &e.key).collect();
+        let sorted_keys: Vec<_> = sorted.iter().map(|e| &e.key).collect();
+        assert_eq!(keys, sorted_keys);
+    }
+
+    /// Unparseable JSON is an error, not an empty preview.
+    ///
+    /// `write_claude_config` can afford a lenient parse because it overwrites the
+    /// file; a reader cannot — "no keys" and "could not read the file" would look
+    /// identical in the panel.
+    #[test]
+    fn env_preview_reports_a_broken_settings_file_instead_of_reading_empty() {
+        let _home_guard = lock_home_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
+        let claude_dir = temp_home.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(claude_dir.join("settings.json"), "{ not json").unwrap();
+
+        assert!(read_claude_env_preview().is_err());
+    }
+
+    /// The preview must show what a real activation left on disk.
+    #[tokio::test]
+    async fn env_preview_reflects_what_the_switch_actually_wrote() {
+        let _home_guard = lock_home_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
+
+        let provider = tier_provider(&["claude-opus-5", "claude-sonnet-5"], None, None, None);
+        write_claude_config(&provider, &Default::default(), "adk_test", true)
+            .await
+            .unwrap();
+
+        let preview = read_claude_env_preview().unwrap();
+        assert!(preview.exists);
+        let value = |key: &str| {
+            preview
+                .entries
+                .iter()
+                .find(|e| e.key == key)
+                .map(|e| e.value.clone())
+        };
+        assert_eq!(
+            value("ANTHROPIC_BASE_URL").as_deref(),
+            Some("http://127.0.0.1:18888")
+        );
+        assert_eq!(
+            value("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY").as_deref(),
+            Some("1")
+        );
+        let token = preview
+            .entries
+            .iter()
+            .find(|e| e.key == "ANTHROPIC_AUTH_TOKEN")
+            .expect("token 应已写入");
+        assert!(token.masked);
+        assert!(!token.value.contains("adk_test"), "{}", token.value);
     }
 }

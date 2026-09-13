@@ -336,6 +336,85 @@ describe("Frontend Pages", () => {
     updateSpy.mockRestore();
   });
 
+  it("shows the settings.json env block without leaking the credential", async () => {
+    render(<ProfilesPage />);
+    await waitFor(() => {
+      expect(screen.getAllByText("Default Profile").length).toBeGreaterThan(0);
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: /编辑/i })[0]);
+    await waitFor(() => {
+      expect(screen.getByText("编辑配置方案")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Claude Code 参数/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("ANTHROPIC_AUTH_TOKEN")).toBeInTheDocument();
+    });
+    expect(screen.getByText("CLAUDE_CODE_MAX_OUTPUT_TOKENS")).toBeInTheDocument();
+    // The masked entry reports a length, never the token itself.
+    expect(screen.getByText(/已写入（13 字符）/)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("adk_testtoken");
+
+    // The fixture leaves claude-code unbound, so the file describes some other
+    // profile and comparing this tab against it would flag differences that are
+    // not differences.
+    expect(screen.getByText(/还没有绑定任何方案.*因此不做对照/)).toBeInTheDocument();
+  });
+
+  it("flags an env value that disagrees with this tab, once Claude Code follows this profile", async () => {
+    // Only meaningful when the file belongs to this profile. The fixture's
+    // ceiling (65536) contradicts the unprobed provider's resolved default, and
+    // MAX_THINKING_TOKENS is a leftover: thinking is unsupported here, so the
+    // switch would remove that key rather than write it.
+    const restoreBindings = setMockResponse("ad_list_client_bindings", [
+      {
+        clientId: "claude-code",
+        profileId: "prof_default",
+        profileName: "Default Profile",
+        gatewayEnabled: true,
+        boundAt: "2026-08-18T00:00:00Z",
+      },
+    ]);
+    const restoreEnv = setMockResponse("ad_read_claude_env_preview", {
+      path: "/home/test/.claude/settings.json",
+      exists: true,
+      entries: [
+        { key: "ANTHROPIC_BASE_URL", value: "http://127.0.0.1:18888", masked: false },
+        { key: "CLAUDE_CODE_MAX_OUTPUT_TOKENS", value: "65536", masked: false },
+        { key: "MAX_THINKING_TOKENS", value: "8192", masked: false },
+      ],
+    });
+    invalidateBackendReadCache();
+
+    try {
+      render(<ProfilesPage />);
+      await waitFor(() => {
+        expect(screen.getAllByText("Default Profile").length).toBeGreaterThan(0);
+      });
+      fireEvent.click(screen.getAllByRole("button", { name: /编辑/i })[0]);
+      await waitFor(() => {
+        expect(screen.getByText("编辑配置方案")).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /Claude Code 参数/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText("CLAUDE_CODE_MAX_OUTPUT_TOKENS")).toBeInTheDocument();
+      });
+      // The ceiling on disk is compared against what this tab would write, which
+      // for an unprobed provider with no thinking is OUTPUT_TOKENS_WITHOUT_THINKING.
+      expect(screen.getByText(/≠ 8192/)).toBeInTheDocument();
+      // The stale thinking key is called out for removal, not silently accepted.
+      expect(screen.getByText(/MAX_THINKING_TOKENS 还留在文件里/)).toBeInTheDocument();
+      // Base URL matches in gateway mode, so it must not be flagged.
+      expect(screen.queryByText(/≠ http:\/\/127\.0\.0\.1:18888/)).not.toBeInTheDocument();
+      expect(screen.getByText(/Claude Code 当前跟随本方案/)).toBeInTheDocument();
+    } finally {
+      restoreEnv();
+      restoreBindings();
+      invalidateBackendReadCache();
+    }
+  });
+
   it("refuses to save a token value outside the accepted range", async () => {
     const updateSpy = vi.spyOn(backend, "updateProfile");
     const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});

@@ -123,6 +123,7 @@ pub fn run() {
             commands::profile::ad_probe_provider,
             commands::profile::ad_probe_rate_limits,
             commands::profile::ad_probe_thinking_support,
+            commands::profile::ad_read_claude_env_preview,
             commands::profile::ad_test_provider_chat,
             commands::profile::ad_set_profile_api_key,
             commands::profile::ad_get_profile_api_key,

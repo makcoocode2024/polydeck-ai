@@ -18,6 +18,7 @@ import type {
   RateLimitSettings,
   ClientBindingView,
   ClaudeCodeParams,
+  ClaudeEnvPreview,
 } from "@/domain/profile";
 import {
   resolveClaudeCodeParams,
@@ -126,6 +127,24 @@ export default function ProfilesPage() {
     message?: string;
   }>>({});
 
+  // What Claude Code's settings file has in effect, read back from disk. Kept
+  // separate from `editParams`: that is what would be written, this is what is
+  // actually there, and the file is merged so the two can disagree.
+  const [envPreview, setEnvPreview] = useState<{
+    loading: boolean;
+    data?: ClaudeEnvPreview;
+    error?: string;
+  }>({ loading: false });
+
+  const loadEnvPreview = useCallback(async () => {
+    setEnvPreview({ loading: true });
+    try {
+      setEnvPreview({ loading: false, data: await backend.readClaudeEnvPreview() });
+    } catch (e) {
+      setEnvPreview({ loading: false, error: String(e) });
+    }
+  }, []);
+
   const loadData = useCallback(async (isManual = false) => {
     if (isManual) {
       setRefreshing(true);
@@ -174,6 +193,15 @@ export default function ProfilesPage() {
   useEffect(() => {
     loadData(false);
   }, [loadData]);
+
+  // Read the settings file when the params tab comes into view, not when the modal
+  // opens: most visits never reach this tab, and the file changes underneath us on
+  // every activation, so a value fetched earlier would already be stale.
+  useEffect(() => {
+    if (editingProfile && editTab === "params") {
+      loadEnvPreview();
+    }
+  }, [editingProfile, editTab, loadEnvPreview]);
 
   const handleCreateProfile = async (name?: string) => {
     const targetName = (name ?? newProfileName).trim();
@@ -333,6 +361,7 @@ export default function ProfilesPage() {
 
   const closeEditModal = () => {
     setEditingProfile(null);
+    setEnvPreview({ loading: false });
     setProviderKeys({});
     setShowProviderKeys({});
     setProbeStates({});
@@ -2483,6 +2512,148 @@ export default function ProfilesPage() {
                         由网关开关决定，切换档案时自动写入，这里只做回显。
                       </div>
                     </div>
+
+                    {(() => {
+                      // The file belongs to whichever profile Claude Code currently
+                      // follows. Comparing this tab's settings against it only means
+                      // something when that profile is this one; otherwise every row
+                      // would "differ" for the entirely normal reason that the file
+                      // describes somebody else.
+                      const claudeBinding = bindingFor("claude-code");
+                      const boundHere = claudeBinding?.profileId === editingProfile?.id;
+                      const expected: Record<string, string | null> = boundHere
+                        ? {
+                            CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(resolved.maxOutputTokens),
+                            MAX_THINKING_TOKENS:
+                              resolved.maxThinkingTokens != null
+                                ? String(resolved.maxThinkingTokens)
+                                : null,
+                            DISABLE_AUTOUPDATER: editParams.disableAutoupdater ? "1" : null,
+                            // Only in gateway mode is the written value known exactly.
+                            // Pointed at a provider, the backend strips a `/v1` suffix
+                            // first, and duplicating that here would flag a difference
+                            // that is not one.
+                            ...(editGatewayEnabled
+                              ? { ANTHROPIC_BASE_URL: "http://127.0.0.1:18888" }
+                              : {}),
+                          }
+                        : {};
+                      const onDisk = new Map(
+                        (envPreview.data?.entries ?? []).map((e) => [e.key, e])
+                      );
+                      // A key this tab would remove but the file still has counts as a
+                      // difference: that is the stale-leftover case worth surfacing.
+                      const strayKeys = Object.entries(expected)
+                        .filter(([key, want]) => want === null && onDisk.has(key))
+                        .map(([key]) => key);
+                      const differs = (key: string, value: string) =>
+                        key in expected && expected[key] !== null && expected[key] !== value;
+
+                      return (
+                        <div className="space-y-1.5 pt-1 border-t">
+                          <div className="flex items-center justify-between gap-2">
+                            <label className="text-xs font-medium text-muted-foreground">
+                              当前生效的 env（读自 settings.json）
+                            </label>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={loadEnvPreview}
+                              disabled={envPreview.loading}
+                              className="h-6 px-2 text-[11px]"
+                            >
+                              <RotateCw
+                                className={`h-3 w-3 mr-1 ${
+                                  envPreview.loading ? "animate-spin" : ""
+                                }`}
+                              />
+                              重新读取
+                            </Button>
+                          </div>
+
+                          {envPreview.error ? (
+                            <div className="px-2.5 py-1.5 text-[11px] rounded-md border border-destructive/40 bg-destructive/5 text-destructive">
+                              读取失败：{envPreview.error}
+                            </div>
+                          ) : envPreview.loading && !envPreview.data ? (
+                            <div className="px-2.5 py-1.5 text-[11px] rounded-md border bg-muted/40 text-muted-foreground">
+                              读取中…
+                            </div>
+                          ) : !envPreview.data ? null : !envPreview.data.exists ? (
+                            <div className="px-2.5 py-1.5 text-[11px] rounded-md border bg-muted/40 text-muted-foreground">
+                              Claude Code 还没有配置文件。激活本方案时会创建它。
+                            </div>
+                          ) : envPreview.data.entries.length === 0 ? (
+                            <div className="px-2.5 py-1.5 text-[11px] rounded-md border bg-muted/40 text-muted-foreground">
+                              配置文件存在，但 env 是空的。激活本方案后这里才会有值。
+                            </div>
+                          ) : (
+                            <div className="rounded-md border bg-muted/40 divide-y max-h-56 overflow-y-auto">
+                              {envPreview.data.entries.map((entry) => {
+                                const mismatch = differs(entry.key, entry.value);
+                                return (
+                                  <div
+                                    key={entry.key}
+                                    className="flex items-start gap-2 px-2.5 py-1 text-[11px] font-mono"
+                                  >
+                                    <span
+                                      className={`shrink-0 ${
+                                        mismatch ? "text-amber-600 dark:text-amber-500" : "text-muted-foreground"
+                                      }`}
+                                    >
+                                      {entry.key}
+                                    </span>
+                                    <span
+                                      className={`ml-auto text-right break-all ${
+                                        entry.masked
+                                          ? "text-muted-foreground italic"
+                                          : mismatch
+                                            ? "text-amber-600 dark:text-amber-500"
+                                            : ""
+                                      }`}
+                                    >
+                                      {entry.value}
+                                      {mismatch && (
+                                        <span className="not-italic"> ≠ {expected[entry.key]}</span>
+                                      )}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          {strayKeys.length > 0 && (
+                            <div className="text-[11px] text-amber-600 dark:text-amber-500 leading-relaxed">
+                              {strayKeys.join("、")} 还留在文件里，但按本页设置不该写入。
+                              重新激活本方案会清掉它。
+                            </div>
+                          )}
+
+                          <div className="text-[11px] text-muted-foreground leading-relaxed">
+                            {boundHere ? (
+                              <>
+                                Claude Code 当前跟随本方案。改完参数要按「保存并激活」才会写进文件。
+                              </>
+                            ) : claudeBinding ? (
+                              <>
+                                这个文件属于 Claude Code 当前跟随的方案「
+                                {claudeBinding.profileName || claudeBinding.profileId}
+                                」，与本页设置不同是正常的，因此不做对照。
+                              </>
+                            ) : (
+                              <>
+                                Claude Code 还没有绑定任何方案，文件里是上一次绑定留下的内容，因此不做对照。
+                              </>
+                            )}
+                            {envPreview.data?.path && (
+                              <> 路径：<span className="font-mono">{envPreview.data.path}</span></>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })()}

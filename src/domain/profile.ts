@@ -179,6 +179,28 @@ export interface ClientConnectionInfo {
   isGateway: boolean;
 }
 
+/// One key from `~/.claude/settings.json` `env`, as read back from disk.
+export interface ClaudeEnvEntry {
+  key: string;
+  /// Display text. For a masked entry this describes the value, never carries it.
+  value: string;
+  /// The real value is a credential, so `value` only reports its length.
+  masked: boolean;
+}
+
+/// What Claude Code's settings file has in effect right now.
+///
+/// The file is merged rather than replaced, so this can differ from what the
+/// current profile would write — a leftover key from a previous profile, or a hand
+/// edit, shows up only here.
+export interface ClaudeEnvPreview {
+  path: string;
+  /// `false` means there is no settings file at all, which is not the same as a
+  /// file whose `env` block is empty.
+  exists: boolean;
+  entries: ClaudeEnvEntry[];
+}
+
 export interface SwitchResult {
   success: boolean;
   profileId: string;

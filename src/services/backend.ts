@@ -1,6 +1,6 @@
 ﻿import { invoke } from "@tauri-apps/api/core";
 import type { DetectedClient } from "@/domain/client";
-import type { Profile, ProfileTemplate, ProbeResult, ProfileUpdate, ChatTestResult, ProtocolKind, RateLimitRecommendation, ThinkingSupport, ClientBindingView, ClientConnectionInfo, SwitchResult } from "@/domain/profile";
+import type { Profile, ProfileTemplate, ProbeResult, ProfileUpdate, ChatTestResult, ProtocolKind, RateLimitRecommendation, ThinkingSupport, ClientBindingView, ClientConnectionInfo, ClaudeEnvPreview, SwitchResult } from "@/domain/profile";
 import type { McpServer, ManagedSkill, PromptTemplate } from "@/domain/extensions";
 import type { ConsolidateReport, SessionSummary } from "@/domain/history";
 import type { DiagnosticReport, UpdateInfo, AutoLaunchStatus, ClientRuleStatus, LogEntry } from "@/domain/ops";
@@ -98,6 +98,9 @@ export const backend = {
     invoke<ProbeResult>("ad_probe_provider", { baseUrl, apiKey, acceptInvalidCerts }),
     probeRateLimits: (baseUrl: string, apiKey: string, model?: string, acceptInvalidCerts?: boolean) =>
     invoke<RateLimitRecommendation>("ad_probe_rate_limits", { baseUrl, apiKey, model, acceptInvalidCerts }),
+  // Uncached: the point is to show what is on disk right now, and activating a
+  // profile rewrites the file behind this call's back.
+  readClaudeEnvPreview: () => invoke<ClaudeEnvPreview>("ad_read_claude_env_preview"),
   // Writes the result into the profile, so the profile list is now stale.
   probeThinkingSupport: (profileId: string, providerId: string) =>
     invoke<ThinkingSupport>("ad_probe_thinking_support", { profileId, providerId }).then((value) => {

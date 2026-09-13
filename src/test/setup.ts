@@ -191,6 +191,17 @@ const mockResponses: Record<string, unknown> = {
     isGateway: true,
   },
   ad_rotate_client_token: "adk_rotated",
+  // One masked credential and one plain value, so the params tab's preview has
+  // both cases to render.
+  ad_read_claude_env_preview: {
+    path: "/home/test/.claude/settings.json",
+    exists: true,
+    entries: [
+      { key: "ANTHROPIC_AUTH_TOKEN", value: "已写入（13 字符）", masked: true },
+      { key: "ANTHROPIC_BASE_URL", value: "http://127.0.0.1:18888", masked: false },
+      { key: "CLAUDE_CODE_MAX_OUTPUT_TOKENS", value: "65536", masked: false },
+    ],
+  },
   ad_switch_profile: {
     success: true,
     profileId: "prof_default",

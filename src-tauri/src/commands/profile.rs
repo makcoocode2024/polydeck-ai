@@ -272,6 +272,17 @@ pub async fn ad_rotate_client_token(
     Ok(token)
 }
 
+/// What `~/.claude/settings.json` has in its `env` block right now.
+///
+/// Read from disk rather than recomputed from the profile: the file is merged, so a
+/// key left by a previous profile or a hand edit is only visible this way. Values
+/// that are credentials come back as a length, never as the value.
+#[command]
+pub async fn ad_read_claude_env_preview(
+) -> Result<polydeck_core::profile_switch::ClaudeEnvPreview, String> {
+    polydeck_core::profile_switch::read_claude_env_preview().map_err(|e| e.to_string())
+}
+
 #[command]
 pub async fn ad_get_profile_templates(
 ) -> Result<Vec<polydeck_core::profile_templates::ProfileTemplate>, String> {
