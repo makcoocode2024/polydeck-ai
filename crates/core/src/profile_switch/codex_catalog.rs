@@ -53,8 +53,13 @@ impl ModelWindow {
 pub(super) fn model_window(slug: &str) -> Option<ModelWindow> {
     let lower = slug.to_ascii_lowercase();
 
-    // Agnes AI. The two families differ, so `supports_1m_context` cannot express
-    // this catalogue with one flag: the Pro pair is 1M, the Flash pair 512K.
+    // Agnes AI. `supports_1m_context` cannot express this catalogue with one
+    // flag, and neither can a single `-flash` rule: the Pro pair is 1M, but the
+    // Flash line splits by generation. 3.0 and 2.5 are 512K, while 2.0 and 1.5
+    // publish 256K — 2.0 briefly ran at 1M and was rolled back in June 2026.
+    // Matching `-flash` alone reported 512K for all of them, which travels into
+    // `CLAUDE_CODE_MAX_CONTEXT_TOKENS` and lets a 2.0 session run twice as long
+    // as the upstream accepts.
     if lower.starts_with("agnes-") {
         if lower.contains("-pro") {
             return Some(ModelWindow {
@@ -63,8 +68,17 @@ pub(super) fn model_window(slug: &str) -> Option<ModelWindow> {
             });
         }
         if lower.contains("-flash") {
+            // Unknown future generations fall through rather than inheriting
+            // either figure: a guess here is worse than the caller's fallback.
+            let context = if lower.starts_with("agnes-3.") || lower.starts_with("agnes-2.5") {
+                512_000
+            } else if lower.starts_with("agnes-2.0") || lower.starts_with("agnes-1.5") {
+                256_000
+            } else {
+                return None;
+            };
             return Some(ModelWindow {
-                context: 512_000,
+                context,
                 max_output: 65_536,
             });
         }

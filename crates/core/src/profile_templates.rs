@@ -26,8 +26,12 @@ pub const AGNES_BASE_URL_CN: &str = "https://api.agnes-ai.cn/v1";
 /// `/v1/chat/completions`, so a healthy model list is not proof the route will
 /// serve inference. `probe` catches it because it validates with a chat call.
 pub const AGNES_BASE_URL_GLOBAL: &str = "https://apihub.agnes-ai.com/v1";
-/// Free tier, and the strongest coding/agent model of the two free ones.
-pub const AGNES_DEFAULT_MODEL: &str = "agnes-2.5-flash";
+/// Newest generation, and what Agnes's docs lead with for coding and agent work.
+///
+/// 512K context, 65,536 max output. Its list price is not zero (¥0.35/M input,
+/// ¥1.00/M output) but every row of the published pricing table currently reads
+/// ¥0 as a promotion — the same arrangement `agnes-2.5-flash` shipped under.
+pub const AGNES_DEFAULT_MODEL: &str = "agnes-3.0-flash";
 /// Measured ceiling on a free key: the 17th request in a minute returns 429.
 /// Agnes exposes no `RateLimit-*` response headers, so `probe_rate_limits`
 /// cannot discover this and falls back to its generic 60 — which would sit
@@ -40,6 +44,7 @@ pub const AGNES_FREE_TIER_RPM: u32 = 20;
 /// would just hand the user a selection that 400s.
 fn agnes_text_models() -> Vec<String> {
     vec![
+        "agnes-3.0-flash".into(),
         "agnes-2.5-flash".into(),
         "agnes-2.0-flash".into(),
         "agnes-2.5-pro".into(),
@@ -225,7 +230,7 @@ pub fn builtin_templates() -> Vec<ProfileTemplate> {
         ProfileTemplate {
             id: "agnes-cn".into(),
             name: "Agnes AI (国内站)".into(),
-            description: "Agnes 多模态网关，国内直连；Chat / Responses / Messages 三协议齐备，agnes-2.5-flash 现价免费"
+            description: "Agnes 多模态网关，国内直连；Chat / Responses / Messages 三协议齐备，agnes-3.0-flash 现价免费"
                 .into(),
             provider: agnes_provider("agnes-cn", "Agnes AI 国内站", AGNES_BASE_URL_CN),
         },
@@ -304,6 +309,25 @@ mod tests {
             let t = find_template(id).unwrap();
             assert_eq!(t.provider.protocol, ProtocolKind::OpenAI);
             assert_eq!(t.provider.codex_compat, CodexToolCompat::ChatFunction);
+        }
+    }
+
+    /// The template must seed the generation the docs lead with.
+    ///
+    /// This stayed on `agnes-2.5-flash` after 3.0 shipped, and nothing failed —
+    /// both sides of the mirror agreed on a superseded value. Asserting the
+    /// default is *in* the catalogue and leads it is what catches that.
+    #[test]
+    fn agnes_defaults_to_the_newest_flash_generation() {
+        assert_eq!(AGNES_DEFAULT_MODEL, "agnes-3.0-flash");
+        for id in ["agnes-cn", "agnes-global"] {
+            let p = find_template(id).unwrap().provider;
+            assert_eq!(p.default_model, AGNES_DEFAULT_MODEL, "{id}");
+            assert_eq!(
+                p.models.first().map(String::as_str),
+                Some(AGNES_DEFAULT_MODEL),
+                "{id}: 默认模型必须排在目录首位"
+            );
         }
     }
 

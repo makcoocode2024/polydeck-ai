@@ -64,10 +64,19 @@ describe("Agnes provider constants", () => {
     const paid = AGNES_MODELS.filter((m) => !m.free).map((m) => m.id);
     expect(paid).toContain("agnes-2.5-pro");
     expect(paid).toContain("agnes-2.5-pro-alpha");
-    // Both flash models are free at current pricing.
+    // Every flash generation bills at ¥0 under the current promotion.
     const free = AGNES_MODELS.filter((m) => m.free).map((m) => m.id);
+    expect(free).toContain("agnes-3.0-flash");
     expect(free).toContain("agnes-2.5-flash");
     expect(free).toContain("agnes-2.0-flash");
+  });
+
+  it("defaults to the newest flash generation", () => {
+    // The panel prefilled 2.5 for weeks after 3.0 shipped, so this pins the
+    // default to the generation the docs lead with rather than to a literal.
+    expect(AGNES_DEFAULT_MODEL).toBe("agnes-3.0-flash");
+    expect(AGNES_MODEL_IDS[0]).toBe(AGNES_DEFAULT_MODEL);
+    expect(AGNES_MODELS.find((m) => m.id === AGNES_DEFAULT_MODEL)?.free).toBe(true);
   });
 
   it("gives every model a unique id", () => {

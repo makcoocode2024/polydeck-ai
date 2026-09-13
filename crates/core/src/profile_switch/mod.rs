@@ -2603,16 +2603,33 @@ mod tests {
         // 512K total minus one full-length reply.
         assert_eq!(flash.claude_budget(), 446_464);
 
+        // 3.0 publishes the same figures as 2.5.
+        assert_eq!(model_window("agnes-3.0-flash"), Some(flash));
+
         let pro = model_window("agnes-2.5-pro").unwrap();
         assert_eq!(pro.context, 1_000_000);
         assert_eq!(pro.claude_budget(), 934_464);
-
-        assert_eq!(model_window("agnes-2.0-flash"), Some(flash));
         assert_eq!(model_window("agnes-2.5-pro-alpha"), Some(pro));
 
         // No documented figure, so no guess.
         assert_eq!(model_window("model-S"), None);
         assert_eq!(model_window("claude-opus-5"), None);
+    }
+
+    /// The Flash line is not one window. Matching `-flash` alone reported 512K
+    /// for every generation, so a 2.0 session was sized at twice what the
+    /// upstream accepts — the figure reaches `CLAUDE_CODE_MAX_CONTEXT_TOKENS`.
+    #[test]
+    fn older_agnes_flash_generations_are_256k_not_512k() {
+        for slug in ["agnes-2.0-flash", "agnes-1.5-flash"] {
+            let w = model_window(slug).unwrap_or_else(|| panic!("{slug} 应有文档值"));
+            assert_eq!(w.context, 256_000, "{slug}");
+            assert_eq!(w.max_output, 65_536, "{slug}");
+        }
+
+        // An unannounced generation must fall through rather than inherit either
+        // figure; the caller's fallback is honest, a guess is not.
+        assert_eq!(model_window("agnes-9.9-flash"), None);
     }
 
     #[test]

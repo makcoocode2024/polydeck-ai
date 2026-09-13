@@ -23,11 +23,15 @@ export const AGNES_BASE_URL_CN = "https://api.agnes-ai.cn/v1";
 export const AGNES_BASE_URL_GLOBAL = "https://apihub.agnes-ai.com/v1";
 
 /**
- * Free tier, and the stronger of the two free models for coding and agent work.
- * `agnes-2.0-flash` is the one Agnes's own integration guides still name, but
- * 2.5 supersedes it on the same free pricing.
+ * Newest generation, and what the docs lead with for coding and agent work.
+ *
+ * Its list price is not zero — ¥0.35/M input, ¥1.00/M output — but every line of
+ * the pricing table currently reads ¥0 as a promotion, the same arrangement
+ * `agnes-2.5-flash` shipped under. Treated as free here because that is what a
+ * key is billed today; if the promotion ends, this constant is not what changes,
+ * the `free` flag on the model entry is.
  */
-export const AGNES_DEFAULT_MODEL = "agnes-2.5-flash";
+export const AGNES_DEFAULT_MODEL = "agnes-3.0-flash";
 
 /**
  * Measured ceiling on a free key: the 17th request inside a minute returns 429.
@@ -88,15 +92,25 @@ export interface AgnesModelChoice {
  */
 export const AGNES_MODELS: AgnesModelChoice[] = [
   {
+    id: "agnes-3.0-flash",
+    label: "Agnes 3.0 Flash",
+    note: "512K 上下文 · 长任务指令遵循更稳 · 推荐",
+    free: true,
+  },
+  {
     id: "agnes-2.5-flash",
     label: "Agnes 2.5 Flash",
-    note: "512K 上下文 · 编码与 Agent 优化 · 推荐",
+    note: "512K 上下文 · 编码与 Agent 优化",
     free: true,
   },
   {
     id: "agnes-2.0-flash",
+    // 256K, not 512K. The temporary 1M window was rolled back in June 2026 and
+    // the docs now publish 256K; this entry read 512K until 2026-09-13. Also no
+    // longer listed in the docs sidebar, so it is kept only for profiles that
+    // already point at it.
     label: "Agnes 2.0 Flash",
-    note: "512K 上下文 · 官方集成指南沿用的版本",
+    note: "256K 上下文 · 上一代兼容用，官方文档已不再列出",
     free: true,
   },
   {
