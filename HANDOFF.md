@@ -53,6 +53,18 @@ Claude Code 参数 Tab 原来只能显示「将要写入什么」，看不到「
 
 六道门禁全绿：fmt / clippy `-D warnings` / `cargo test --workspace`（15 个二进制、393 测试）/ tsc / eslint `--max-warnings 0`。
 
+## Release 产物：2.1.1（2026-09-13 09:54 构建）
+
+`npm run tauri build` 出的第一个 2.1.x 安装包——此前产物止于 2.0.11，所以没有覆盖任何旧文件。**版本号未动**，`Cargo.toml` / `package.json` 进本次会话前就已是 2.1.1；env 预览这个功能没有单独升版本，要升得另行决定。
+
+| 产物 | 大小 | sha256 |
+| --- | --- | --- |
+| `target/release/polydeck.exe` | 23M | `80dde64126148f86efcd3f806a1dc533ceb2e96cba9d05aa9f883ffa84b647dd` |
+| `target/release/bundle/msi/PolyDeck_2.1.1_x64_en-US.msi` | 9.2M | `e0ff3d18d36607a063293d55fcbdff024c1755e9483c12bda302176c1eb9a94e` |
+| `target/release/bundle/nsis/PolyDeck_2.1.1_x64-setup.exe` | 5.7M | `357e68c0ba1b7fd9046fa52dc828c4bc4ab6d2f7db639b33ead21574280d22dd` |
+
+对应源码是 `7b7cecd`（含 `cba1eaa` 的 env 预览）。`target/` 已 gitignore，产物不入库。
+
 ## 未决
 
 - 日志目录 `~/.ai-deck/logs/` 最新文件停在 8-25，原因未查清。注意：旧版本文「关窗丢缓冲」那个解释**已被推翻**，`LogRouter::init()` 在 `src-tauri/src/lib.rs:23` 调用，guard 存在 `crates/core/src/logging.rs:31-33` 的进程级静态里。可能方向：init() 返回 Err 被 eprintln 到窗口化 stderr 无人看见；filter 只匹配 `polydeck_gateway` 而部分路径用旧 crate 名；rolling appender 懒创建、无事件命中 filter。
