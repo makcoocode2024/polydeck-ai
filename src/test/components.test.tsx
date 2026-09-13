@@ -31,11 +31,19 @@ describe("UI Components", () => {
     expect(screen.getByText("卡片详细内容")).toBeInTheDocument();
   });
 
-  it("renders Badge variants", () => {
-    render(<Badge variant="success">已安装</Badge>);
-    const badge = screen.getByText("已安装");
-    expect(badge).toBeInTheDocument();
-    expect(badge.className).toContain("text-emerald");
+  it("renders Badge variants from semantic tokens, not raw palette entries", () => {
+    // This asserted `text-emerald` while every page hand-rolled its own
+    // emerald/amber/sky triplet, so no two screens agreed on the light and dark
+    // shades. The variants resolve through --success/--warning/--info now, and a
+    // literal palette class reappearing here is the regression to catch.
+    for (const tone of ["success", "warning", "info"] as const) {
+      const { unmount } = render(<Badge variant={tone}>已安装</Badge>);
+      const badge = screen.getByText("已安装");
+      expect(badge.className).toContain(`text-${tone}-foreground`);
+      expect(badge.className).toContain(`bg-${tone}-surface`);
+      expect(badge.className).not.toMatch(/emerald|amber|sky|rose|zinc/);
+      unmount();
+    }
   });
 
   it("renders ThemeToggle", () => {

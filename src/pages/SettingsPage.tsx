@@ -8,6 +8,7 @@ import { useAtom } from "jotai";
 import { themeAtom } from "@/state/theme";
 import type { DiagnosticReport, UpdateInfo, AutoLaunchStatus, ClientRuleStatus, LogEntry } from "@/domain/ops";
 import type { ProxyStatus } from "@/domain/proxy";
+import { ClientRuleCard } from "./settings/ClientRuleCard";
 import {
   Settings,
   Sun,
@@ -200,10 +201,14 @@ export default function SettingsPage() {
         </p>
       </div>
 
-      {/* Grid of Settings Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      {/*
+       * `items-start` rather than the default `stretch`: the rule cards grow with
+       * their target list while the appearance card is three fixed buttons, so
+       * stretching left one column padded with dead space to match the other.
+       */}
+      <div className="grid grid-cols-1 items-start gap-5 md:grid-cols-2">
         {/* Appearance Card */}
-        <Card className="border-border/60 shadow-sm">
+        <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <CardTitle className="text-base font-semibold">外观与显示主题</CardTitle>
@@ -244,7 +249,7 @@ export default function SettingsPage() {
         </Card>
 
         {/* Autolaunch Card */}
-        <Card className="border-border/60 shadow-sm">
+        <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <CardTitle className="text-base font-semibold">开机启动与后台托管</CardTitle>
@@ -272,7 +277,7 @@ export default function SettingsPage() {
               系统登录时自动启动并在后台托盘静默运行网关服务。
             </p>
             {autolaunch?.command && (
-              <p className="text-muted-foreground font-mono text-[11px] break-all">
+              <p className="text-muted-foreground font-mono text-2xs break-all">
                 登录时执行：{autolaunch.command}
               </p>
             )}
@@ -300,194 +305,34 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        {/* Forced Chinese Output Card */}
-        <Card className="border-border/60 shadow-sm" data-testid="force-chinese-card">
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Languages className="h-4 w-4 text-primary" />
-                <CardTitle className="text-base font-semibold">强制中文输出</CardTitle>
-              </div>
-              {forceChineseError ? (
-                <Badge variant="destructive">不可用</Badge>
-              ) : forceChinese ? (
-                <Badge variant={forceChinese.enabled ? "success" : "secondary"}>
-                  {forceChinese.enabled ? "已启用" : "已关闭"}
-                </Badge>
-              ) : (
-                <Badge variant="secondary">读取中</Badge>
-              )}
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3 text-xs">
-            <label className="flex items-start gap-3 p-3.5 rounded-lg border bg-muted/10 hover:bg-muted/20 cursor-pointer transition-all">
-              <input
-                type="checkbox"
-                checked={forceChinese?.enabled ?? false}
-                disabled={!forceChinese || savingForceChinese}
-                onChange={(e) => handleToggleForceChinese(e.target.checked)}
-                className="mt-0.5 rounded border-input text-primary focus:ring-primary h-4 w-4"
-                data-testid="force-chinese-toggle"
-              />
-              <div className="space-y-0.5 flex-1">
-                <div className="text-xs font-medium text-foreground">
-                  向客户端全局指令文件写入中文输出约束
-                </div>
-                <p className="text-[11px] text-muted-foreground">
-                  规则写在标记块内，块外的内容不会被改动；关闭时只移除该块。代码、报错和标识符仍保留英文。
-                </p>
-              </div>
-            </label>
+        <ClientRuleCard
+          icon={Languages}
+          title="强制中文输出"
+          testIdPrefix="force-chinese"
+          status={forceChinese}
+          error={forceChineseError}
+          saving={savingForceChinese}
+          onToggle={handleToggleForceChinese}
+          label="向客户端全局指令文件写入中文输出约束"
+          description="规则写在标记块内，块外的内容不会被改动；关闭时只移除该块。代码、报错和标识符仍保留英文。"
+          footnote="客户端每次新开会话才读取指令文件，已经打开的会话需要重启才会生效。"
+        />
 
-            {forceChineseError && (
-              <div
-                className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 space-y-1"
-                data-testid="force-chinese-error"
-              >
-                <p className="text-[11px] text-destructive flex items-start gap-1">
-                  <XCircle className="h-3 w-3 mt-0.5 shrink-0" />
-                  <span>读取失败：{forceChineseError}</span>
-                </p>
-                <p className="text-[11px] text-muted-foreground">
-                  若提示命令不存在，说明当前运行的是旧构建。执行 build_release.bat
-                  重新生成生产构建后重启即可。
-                </p>
-              </div>
-            )}
-
-            {forceChinese?.targets.map((t) => (
-              <div key={t.path} className="space-y-1">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium text-foreground">{t.target}</span>
-                  {t.error ? (
-                    <Badge variant="destructive">写入失败</Badge>
-                  ) : (
-                    <Badge variant={t.rulePresent ? "success" : "secondary"}>
-                      {t.rulePresent ? "规则已写入" : "未写入"}
-                    </Badge>
-                  )}
-                </div>
-                <p className="text-[11px] text-muted-foreground font-mono break-all">{t.path}</p>
-                {t.error && (
-                  <p className="text-[11px] text-destructive flex items-start gap-1">
-                    <XCircle className="h-3 w-3 mt-0.5 shrink-0" />
-                    {t.error}
-                  </p>
-                )}
-                {t.shadowedBy && (
-                  <p className="text-[11px] text-amber-600 dark:text-amber-500 flex items-start gap-1">
-                    <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
-                    <span>
-                      该文件被 <span className="font-mono break-all">{t.shadowedBy}</span>{" "}
-                      抢先读取，规则不会生效。删除或清空该文件后才会读到这里。
-                    </span>
-                  </p>
-                )}
-              </div>
-            ))}
-
-            <p className="text-[11px] text-muted-foreground">
-              客户端每次新开会话才读取指令文件，已经打开的会话需要重启才会生效。
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* Tool Execution Truthfulness Card */}
-        <Card className="border-border/60 shadow-sm" data-testid="tool-truthfulness-card">
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="h-4 w-4 text-primary" />
-                <CardTitle className="text-base font-semibold">工具执行真实性检查</CardTitle>
-              </div>
-              {toolTruthError ? (
-                <Badge variant="destructive">不可用</Badge>
-              ) : toolTruth ? (
-                <Badge variant={toolTruth.enabled ? "success" : "secondary"}>
-                  {toolTruth.enabled ? "已启用" : "已关闭"}
-                </Badge>
-              ) : (
-                <Badge variant="secondary">读取中</Badge>
-              )}
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3 text-xs">
-            <label className="flex items-start gap-3 p-3.5 rounded-lg border bg-muted/10 hover:bg-muted/20 cursor-pointer transition-all">
-              <input
-                type="checkbox"
-                checked={toolTruth?.enabled ?? false}
-                disabled={!toolTruth || savingToolTruth}
-                onChange={(e) => handleToggleToolTruth(e.target.checked)}
-                className="mt-0.5 rounded border-input text-primary focus:ring-primary h-4 w-4"
-                data-testid="tool-truthfulness-toggle"
-              />
-              <div className="space-y-0.5 flex-1">
-                <div className="text-xs font-medium text-foreground">
-                  禁止客户端虚构工具执行结果
-                </div>
-                <p className="text-[11px] text-muted-foreground">
-                  要求只报告工具实际返回的内容：未执行的操作标记【未执行】，无法从工具结果确认的标记【无法确认】，
-                  输出被截断时必须重新调用工具。与中文输出规则各自独立，写在不同的标记块里。
-                </p>
-              </div>
-            </label>
-
-            {toolTruthError && (
-              <div
-                className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 space-y-1"
-                data-testid="tool-truthfulness-error"
-              >
-                <p className="text-[11px] text-destructive flex items-start gap-1">
-                  <XCircle className="h-3 w-3 mt-0.5 shrink-0" />
-                  <span>读取失败：{toolTruthError}</span>
-                </p>
-                <p className="text-[11px] text-muted-foreground">
-                  若提示命令不存在，说明当前运行的是旧构建。执行 build_release.bat
-                  重新生成生产构建后重启即可。
-                </p>
-              </div>
-            )}
-
-            {toolTruth?.targets.map((t) => (
-              <div key={t.path} className="space-y-1">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium text-foreground">{t.target}</span>
-                  {t.error ? (
-                    <Badge variant="destructive">写入失败</Badge>
-                  ) : (
-                    <Badge variant={t.rulePresent ? "success" : "secondary"}>
-                      {t.rulePresent ? "规则已写入" : "未写入"}
-                    </Badge>
-                  )}
-                </div>
-                <p className="text-[11px] text-muted-foreground font-mono break-all">{t.path}</p>
-                {t.error && (
-                  <p className="text-[11px] text-destructive flex items-start gap-1">
-                    <XCircle className="h-3 w-3 mt-0.5 shrink-0" />
-                    {t.error}
-                  </p>
-                )}
-                {t.shadowedBy && (
-                  <p className="text-[11px] text-amber-600 dark:text-amber-500 flex items-start gap-1">
-                    <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
-                    <span>
-                      该文件被 <span className="font-mono break-all">{t.shadowedBy}</span>{" "}
-                      抢先读取，规则不会生效。删除或清空该文件后才会读到这里。
-                    </span>
-                  </p>
-                )}
-              </div>
-            ))}
-
-            <p className="text-[11px] text-muted-foreground">
-              这是写给客户端的约束，不是运行时校验：它降低虚构结果的概率，但不能从机制上阻止。
-              客户端每次新开会话才读取指令文件，已经打开的会话需要重启才会生效。
-            </p>
-          </CardContent>
-        </Card>
+        <ClientRuleCard
+          icon={ShieldCheck}
+          title="工具执行真实性检查"
+          testIdPrefix="tool-truthfulness"
+          status={toolTruth}
+          error={toolTruthError}
+          saving={savingToolTruth}
+          onToggle={handleToggleToolTruth}
+          label="禁止客户端虚构工具执行结果"
+          description="要求只报告工具实际返回的内容：未执行的操作标记【未执行】，无法从工具结果确认的标记【无法确认】，输出被截断时必须重新调用工具。与中文输出规则各自独立，写在不同的标记块里。"
+          footnote="这是写给客户端的约束，不是运行时校验：它降低虚构结果的概率，但不能从机制上阻止。客户端每次新开会话才读取指令文件，已经打开的会话需要重启才会生效。"
+        />
 
         {/* Proxy Manager Card */}
-        <Card className="border-border/60 shadow-sm">
+        <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -496,8 +341,7 @@ export default function SettingsPage() {
               </div>
               <Button
                 variant="ghost"
-                size="sm"
-                className="h-7 text-xs"
+                size="xs"
                 onClick={() => backend.detectProxy().then(setProxyStatus)}
               >
                 <RotateCw className="h-3 w-3 mr-1" /> 刷新
@@ -510,7 +354,7 @@ export default function SettingsPage() {
             </p>
             <div className="space-y-1.5">
               {(!proxyStatus || !proxyStatus.tools || proxyStatus.tools.length === 0) ? (
-                <div className="p-2 bg-muted/30 rounded text-muted-foreground text-[11px]">
+                <div className="p-2 bg-muted/30 rounded text-muted-foreground text-2xs">
                   未检测到运行中的本地代理软件（直连模式）
                 </div>
               ) : (
@@ -518,8 +362,8 @@ export default function SettingsPage() {
                   <div key={t.name} className="p-2 bg-muted/40 rounded flex items-center justify-between">
                     <span className="font-semibold text-xs">{t.name}</span>
                     <div className="flex items-center gap-2">
-                      {t.port && <span className="font-mono text-[10px]">端口: {t.port}</span>}
-                      <Badge variant={t.running ? "success" : "secondary"} className="text-[10px]">
+                      {t.port && <span className="font-mono text-2xs">端口: {t.port}</span>}
+                      <Badge variant={t.running ? "success" : "secondary"} className="text-2xs">
                         {t.running ? "运行中" : "未运行"}
                       </Badge>
                     </div>
@@ -531,14 +375,14 @@ export default function SettingsPage() {
         </Card>
 
         {/* Update & Logs Card */}
-        <Card className="border-border/60 shadow-sm">
+        <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <DownloadCloud className="h-4 w-4 text-primary" />
                 <CardTitle className="text-base font-semibold">版本与维护</CardTitle>
               </div>
-              <Badge variant="outline" className="font-mono text-[10px]">v{version}</Badge>
+              <Badge variant="outline" className="font-mono text-2xs">v{version}</Badge>
             </div>
           </CardHeader>
           <CardContent className="space-y-3 text-xs">
@@ -569,12 +413,12 @@ export default function SettingsPage() {
               <div className="p-2 bg-muted/40 rounded text-xs flex items-center gap-2">
                 {updateInfo.available ? (
                   <>
-                    <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+                    <AlertTriangle className="h-3.5 w-3.5 text-warning" />
                     <span>发现新版本: <b>{updateInfo.version}</b></span>
                   </>
                 ) : (
                   <>
-                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                    <CheckCircle2 className="h-3.5 w-3.5 text-success" />
                     <span>已是最新稳定版本 (v{version})</span>
                   </>
                 )}
@@ -586,7 +430,7 @@ export default function SettingsPage() {
 
       {/* Provider Deck Migration Card */}
       {importable.length > 0 && (
-        <Card className="border-border/60 shadow-sm">
+        <Card>
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -610,7 +454,7 @@ export default function SettingsPage() {
                 {importing ? "正在迁移导入..." : "一键导入全部配置"}
               </Button>
               {importSuccess && (
-                <span className="text-emerald-500 flex items-center gap-1">
+                <span className="flex items-center gap-1 text-success">
                   <Check className="h-3.5 w-3.5" /> 导入成功！
                 </span>
               )}
@@ -620,7 +464,7 @@ export default function SettingsPage() {
       )}
 
       {/* Provider Doctor Diagnostics Section */}
-      <Card className="border-border/60 shadow-sm">
+      <Card>
         <CardHeader className="pb-3 border-b">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div className="flex items-center gap-2">
@@ -651,13 +495,13 @@ export default function SettingsPage() {
           ) : (
             <div className="space-y-4">
               <div className="flex items-center gap-4 text-xs">
-                <div className="flex items-center gap-1 text-emerald-500 font-semibold">
+                <div className="flex items-center gap-1 font-semibold text-success">
                   <CheckCircle2 className="h-4 w-4" /> 正常: {diagnostics.okCount} 项
                 </div>
-                <div className="flex items-center gap-1 text-amber-500 font-semibold">
+                <div className="flex items-center gap-1 font-semibold text-warning">
                   <AlertTriangle className="h-4 w-4" /> 警告: {diagnostics.warnings} 项
                 </div>
-                <div className="flex items-center gap-1 text-destructive font-semibold">
+                <div className="flex items-center gap-1 font-semibold text-destructive">
                   <XCircle className="h-4 w-4" /> 异常: {diagnostics.errors} 项
                 </div>
               </div>
@@ -666,26 +510,26 @@ export default function SettingsPage() {
                 {diagnostics.items.map((item, idx) => (
                   <div
                     key={idx}
-                    className={`p-3 rounded-lg border text-xs space-y-1 ${
+                    className={`space-y-1 rounded-lg border p-3 text-xs ${
                       item.level === "error"
-                        ? "bg-destructive/5 border-destructive/30 text-destructive"
+                        ? "border-destructive/30 bg-destructive-surface text-destructive-foreground"
                         : item.level === "warning"
-                        ? "bg-amber-500/5 border-amber-500/30 text-amber-600 dark:text-amber-400"
-                        : "bg-emerald-500/5 border-emerald-500/30 text-foreground"
+                          ? "border-warning/30 bg-warning-surface text-warning-foreground"
+                          : "border-success/30 bg-success-surface text-success-foreground"
                     }`}
                   >
                     <div className="flex items-center justify-between font-semibold">
                       <span>[{item.category}] {item.message}</span>
                       <Badge
                         variant={item.level === "error" ? "destructive" : item.level === "warning" ? "warning" : "success"}
-                        className="text-[10px]"
+                        className="text-2xs"
                       >
                         {item.level.toUpperCase()}
                       </Badge>
                     </div>
-                    {item.impact && <p className="text-[11px] opacity-80">影响: {item.impact}</p>}
+                    {item.impact && <p className="text-2xs opacity-80">影响: {item.impact}</p>}
                     {item.suggestion && (
-                      <p className="text-[11px] opacity-90 font-medium">建议: {item.suggestion}</p>
+                      <p className="text-2xs font-medium opacity-90">建议: {item.suggestion}</p>
                     )}
                   </div>
                 ))}
@@ -697,15 +541,15 @@ export default function SettingsPage() {
 
       {/* Logs Viewer Modal / Box */}
       {showLogs && (
-        <Card className="border-border/60 shadow-sm">
+        <Card>
           <CardHeader className="pb-2 flex flex-row items-center justify-between">
             <CardTitle className="text-sm font-mono">系统运行日志 (最新 {logs.length} 条)</CardTitle>
-            <Button variant="ghost" size="sm" onClick={() => setShowLogs(false)} className="text-xs h-7">
+            <Button variant="ghost" size="xs" onClick={() => setShowLogs(false)}>
               收起日志
             </Button>
           </CardHeader>
           <CardContent>
-            <div className="bg-muted/80 p-3 rounded-lg font-mono text-[11px] max-h-60 overflow-y-auto space-y-1">
+            <div className="bg-muted/80 p-3 rounded-lg font-mono text-2xs max-h-60 overflow-y-auto space-y-1">
               {logsError ? (
                 <div className="text-destructive text-center py-4" role="alert">
                   读取日志失败：{logsError}
@@ -721,7 +565,7 @@ export default function SettingsPage() {
                         entry.level === "ERROR"
                           ? "text-destructive"
                           : entry.level === "WARN"
-                            ? "text-amber-500"
+                            ? "text-warning"
                             : "text-muted-foreground"
                       }
                     >

@@ -13,8 +13,8 @@ export function ThemeToggle() {
   };
 
   const icons = {
-    light: <Sun className="h-4 w-4 text-amber-500" />,
-    dark: <Moon className="h-4 w-4 text-sky-400" />,
+    light: <Sun className="h-4 w-4 text-warning" />,
+    dark: <Moon className="h-4 w-4 text-info" />,
     system: <Laptop className="h-4 w-4 text-muted-foreground" />,
   };
 

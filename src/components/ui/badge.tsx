@@ -11,9 +11,12 @@ const badgeVariants = cva(
         secondary: "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80",
         destructive: "border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/80",
         outline: "text-foreground",
-        success: "border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/20",
-        warning: "border-transparent bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/20",
-        info: "border-transparent bg-sky-500/15 text-sky-600 dark:text-sky-400 border-sky-500/20",
+        // Token-backed rather than literal emerald/amber/sky: the light and dark
+        // shades now live in styles.css, so a chip here matches a chip anywhere
+        // else that asks for the same status.
+        success: "border-success/25 bg-success-surface text-success-foreground",
+        warning: "border-warning/25 bg-warning-surface text-warning-foreground",
+        info: "border-info/25 bg-info-surface text-info-foreground",
       },
     },
     defaultVariants: {

@@ -56,20 +56,14 @@ export function StatusBar() {
         <div className="flex items-center gap-2">
           <span
             className={`h-2 w-2 rounded-full ${
-              gateway.running ? "bg-emerald-500 shadow-sm shadow-emerald-500/50" : "bg-zinc-400"
+              gateway.running ? "bg-success ring-2 ring-success/25" : "bg-muted-foreground/50"
             }`}
           />
           <span className="font-medium text-foreground">
             {gateway.running ? `网关运行中 (端口: ${gateway.port ?? 18888})` : "网关已停止"}
           </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 px-2 text-[11px] hover:bg-muted"
-            onClick={toggleGateway}
-            disabled={loading}
-          >
-            {loading ? (<><RotateCw className="h-3 w-3 mr-1 animate-spin text-primary" />处理中...</>) : gateway.running ? (<><Square className="h-3 w-3 mr-1 text-destructive" />停止</>) : (<><Play className="h-3 w-3 mr-1 text-emerald-500" />启动</>)}
+          <Button variant="ghost" size="xs" onClick={toggleGateway} disabled={loading}>
+            {loading ? (<><RotateCw className="h-3 w-3 animate-spin text-primary" />处理中...</>) : gateway.running ? (<><Square className="h-3 w-3 text-destructive" />停止</>) : (<><Play className="h-3 w-3 text-success" />启动</>)}
           </Button>
         </div>
 
@@ -107,13 +101,7 @@ export function StatusBar() {
       </div>
 
       <div className="flex items-center gap-2 text-muted-foreground">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-6 px-1.5 text-muted-foreground hover:text-foreground"
-          onClick={refreshStatus}
-          title="刷新状态"
-        >
+        <Button variant="ghost" size="icon-xs" onClick={refreshStatus} title="刷新状态">
           <RefreshCw className="h-3 w-3" />
         </Button>
         <span>PolyDeck Core</span>

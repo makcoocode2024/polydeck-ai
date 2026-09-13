@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Tabs } from "@/components/ui/tabs";
 import { backend } from "@/services/backend";
 import type {
   Profile,
@@ -1002,7 +1003,7 @@ export default function ProfilesPage() {
                         {boundClients(p.id).length > 0 && (
                           <Badge
                             variant="success"
-                            className="text-[10px] px-1.5 py-0 shrink-0"
+                            className="text-2xs px-1.5 py-0 shrink-0"
                             title={clientNames(boundClients(p.id)).join("、")}
                           >
                             <CheckCircle2 className="h-2.5 w-2.5 mr-1" />
@@ -1010,7 +1011,7 @@ export default function ProfilesPage() {
                           </Badge>
                         )}
                       </div>
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-2xs text-muted-foreground">
                         <span>{p.providers?.length ?? 0} 个 Provider</span>
                         <span>·</span>
                         {(() => {
@@ -1068,11 +1069,13 @@ export default function ProfilesPage() {
                         <Pencil className="h-3 w-3 mr-1" />
                         编辑
                       </Button>
+                      {/* Coloured at rest. As a plain ghost it was pixel-identical
+                          to the edit button beside it until the pointer arrived. */}
                       <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+                        variant="destructive-ghost"
+                        size="icon-xs"
                         onClick={() => handleDelete(p.id, p.name)}
+                        title="删除该方案"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
@@ -1103,7 +1106,7 @@ export default function ProfilesPage() {
                         </Badge>
                       )}
                     </div>
-                    <p className="text-[11px] text-muted-foreground font-mono truncate">ID: {selectedProfile.id}</p>
+                    <p className="text-2xs text-muted-foreground font-mono truncate">ID: {selectedProfile.id}</p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0 flex-wrap">
                     <Button
@@ -1114,7 +1117,7 @@ export default function ProfilesPage() {
                       className="text-xs"
                       title="探测主节点网络连通性与协议"
                     >
-                      <Activity className={`h-3.5 w-3.5 mr-1 ${testingPrimary ? "animate-pulse text-amber-500" : "text-sky-500"}`} />
+                      <Activity className={`h-3.5 w-3.5 mr-1 ${testingPrimary ? "animate-pulse text-warning" : "text-info"}`} />
                       {testingPrimary ? "探测中..." : "连通探测"}
                     </Button>
                     <Button
@@ -1167,14 +1170,14 @@ export default function ProfilesPage() {
                   <div
                     className={`p-3 rounded-lg border flex items-center gap-2.5 text-xs animate-in fade-in duration-150 ${
                       primaryTestResult.success
-                        ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400"
-                        : "bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-400"
+                        ? "bg-success-surface border-success/25 text-success"
+                        : "bg-warning-surface border-warning/25 text-warning"
                     }`}
                   >
                     {primaryTestResult.success ? (
-                      <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" />
+                      <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />
                     ) : (
-                      <AlertCircle className="h-4 w-4 shrink-0 text-amber-500" />
+                      <AlertCircle className="h-4 w-4 shrink-0 text-warning" />
                     )}
                     <div className="flex-1 truncate">{primaryTestResult.message}</div>
                   </div>
@@ -1186,25 +1189,25 @@ export default function ProfilesPage() {
                   <div
                     className={`p-3.5 rounded-xl border text-xs space-y-2 animate-in fade-in duration-150 ${
                       primaryChatResult.success
-                        ? "bg-emerald-500/5 border-emerald-500/30 text-foreground"
+                        ? "bg-success-surface border-success/25 text-foreground"
                         : "bg-destructive/10 border-destructive/30 text-destructive"
                     }`}
                   >
                     <div className="flex items-center justify-between font-medium">
                       <div className="flex items-center gap-2">
                         {primaryChatResult.success ? (
-                          <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                          <CheckCircle2 className="h-4 w-4 text-success shrink-0" />
                         ) : (
                           <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
                         )}
-                        <span className={primaryChatResult.success ? "text-emerald-600 dark:text-emerald-400 font-semibold" : "font-semibold"}>
+                        <span className={primaryChatResult.success ? "text-success font-semibold" : "font-semibold"}>
                           {primaryChatResult.success
                             ? `真实对话测试成功 (耗时: ${"latencyMs" in primaryChatResult ? primaryChatResult.latencyMs : 0}ms)`
                             : "真实对话测试失败"}
                         </span>
                       </div>
                       {"model" in primaryChatResult && primaryChatResult.model && (
-                        <Badge variant="outline" className="text-[10px] font-mono">
+                        <Badge variant="outline" className="text-2xs font-mono">
                           模型: {primaryChatResult.model}
                         </Badge>
                       )}
@@ -1212,8 +1215,8 @@ export default function ProfilesPage() {
 
                     {"reply" in primaryChatResult && primaryChatResult.reply && (
                       <div className="p-3 rounded-lg bg-background/90 border border-border/80 text-foreground text-xs leading-relaxed font-mono whitespace-pre-wrap select-text shadow-inner">
-                        <div className="text-[10px] text-muted-foreground mb-1 flex items-center gap-1 font-sans font-medium">
-                          <MessageSquare className="h-3 w-3 text-sky-400" />
+                        <div className="text-2xs text-muted-foreground mb-1 flex items-center gap-1 font-sans font-medium">
+                          <MessageSquare className="h-3 w-3 text-info" />
                           主节点模型回复：
                         </div>
                         {primaryChatResult.reply}
@@ -1244,8 +1247,8 @@ export default function ProfilesPage() {
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="font-semibold text-xs">{pr.name}</span>
-                              {pr.isPrimary && <Badge variant="default" className="text-[10px]">Primary 主节点</Badge>}
-                              <Badge variant="outline" className="text-[10px] font-mono">
+                              {pr.isPrimary && <Badge variant="default" className="text-2xs">Primary 主节点</Badge>}
+                              <Badge variant="outline" className="text-2xs font-mono">
   {pr.protocol === "responses" ? "OpenAI (/v1/responses 原生)" :
    pr.protocol === "openai" ? "OpenAI (/v1/chat/completions 兼容)" :
    pr.protocol === "anthropic" ? "Anthropic (/v1/messages)" :
@@ -1253,18 +1256,18 @@ export default function ProfilesPage() {
    pr.protocol === "azure" ? "Azure OpenAI" : pr.protocol}
 </Badge>
                             </div>
-                            <Badge variant="info" className="text-[10px]">{pr.defaultModel}</Badge>
+                            <Badge variant="info" className="text-2xs">{pr.defaultModel}</Badge>
                           </div>
-                          <div className="text-[11px] text-muted-foreground font-mono truncate">
+                          <div className="text-2xs text-muted-foreground font-mono truncate">
                             BaseURL: {pr.baseUrl}
                           </div>
-                          <div className="flex flex-wrap gap-2 text-[10px] text-muted-foreground pt-1">
+                          <div className="flex flex-wrap gap-2 text-2xs text-muted-foreground pt-1">
                             <span>工具兼容: <b className="text-foreground">{pr.codexCompat || "auto"}</b></span>
                             <span>·</span>
                             <span>思考推理: <b className="text-foreground">{pr.reasoningConfidence || "unknown"}</b></span>
                             <span>·</span>
                             {pr.rateLimit?.enabled ? (
-                              <span className="text-sky-500 font-medium flex items-center gap-1" data-testid={`inspector-ratelimit-badge-${pr.id}`}>
+                              <span className="text-info font-medium flex items-center gap-1" data-testid={`inspector-ratelimit-badge-${pr.id}`}>
                                 <Gauge className="h-3 w-3" />
                                 限流: {pr.rateLimit.rpm} RPM / {pr.rateLimit.tpm >= 1000 ? `${Math.round(pr.rateLimit.tpm / 1000)}k` : pr.rateLimit.tpm} TPM {pr.rateLimit.adaptive ? '(自适应)' : ''}
                               </span>
@@ -1276,7 +1279,7 @@ export default function ProfilesPage() {
                             {pr.acceptInvalidCerts && (
                               <>
                                 <span>·</span>
-                                <span className="text-amber-500 font-medium">允许自签名证书</span>
+                                <span className="text-warning font-medium">允许自签名证书</span>
                               </>
                             )}
                           </div>
@@ -1290,17 +1293,17 @@ export default function ProfilesPage() {
                 <div className="grid grid-cols-2 gap-3 pt-2">
                   <div className="p-3 rounded-lg border bg-muted/20 space-y-1">
                     <div className="text-xs font-medium flex items-center gap-1.5">
-                      <Zap className="h-3.5 w-3.5 text-amber-500" /> 本地网关加速
+                      <Zap className="h-3.5 w-3.5 text-warning" /> 本地网关加速
                     </div>
-                    <p className="text-[11px] text-muted-foreground">
+                    <p className="text-2xs text-muted-foreground">
                       {selectedProfile.gatewayEnabled !== false ? "启用 (智能模型重写与流适配)" : "未启用"}
                     </p>
                   </div>
                   <div className="p-3 rounded-lg border bg-muted/20 space-y-1">
                     <div className="text-xs font-medium flex items-center gap-1.5">
-                      <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" /> 多节点故障转移
+                      <ShieldCheck className="h-3.5 w-3.5 text-success" /> 多节点故障转移
                     </div>
-                    <p className="text-[11px] text-muted-foreground">
+                    <p className="text-2xs text-muted-foreground">
                       {selectedProfile.failoverEnabled ? "启用 (熔断器与自动切换)" : "未启用"}
                     </p>
                   </div>
@@ -1342,7 +1345,7 @@ export default function ProfilesPage() {
                               }
                               className={`text-xs py-1 px-2.5 rounded-md border transition-colors ${
                                 here
-                                  ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
+                                  ? "bg-success-surface border-success/25 text-success"
                                   : elsewhereName
                                   ? "bg-transparent border-border text-muted-foreground hover:border-primary"
                                   : "bg-transparent border-dashed border-border text-muted-foreground hover:border-primary"
@@ -1355,12 +1358,12 @@ export default function ProfilesPage() {
                           );
                         })}
                       </div>
-                      <p className="text-[11px] text-muted-foreground mt-2">
+                      <p className="text-2xs text-muted-foreground mt-2">
                         绿色为正跟随本方案；带箭头的正跟随别的方案，点一下即可改过来。
                       </p>
                       {chipClients(selectedProfile).length >
                         (selectedProfile.clients?.length ?? 0) && (
-                        <p className="text-[11px] text-amber-600 dark:text-amber-500 mt-1">
+                        <p className="text-2xs text-warning mt-1">
                           有客户端仍跟随本方案，但已不在目标列表里。点它即可解绑——删除方案前必须先解开。
                         </p>
                       )}
@@ -1377,10 +1380,10 @@ export default function ProfilesPage() {
                   return (
                     <div className="pt-2 border-t">
                       <h4 className="text-xs font-semibold uppercase text-muted-foreground tracking-wider mb-2 flex items-center gap-1.5">
-                        <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+                        <AlertTriangle className="h-3.5 w-3.5 text-warning" />
                         需要手动填写 ({manual.length})
                       </h4>
-                      <p className="text-[11px] text-muted-foreground mb-2">
+                      <p className="text-2xs text-muted-foreground mb-2">
                         这些客户端没有 PolyDeck 能改写的配置文件。绑定已生效、网关会正常路由，
                         但地址和令牌需要你自己粘进它们的设置里。
                       </p>
@@ -1394,7 +1397,7 @@ export default function ProfilesPage() {
                             <Button
                               variant="outline"
                               size="sm"
-                              className="h-6 text-[10px] px-2"
+                              className="h-6 text-2xs px-2"
                               data-testid={`copy-conn-${cid}`}
                               onClick={() => handleCopyConnection(cid)}
                             >
@@ -1422,7 +1425,7 @@ export default function ProfilesPage() {
       {templates.length > 0 && (
         <div className="space-y-4 pt-4 border-t">
           <div className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-amber-500" />
+            <Sparkles className="h-4 w-4 text-warning" />
             <h2 className="text-lg font-bold">内置方案模板快速创建</h2>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -1431,12 +1434,12 @@ export default function ProfilesPage() {
                 <CardHeader className="pb-2">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm font-semibold">{tpl.name}</CardTitle>
-                    <Badge variant="outline" className="text-[10px] font-mono">{tpl.provider?.protocol}</Badge>
+                    <Badge variant="outline" className="text-2xs font-mono">{tpl.provider?.protocol}</Badge>
                   </div>
                   <p className="text-xs text-muted-foreground line-clamp-2">{tpl.description}</p>
                 </CardHeader>
                 <CardContent className="pt-0">
-                  <div className="text-[11px] text-muted-foreground font-mono mb-3">
+                  <div className="text-2xs text-muted-foreground font-mono mb-3">
                     默认模型: {tpl.provider?.defaultModel}
                   </div>
                   <Button
@@ -1458,7 +1461,10 @@ export default function ProfilesPage() {
       {/* Profile Edit Modal Dialog */}
       {editingProfile && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-card text-card-foreground border rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
+          {/* 5xl, not 3xl: four tabs of dense two-column form did not fit 768px,
+              and the Provider tab was the worst of them. 1024px still clears the
+              ~1040px of usable width a 1280px window leaves after the sidebar. */}
+          <div className="bg-card text-card-foreground border rounded-xl shadow-lg w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden animate-slide-up">
             {/* Modal Header */}
             <div className="px-6 py-4 border-b flex items-center justify-between bg-muted/20 shrink-0">
               <div className="flex items-center gap-2">
@@ -1480,58 +1486,17 @@ export default function ProfilesPage() {
             </div>
 
             {/* Modal Tabs */}
-            <div className="px-6 pt-3 border-b flex gap-4 shrink-0 bg-background">
-              <button
-                type="button"
-                onClick={() => setEditTab("basics")}
-                className={`pb-2.5 text-xs font-medium border-b-2 transition-all ${
-                  editTab === "basics"
-                    ? "border-primary text-primary font-semibold"
-                    : "border-transparent text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                基础设置
-              </button>
-              <button
-                type="button"
-                onClick={() => setEditTab("providers")}
-                className={`pb-2.5 text-xs font-medium border-b-2 transition-all flex items-center gap-1.5 ${
-                  editTab === "providers"
-                    ? "border-primary text-primary font-semibold"
-                    : "border-transparent text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <span>Provider 节点</span>
-                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-muted font-mono">
-                  {editProviders.length}
-                </span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setEditTab("clients")}
-                className={`pb-2.5 text-xs font-medium border-b-2 transition-all flex items-center gap-1.5 ${
-                  editTab === "clients"
-                    ? "border-primary text-primary font-semibold"
-                    : "border-transparent text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <span>客户端绑定</span>
-                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-muted font-mono">
-                  {editClients.length}
-                </span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setEditTab("params")}
-                className={`pb-2.5 text-xs font-medium border-b-2 transition-all ${
-                  editTab === "params"
-                    ? "border-primary text-primary font-semibold"
-                    : "border-transparent text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                Claude Code 参数
-              </button>
-            </div>
+            <Tabs
+              items={[
+                { id: "basics", label: "基础设置" },
+                { id: "providers", label: "Provider 节点", count: editProviders.length },
+                { id: "clients", label: "客户端绑定", count: editClients.length },
+                { id: "params", label: "Claude Code 参数" },
+              ]}
+              value={editTab}
+              onChange={setEditTab}
+              className="px-6 pt-3 shrink-0 bg-background"
+            />
 
             {/* Modal Body (Scrollable) */}
             <div className="p-6 overflow-y-auto flex-1 space-y-5">
@@ -1562,10 +1527,10 @@ export default function ProfilesPage() {
                       />
                       <div className="space-y-0.5 flex-1">
                         <div className="text-xs font-medium text-foreground flex items-center gap-1.5">
-                          <Zap className="h-3.5 w-3.5 text-amber-500" />
+                          <Zap className="h-3.5 w-3.5 text-warning" />
                           启用本地网关加速与流式转译 (Gateway)
                         </div>
-                        <p className="text-[11px] text-muted-foreground">
+                        <p className="text-2xs text-muted-foreground">
                           通过本地 18888 智能网关处理请求，自动进行 Responses 协议转译与思考推理流适配。
                         </p>
                       </div>
@@ -1580,10 +1545,10 @@ export default function ProfilesPage() {
                       />
                       <div className="space-y-0.5 flex-1">
                         <div className="text-xs font-medium text-foreground flex items-center gap-1.5">
-                          <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
+                          <ShieldCheck className="h-3.5 w-3.5 text-success" />
                           启用多节点智能故障转移 (Failover)
                         </div>
-                        <p className="text-[11px] text-muted-foreground">
+                        <p className="text-2xs text-muted-foreground">
                           当主 Provider 节点触发连续超时或 5xx 错误时，熔断器自动无缝切换至备用可用节点。
                         </p>
                       </div>
@@ -1636,13 +1601,13 @@ export default function ProfilesPage() {
                                 <span className="text-xs font-bold text-muted-foreground">#{index + 1}</span>
                                 <span className="text-xs font-semibold">{prov.name || "未命名节点"}</span>
                                 {prov.isPrimary ? (
-                                  <Badge variant="default" className="text-[10px]">主节点 (Primary)</Badge>
+                                  <Badge variant="default" className="text-2xs">主节点 (Primary)</Badge>
                                 ) : (
                                   <Button
                                     type="button"
                                     variant="ghost"
                                     size="sm"
-                                    className="h-6 text-[10px] px-2 text-muted-foreground hover:text-primary"
+                                    className="h-6 text-2xs px-2 text-muted-foreground hover:text-primary"
                                     onClick={() => handleSetPrimaryProvider(index)}
                                   >
                                     设为主节点
@@ -1652,9 +1617,8 @@ export default function ProfilesPage() {
 
                               <Button
                                 type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
+                                variant="destructive-ghost"
+                                size="icon-xs"
                                 onClick={() => handleRemoveProvider(index)}
                                 title="删除该节点"
                               >
@@ -1664,8 +1628,8 @@ export default function ProfilesPage() {
 
                             {/* Preset Quick-Fill Bar */}
                             <div className="flex items-center gap-2 p-2 rounded-lg bg-muted/20 text-xs">
-                              <span className="text-[11px] text-muted-foreground shrink-0 flex items-center gap-1">
-                                <Sparkles className="h-3 w-3 text-amber-500" />
+                              <span className="text-2xs text-muted-foreground shrink-0 flex items-center gap-1">
+                                <Sparkles className="h-3 w-3 text-warning" />
                                 快捷填入预设:
                               </span>
                               <select
@@ -1690,7 +1654,7 @@ export default function ProfilesPage() {
                             {/* Inputs Row 1: Name & Protocol */}
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                               <div className="space-y-1">
-                                <label className="text-[11px] font-medium text-muted-foreground">节点名称</label>
+                                <label className="text-2xs font-medium text-muted-foreground">节点名称</label>
                                 <Input
                                   value={prov.name}
                                   onChange={(e) => handleUpdateProviderField(index, "name", e.target.value)}
@@ -1700,8 +1664,8 @@ export default function ProfilesPage() {
                               </div>
                               <div className="space-y-1">
                                 <div className="flex items-center justify-between">
-                                  <label className="text-[11px] font-medium text-muted-foreground">协议类型 (Protocol)</label>
-                                  <span className="text-[10px] text-primary/80 font-mono">
+                                  <label className="text-2xs font-medium text-muted-foreground">协议类型 (Protocol)</label>
+                                  <span className="text-2xs text-primary/80 font-mono">
                                     {prov.protocol === "responses" ? "/v1/responses" :
                                      prov.protocol === "openai" ? "/v1/chat/completions" :
                                      prov.protocol === "anthropic" ? "/v1/messages" :
@@ -1737,7 +1701,7 @@ export default function ProfilesPage() {
 
                             {/* Inputs Row 2: BaseURL */}
                             <div className="space-y-1">
-                              <label className="text-[11px] font-medium text-muted-foreground">Base URL 接口地址</label>
+                              <label className="text-2xs font-medium text-muted-foreground">Base URL 接口地址</label>
                               <Input
                                 value={prov.baseUrl}
                                 onChange={(e) => handleUpdateProviderField(index, "baseUrl", e.target.value)}
@@ -1749,7 +1713,7 @@ export default function ProfilesPage() {
                             {/* Inputs Row 3: API Key & Probe Test Action */}
                             <div className="p-3 rounded-lg border bg-muted/15 space-y-2.5">
                                                             <div className="flex items-center justify-between flex-wrap gap-2">
-                                <label className="text-[11px] font-medium text-muted-foreground flex items-center gap-1">
+                                <label className="text-2xs font-medium text-muted-foreground flex items-center gap-1">
                                   <Key className="h-3 w-3 text-primary" />
                                   API Key 探测与对话测试 (可选)
                                 </label>
@@ -1760,7 +1724,7 @@ export default function ProfilesPage() {
                                     size="sm"
                                     onClick={() => handleProbeProviderNode(index)}
                                     disabled={pState?.loading || !prov.baseUrl.trim()}
-                                    className="h-6 text-[11px] px-2 text-primary hover:bg-primary/10 border-primary/30"
+                                    className="h-6 text-2xs px-2 text-primary hover:bg-primary/10 border-primary/30"
                                   >
                                     <Radio className={`h-3 w-3 mr-1 ${pState?.loading ? "animate-spin" : ""}`} />
                                     {pState?.loading ? "正在探测..." : "探测连通与模型"}
@@ -1771,7 +1735,7 @@ export default function ProfilesPage() {
                                     size="sm"
                                     onClick={() => handleChatTestProviderNode(index)}
                                     disabled={nodeChatStates[index]?.loading || !prov.baseUrl.trim()}
-                                    className="h-6 text-[11px] px-2 border-primary/40 text-primary hover:bg-primary/10"
+                                    className="h-6 text-2xs px-2 border-primary/40 text-primary hover:bg-primary/10"
                                   >
                                     <MessageSquare className={`h-3 w-3 mr-1 ${nodeChatStates[index]?.loading ? "animate-spin" : ""}`} />
                                     {nodeChatStates[index]?.loading ? "测试中..." : "真实对话测试"}
@@ -1816,25 +1780,25 @@ export default function ProfilesPage() {
                                 <div
                                   className={`p-2.5 rounded-lg border text-xs space-y-1.5 ${
                                     nodeChatStates[index].result.success
-                                      ? "bg-emerald-500/10 border-emerald-500/20 text-foreground"
+                                      ? "bg-success-surface border-success/25 text-foreground"
                                       : "bg-destructive/10 border-destructive/20 text-destructive"
                                   }`}
                                 >
                                   <div className="flex items-center justify-between font-medium">
                                     <div className="flex items-center gap-1.5">
                                       {nodeChatStates[index].result.success ? (
-                                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                                        <CheckCircle2 className="h-3.5 w-3.5 text-success" />
                                       ) : (
                                         <AlertCircle className="h-3.5 w-3.5 text-destructive" />
                                       )}
-                                      <span className={nodeChatStates[index].result.success ? "text-emerald-600 dark:text-emerald-400 font-semibold" : ""}>
+                                      <span className={nodeChatStates[index].result.success ? "text-success font-semibold" : ""}>
                                         {nodeChatStates[index].result.success
                                           ? `对话成功 (${"latencyMs" in nodeChatStates[index].result ? nodeChatStates[index].result.latencyMs : 0}ms)`
                                           : "对话测试失败"}
                                       </span>
                                     </div>
                                     {"model" in nodeChatStates[index].result && nodeChatStates[index].result.model && (
-                                      <span className="font-mono text-[10px] opacity-80">
+                                      <span className="font-mono text-2xs opacity-80">
                                         {nodeChatStates[index].result.model}
                                       </span>
                                     )}
@@ -1853,16 +1817,16 @@ export default function ProfilesPage() {
                               {/* Probe Feedback Message */}
                               {pState?.message && (
                                 <div
-                                  className={`p-2 rounded text-[11px] flex items-center gap-2 ${
+                                  className={`p-2 rounded text-2xs flex items-center gap-2 ${
                                     pState.success
-                                      ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
-                                      : "bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20"
+                                      ? "bg-success-surface text-success border border-success/25"
+                                      : "bg-warning-surface text-warning border border-warning/25"
                                   }`}
                                 >
                                   {pState.success ? (
-                                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+                                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" />
                                   ) : (
-                                    <AlertCircle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                                    <AlertCircle className="h-3.5 w-3.5 shrink-0 text-warning" />
                                   )}
                                   <span className="flex-1">{pState.message}</span>
                                 </div>
@@ -1872,7 +1836,7 @@ export default function ProfilesPage() {
                             {/* Inputs Row 4: Default Model & Quick Model Picker */}
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                               <div className="space-y-1">
-                                <label className="text-[11px] font-medium text-muted-foreground">默认模型 (Default Model)</label>
+                                <label className="text-2xs font-medium text-muted-foreground">默认模型 (Default Model)</label>
                                 <Input
                                   data-testid={`provider-default-model-input-${index}`}
                                   value={prov.defaultModel}
@@ -1884,7 +1848,7 @@ export default function ProfilesPage() {
 
                               {pState?.models && pState.models.length > 0 ? (
                                 <div className="space-y-1">
-                                  <label className="text-[11px] font-medium text-muted-foreground flex items-center gap-1">
+                                  <label className="text-2xs font-medium text-muted-foreground flex items-center gap-1">
                                     <ListFilter className="h-3 w-3 text-primary" />
                                     从探测到的模型列表中选择
                                   </label>
@@ -1908,7 +1872,7 @@ export default function ProfilesPage() {
                                 </div>
                               ) : (
                                 <div className="space-y-1">
-                                  <label className="text-[11px] font-medium text-muted-foreground">Codex 工具兼容模式</label>
+                                  <label className="text-2xs font-medium text-muted-foreground">Codex 工具兼容模式</label>
                                   <select
                                     value={prov.codexCompat || "responses_custom"}
                                     onChange={(e) =>
@@ -1930,7 +1894,7 @@ export default function ProfilesPage() {
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                               {pState?.models && pState.models.length > 0 && (
                                 <div className="space-y-1">
-                                  <label className="text-[11px] font-medium text-muted-foreground">Codex 工具兼容模式</label>
+                                  <label className="text-2xs font-medium text-muted-foreground">Codex 工具兼容模式</label>
                                   <select
                                     data-testid={`codex-compat-select-${index}`}
                                     value={prov.codexCompat || "responses_custom"}
@@ -1949,7 +1913,7 @@ export default function ProfilesPage() {
                               )}
 
                               <div className="space-y-1">
-                                <label className="text-[11px] font-medium text-muted-foreground">思考推理识别 (Reasoning)</label>
+                                <label className="text-2xs font-medium text-muted-foreground">思考推理识别 (Reasoning)</label>
                                 <select
                                   value={prov.reasoningConfidence || "unknown"}
                                   onChange={(e) =>
@@ -1979,7 +1943,7 @@ export default function ProfilesPage() {
                                 }
                                 className="rounded border-input text-primary focus:ring-primary h-3.5 w-3.5"
                               />
-                              <span className="text-[11px] text-muted-foreground">
+                              <span className="text-2xs text-muted-foreground">
                                 允许无效或自签名 SSL 证书 (适用于局域网或本地反代服务)
                               </span>
                             </label>
@@ -1988,7 +1952,7 @@ export default function ProfilesPage() {
                                 shown so a wrong verdict can be corrected. */}
                             <div className="space-y-1 pt-1">
                               <label
-                                className="text-[11px] font-medium text-muted-foreground"
+                                className="text-2xs font-medium text-muted-foreground"
                                 htmlFor={`provider-${index}-relay-chat-compat`}
                               >
                                 中转站非流式兼容 (Non-streaming Compatibility)
@@ -2009,7 +1973,7 @@ export default function ProfilesPage() {
                                 <option value="buffered">强制流式缓冲 (中转站返回不规范时)</option>
                                 <option value="direct">强制直连非流式 (不做任何转换)</option>
                               </select>
-                              <p className="text-[10px] text-muted-foreground">
+                              <p className="text-2xs text-muted-foreground">
                                 {RELAY_CHAT_COMPAT_HINTS[prov.relayChatCompat || "auto"]}
                               </p>
                             </div>
@@ -2023,18 +1987,20 @@ export default function ProfilesPage() {
                                   <div className="text-xs font-semibold flex items-center gap-1.5">
                                     Claude Code 别名映射与思考深度 (Model Aliases & Reasoning)
                                   </div>
-                                  <div className="text-[10px] text-muted-foreground">
+                                  <div className="text-2xs text-muted-foreground">
                                     为 Claude Code 的 opus/sonnet/haiku 别名指定目标模型与显示名，并配置思考深度及 1M 长上下文
                                   </div>
                                 </div>
                               </div>
 
-                              {/* Multi-tier Aliases: Opus / Sonnet / Haiku */}
-                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                              {/* Multi-tier Aliases: Opus / Sonnet / Haiku.
+                                  Three columns only from `lg`: at `sm` each tier
+                                  input got ~200px and its label wrapped. */}
+                              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
                                 {ALIAS_TIERS.map((tier) => (
                                   <div key={tier.field} className="space-y-1">
                                     <label
-                                      className="text-[11px] font-medium text-muted-foreground"
+                                      className="text-2xs font-medium text-muted-foreground"
                                       htmlFor={`provider-${index}-${tier.field}`}
                                     >
                                       {tier.label} 别名映射 ({tier.alias})
@@ -2064,21 +2030,21 @@ export default function ProfilesPage() {
 
                               {/* Display names Claude Code shows for each tier */}
                               <div className="space-y-1.5 pt-1 border-t">
-                                <div className="text-[11px] font-medium text-muted-foreground pt-1.5">
+                                <div className="text-2xs font-medium text-muted-foreground pt-1.5">
                                   Claude Code 显示名 (Display Names)
                                 </div>
-                                <div className="text-[10px] text-muted-foreground">
+                                <div className="text-2xs text-muted-foreground">
                                   写入 <code className="font-mono">~/.claude.json</code> 的模型名。Claude
                                   Code 只对认识的名字启用对应的上下文长度与计费，裸别名 opus/sonnet/haiku
                                   在 <code className="font-mono">/model</code> 选择器、
                                   <code className="font-mono">--model</code> 参数和 subagent
                                   frontmatter 里解析不一致。留空使用默认的最新模型名。仅网关开启时生效。
                                 </div>
-                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
                                   {ALIAS_TIERS.map((tier) => (
                                     <div key={tier.displayField} className="space-y-1">
                                       <label
-                                        className="text-[11px] font-medium text-muted-foreground"
+                                        className="text-2xs font-medium text-muted-foreground"
                                         htmlFor={`provider-${index}-${tier.displayField}`}
                                       >
                                         {tier.label} 显示名
@@ -2106,7 +2072,7 @@ export default function ProfilesPage() {
                               {/* Thinking Effort & 1M Context */}
                               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                 <div className="space-y-1">
-                                  <label className="text-[11px] font-medium text-muted-foreground">思考深度等级 (Thinking Effort Level)</label>
+                                  <label className="text-2xs font-medium text-muted-foreground">思考深度等级 (Thinking Effort Level)</label>
                                   <select
                                     value={prov.defaultEffortLevel || ""}
                                     onChange={(e) =>
@@ -2122,13 +2088,13 @@ export default function ProfilesPage() {
                                     <option value="xhigh">极限深度推理 (xhigh - 32768 tokens)</option>
                                     <option value="max">最大极限推理 (max - 63999 tokens)</option>
                                   </select>
-                                  <p className="text-[10px] text-muted-foreground">
+                                  <p className="text-2xs text-muted-foreground">
                                     仅在下方「思考块签名」为“支持”时才会实际注入。
                                   </p>
                                 </div>
 
                                 <div className="space-y-1">
-                                  <label className="text-[11px] font-medium text-muted-foreground">思考块签名 (Thinking Signature)</label>
+                                  <label className="text-2xs font-medium text-muted-foreground">思考块签名 (Thinking Signature)</label>
                                   <div className="flex items-center gap-2">
                                     <span className="text-xs text-foreground flex-1 truncate">
                                       {THINKING_SUPPORT_LABELS[prov.thinkingSupport || "unprobed"]}
@@ -2145,14 +2111,14 @@ export default function ProfilesPage() {
                                     </Button>
                                   </div>
                                   {thinkingProbeStates[index]?.message && (
-                                    <p className="text-[10px] text-muted-foreground">
+                                    <p className="text-2xs text-muted-foreground">
                                       {thinkingProbeStates[index]?.message}
                                     </p>
                                   )}
                                 </div>
 
                                 <div className="space-y-1">
-                                  <label className="text-[11px] font-medium text-muted-foreground">1M 长上下文支持 (1M Context)</label>
+                                  <label className="text-2xs font-medium text-muted-foreground">1M 长上下文支持 (1M Context)</label>
                                   <select
                                     value={prov.supports1mContext === true ? "true" : prov.supports1mContext === false ? "false" : ""}
                                     onChange={(e) => {
@@ -2176,12 +2142,12 @@ export default function ProfilesPage() {
                             >
                               <div className="flex items-center justify-between flex-wrap gap-2">
                                 <div className="flex items-center gap-2">
-                                  <Gauge className="h-4 w-4 text-sky-500" />
+                                  <Gauge className="h-4 w-4 text-info" />
                                   <div>
                                     <div className="text-xs font-semibold flex items-center gap-1.5">
                                       请求速率与 Token 限流 (RPM / TPM)
                                     </div>
-                                    <div className="text-[10px] text-muted-foreground">
+                                    <div className="text-2xs text-muted-foreground">
                                       本地令牌桶平滑排队，防止 Agent 并发爆发触发上游 429 封禁
                                     </div>
                                   </div>
@@ -2195,10 +2161,10 @@ export default function ProfilesPage() {
                                     onClick={() => handleProbeRateLimits(index)}
                                     disabled={rateLimitProbeStates[index]?.loading || !prov.baseUrl.trim()}
                                     data-testid={`provider-auto-probe-ratelimit-btn-${index}`}
-                                    className="h-6 text-[11px] px-2 text-sky-600 dark:text-sky-400 border-sky-500/30 hover:bg-sky-500/10"
+                                    className="h-6 text-2xs px-2 text-info border-info/25 hover:bg-info-surface"
                                     title="通过上游响应头探测或智能算法计算推荐限流阈值"
                                   >
-                                    <Sparkles className={`h-3 w-3 mr-1 ${rateLimitProbeStates[index]?.loading ? "animate-spin" : "text-amber-500"}`} />
+                                    <Sparkles className={`h-3 w-3 mr-1 ${rateLimitProbeStates[index]?.loading ? "animate-spin" : "text-warning"}`} />
                                     {rateLimitProbeStates[index]?.loading ? "探测限流中..." : "自动探测，填充推荐值"}
                                   </Button>
 
@@ -2221,16 +2187,16 @@ export default function ProfilesPage() {
                               {rateLimitProbeStates[index]?.message && (
                                 <div
                                   data-testid={`provider-ratelimit-probe-msg-${index}`}
-                                  className={`p-2 rounded text-[11px] flex items-center gap-2 ${
+                                  className={`p-2 rounded text-2xs flex items-center gap-2 ${
                                     rateLimitProbeStates[index].success
-                                      ? "bg-sky-500/10 text-sky-700 dark:text-sky-300 border border-sky-500/20"
-                                      : "bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20"
+                                      ? "bg-info-surface text-info border border-info/25"
+                                      : "bg-warning-surface text-warning border border-warning/25"
                                   }`}
                                 >
                                   {rateLimitProbeStates[index].success ? (
-                                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-sky-500" />
+                                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-info" />
                                   ) : (
-                                    <AlertCircle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                                    <AlertCircle className="h-3.5 w-3.5 shrink-0 text-warning" />
                                   )}
                                   <span className="flex-1 leading-tight">{rateLimitProbeStates[index].message}</span>
                                 </div>
@@ -2240,11 +2206,11 @@ export default function ProfilesPage() {
                               <div className={`grid grid-cols-1 sm:grid-cols-2 gap-3 transition-opacity ${prov.rateLimit?.enabled ? "opacity-100" : "opacity-60"}`}>
                                 <div className="space-y-1">
                                   <div className="flex items-center justify-between">
-                                    <label className="text-[11px] font-medium text-muted-foreground flex items-center gap-1">
-                                      <Timer className="h-3 w-3 text-sky-500" />
+                                    <label className="text-2xs font-medium text-muted-foreground flex items-center gap-1">
+                                      <Timer className="h-3 w-3 text-info" />
                                       每分钟请求数 (RPM)
                                     </label>
-                                    <span className="text-[10px] text-muted-foreground font-mono">Requests/min</span>
+                                    <span className="text-2xs text-muted-foreground font-mono">Requests/min</span>
                                   </div>
                                   <Input
                                     type="number"
@@ -2261,11 +2227,11 @@ export default function ProfilesPage() {
 
                                 <div className="space-y-1">
                                   <div className="flex items-center justify-between">
-                                    <label className="text-[11px] font-medium text-muted-foreground flex items-center gap-1">
-                                      <Gauge className="h-3 w-3 text-sky-500" />
+                                    <label className="text-2xs font-medium text-muted-foreground flex items-center gap-1">
+                                      <Gauge className="h-3 w-3 text-info" />
                                       每分钟 Token 数 (TPM)
                                     </label>
-                                    <span className="text-[10px] text-muted-foreground font-mono">Tokens/min</span>
+                                    <span className="text-2xs text-muted-foreground font-mono">Tokens/min</span>
                                   </div>
                                   <Input
                                     type="number"
@@ -2293,7 +2259,7 @@ export default function ProfilesPage() {
                                     disabled={!prov.rateLimit?.enabled}
                                     className="rounded border-input text-primary focus:ring-primary h-3.5 w-3.5"
                                   />
-                                  <span className="text-[11px] text-muted-foreground">
+                                  <span className="text-2xs text-muted-foreground">
                                     启用 429 智能自适应动态调速 (捕获上游 429 错误时自动按退避指数压低令牌速率并在网关内部平滑排队重试)
                                   </span>
                                 </label>
@@ -2335,18 +2301,18 @@ export default function ProfilesPage() {
                             />
                             <div className="min-w-0">
                               <div className="text-xs font-semibold truncate">{client.name}</div>
-                              <div className="text-[10px] font-mono text-muted-foreground truncate">
+                              <div className="text-2xs font-mono text-muted-foreground truncate">
                                 ID: {client.id}
                               </div>
                             </div>
                           </div>
 
                           {client.installed ? (
-                            <Badge variant="success" className="text-[10px] px-1.5 py-0 shrink-0">
+                            <Badge variant="success" className="text-2xs px-1.5 py-0 shrink-0">
                               已安装
                             </Badge>
                           ) : (
-                            <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-muted-foreground shrink-0">
+                            <Badge variant="outline" className="text-2xs px-1.5 py-0 text-muted-foreground shrink-0">
                               未检测到
                             </Badge>
                           )}
@@ -2371,7 +2337,7 @@ export default function ProfilesPage() {
                 };
                 return (
                   <div className="p-6 space-y-5">
-                    <div className="text-[11px] text-muted-foreground leading-relaxed">
+                    <div className="text-2xs text-muted-foreground leading-relaxed">
                       参数按当前模型能力自动预填充。你可以手动修改，改过之后不会被自动探测覆盖。
                       留空即表示跟随自动检测。
                     </div>
@@ -2379,28 +2345,28 @@ export default function ProfilesPage() {
                     <div className="flex items-center gap-2 text-xs">
                       <span className="text-muted-foreground">模型能力</span>
                       {resolved.thinkingSupported ? (
-                        <span className="px-2 py-0.5 rounded-full text-[11px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                        <span className="px-2 py-0.5 rounded-full text-2xs bg-success-surface text-success">
                           ✅ 支持思考
                         </span>
                       ) : (
-                        <span className="px-2 py-0.5 rounded-full text-[11px] bg-muted text-muted-foreground">
+                        <span className="px-2 py-0.5 rounded-full text-2xs bg-muted text-muted-foreground">
                           ❌ 无思考能力
                         </span>
                       )}
                       {primary?.defaultModel && (
-                        <span className="font-mono text-[11px] text-muted-foreground">
+                        <span className="font-mono text-2xs text-muted-foreground">
                           {primary.defaultModel}
                         </span>
                       )}
                     </div>
                     {!resolved.thinkingSupported && primary?.thinkingSupport === "unsigned" && (
-                      <div className="text-[11px] text-amber-600 dark:text-amber-500 leading-relaxed">
+                      <div className="text-2xs text-warning leading-relaxed">
                         该上游返回的思考块没有签名，客户端无法保存这一轮对话。按不支持处理，
                         否则整个会话都会失败。
                       </div>
                     )}
                     {primary && (primary.thinkingSupport ?? "unprobed") === "unprobed" && (
-                      <div className="text-[11px] text-muted-foreground leading-relaxed">
+                      <div className="text-2xs text-muted-foreground leading-relaxed">
                         尚未探测思考能力。到「Provider 节点」里对该节点做一次思考能力检测，
                         这里才会给出针对性的推荐值。
                       </div>
@@ -2439,7 +2405,7 @@ export default function ProfilesPage() {
                         </select>
                       </div>
                       {outOfRange(editParams.maxOutputTokens) && (
-                        <div className="text-[11px] text-destructive">
+                        <div className="text-2xs text-destructive">
                           需在 {CLAUDE_CODE_TOKEN_MIN} ~ {CLAUDE_CODE_TOKEN_MAX} 之间
                         </div>
                       )}
@@ -2473,12 +2439,12 @@ export default function ProfilesPage() {
                         }
                       />
                       {!resolved.thinkingSupported ? (
-                        <div className="text-[11px] text-muted-foreground">
+                        <div className="text-2xs text-muted-foreground">
                           当前模型不支持深度思考，该参数无效
                         </div>
                       ) : (
                         outOfRange(editParams.maxThinkingTokens) && (
-                          <div className="text-[11px] text-destructive">
+                          <div className="text-2xs text-destructive">
                             需在 {CLAUDE_CODE_TOKEN_MIN} ~ {CLAUDE_CODE_TOKEN_MAX} 之间
                           </div>
                         )
@@ -2508,7 +2474,7 @@ export default function ProfilesPage() {
                           ? "http://127.0.0.1:18888"
                           : (primary?.baseUrl || "—")}
                       </div>
-                      <div className="text-[11px] text-muted-foreground">
+                      <div className="text-2xs text-muted-foreground">
                         由网关开关决定，切换档案时自动写入，这里只做回显。
                       </div>
                     </div>
@@ -2561,7 +2527,7 @@ export default function ProfilesPage() {
                               size="sm"
                               onClick={loadEnvPreview}
                               disabled={envPreview.loading}
-                              className="h-6 px-2 text-[11px]"
+                              className="h-6 px-2 text-2xs"
                             >
                               <RotateCw
                                 className={`h-3 w-3 mr-1 ${
@@ -2573,19 +2539,19 @@ export default function ProfilesPage() {
                           </div>
 
                           {envPreview.error ? (
-                            <div className="px-2.5 py-1.5 text-[11px] rounded-md border border-destructive/40 bg-destructive/5 text-destructive">
+                            <div className="px-2.5 py-1.5 text-2xs rounded-md border border-destructive/40 bg-destructive/5 text-destructive">
                               读取失败：{envPreview.error}
                             </div>
                           ) : envPreview.loading && !envPreview.data ? (
-                            <div className="px-2.5 py-1.5 text-[11px] rounded-md border bg-muted/40 text-muted-foreground">
+                            <div className="px-2.5 py-1.5 text-2xs rounded-md border bg-muted/40 text-muted-foreground">
                               读取中…
                             </div>
                           ) : !envPreview.data ? null : !envPreview.data.exists ? (
-                            <div className="px-2.5 py-1.5 text-[11px] rounded-md border bg-muted/40 text-muted-foreground">
+                            <div className="px-2.5 py-1.5 text-2xs rounded-md border bg-muted/40 text-muted-foreground">
                               Claude Code 还没有配置文件。激活本方案时会创建它。
                             </div>
                           ) : envPreview.data.entries.length === 0 ? (
-                            <div className="px-2.5 py-1.5 text-[11px] rounded-md border bg-muted/40 text-muted-foreground">
+                            <div className="px-2.5 py-1.5 text-2xs rounded-md border bg-muted/40 text-muted-foreground">
                               配置文件存在，但 env 是空的。激活本方案后这里才会有值。
                             </div>
                           ) : (
@@ -2595,11 +2561,11 @@ export default function ProfilesPage() {
                                 return (
                                   <div
                                     key={entry.key}
-                                    className="flex items-start gap-2 px-2.5 py-1 text-[11px] font-mono"
+                                    className="flex items-start gap-2 px-2.5 py-1 text-2xs font-mono"
                                   >
                                     <span
                                       className={`shrink-0 ${
-                                        mismatch ? "text-amber-600 dark:text-amber-500" : "text-muted-foreground"
+                                        mismatch ? "text-warning" : "text-muted-foreground"
                                       }`}
                                     >
                                       {entry.key}
@@ -2609,7 +2575,7 @@ export default function ProfilesPage() {
                                         entry.masked
                                           ? "text-muted-foreground italic"
                                           : mismatch
-                                            ? "text-amber-600 dark:text-amber-500"
+                                            ? "text-warning"
                                             : ""
                                       }`}
                                     >
@@ -2625,13 +2591,13 @@ export default function ProfilesPage() {
                           )}
 
                           {strayKeys.length > 0 && (
-                            <div className="text-[11px] text-amber-600 dark:text-amber-500 leading-relaxed">
+                            <div className="text-2xs text-warning leading-relaxed">
                               {strayKeys.join("、")} 还留在文件里，但按本页设置不该写入。
                               重新激活本方案会清掉它。
                             </div>
                           )}
 
-                          <div className="text-[11px] text-muted-foreground leading-relaxed">
+                          <div className="text-2xs text-muted-foreground leading-relaxed">
                             {boundHere ? (
                               <>
                                 Claude Code 当前跟随本方案。改完参数要按「保存并激活」才会写进文件。

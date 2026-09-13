@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Tabs, type TabItem } from "@/components/ui/tabs";
+import { KeyValue, KeyValueGrid } from "@/components/ui/key-value";
 import { backend } from "@/services/backend";
 import type { McpServer, ManagedSkill, PromptTemplate } from "@/domain/extensions";
 import type { InjectStatus } from "@/domain/injection";
@@ -17,6 +19,13 @@ import {
 } from "lucide-react";
 
 type ExtensionTab = "mcp" | "skills" | "prompts" | "inject";
+
+const TAB_ICONS = {
+  mcp: Server,
+  skills: Sparkles,
+  prompts: FileText,
+  inject: Radio,
+} as const;
 
 export default function ExtensionsPage() {
   const [activeTab, setActiveTab] = useState<ExtensionTab>("mcp");
@@ -101,56 +110,18 @@ export default function ExtensionsPage() {
         </Button>
       </div>
 
-      {/* Tabs */}
-      <div className="flex border-b border-border/60 gap-2">
-        <button
-          onClick={() => setActiveTab("mcp")}
-          className={`pb-2.5 px-4 text-xs font-semibold border-b-2 transition-all flex items-center gap-2 ${
-            activeTab === "mcp"
-              ? "border-primary text-primary"
-              : "border-transparent text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          <Server className="h-4 w-4" />
-          MCP 服务器 ({mcpServers.length})
-        </button>
-
-        <button
-          onClick={() => setActiveTab("skills")}
-          className={`pb-2.5 px-4 text-xs font-semibold border-b-2 transition-all flex items-center gap-2 ${
-            activeTab === "skills"
-              ? "border-primary text-primary"
-              : "border-transparent text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          <Sparkles className="h-4 w-4" />
-          Skills 技能 ({skills.length})
-        </button>
-
-        <button
-          onClick={() => setActiveTab("prompts")}
-          className={`pb-2.5 px-4 text-xs font-semibold border-b-2 transition-all flex items-center gap-2 ${
-            activeTab === "prompts"
-              ? "border-primary text-primary"
-              : "border-transparent text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          <FileText className="h-4 w-4" />
-          提示词模板 ({prompts.length})
-        </button>
-
-        <button
-          onClick={() => setActiveTab("inject")}
-          className={`pb-2.5 px-4 text-xs font-semibold border-b-2 transition-all flex items-center gap-2 ${
-            activeTab === "inject"
-              ? "border-primary text-primary"
-              : "border-transparent text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          <Radio className="h-4 w-4" />
-          Native 注入管理
-        </button>
-      </div>
+      <Tabs
+        value={activeTab}
+        onChange={setActiveTab}
+        items={
+          [
+            { id: "mcp", label: "MCP 服务器", icon: TAB_ICONS.mcp, count: mcpServers.length },
+            { id: "skills", label: "Skills 技能", icon: TAB_ICONS.skills, count: skills.length },
+            { id: "prompts", label: "提示词模板", icon: TAB_ICONS.prompts, count: prompts.length },
+            { id: "inject", label: "Native 注入管理", icon: TAB_ICONS.inject },
+          ] satisfies TabItem<ExtensionTab>[]
+        }
+      />
 
       {/* Tab 1: MCP Servers */}
       {activeTab === "mcp" && (
@@ -175,18 +146,18 @@ export default function ExtensionsPage() {
                           <Server className="h-4 w-4" />
                         </div>
                         <div>
-                          <CardTitle className="text-sm font-semibold">{s.name}</CardTitle>
-                          <p className="text-[10px] text-muted-foreground font-mono">ID: {s.id}</p>
+                          <CardTitle className="text-sm">{s.name}</CardTitle>
+                          <p className="text-2xs text-muted-foreground font-mono">ID: {s.id}</p>
                         </div>
                       </div>
-                      {s.isBuiltin && <Badge variant="info" className="text-[10px]">内置</Badge>}
+                      {s.isBuiltin && <Badge variant="info" className="text-2xs">内置</Badge>}
                     </div>
                     <p className="text-xs text-muted-foreground mt-2">{s.description || "无描述信息"}</p>
                   </CardHeader>
                   <CardContent className="pt-0 space-y-2">
-                    <div className="p-2 bg-muted/40 rounded text-[11px] font-mono">
-                      <span className="text-muted-foreground block text-[10px]">执行命令与参数:</span>
-                      <code className="text-foreground truncate block">
+                    <div className="rounded-md border bg-muted/60 p-2 font-mono text-xs">
+                      <span className="block text-2xs text-muted-foreground">执行命令与参数</span>
+                      <code className="block truncate text-foreground">
                         {s.command} {s.args?.join(" ")}
                       </code>
                     </div>
@@ -209,7 +180,7 @@ export default function ExtensionsPage() {
               <CardContent className="p-8 text-center text-muted-foreground text-xs space-y-2">
                 <Sparkles className="h-8 w-8 mx-auto text-muted-foreground/50" />
                 <p>当前暂无已安装的外部 Skills 技能包</p>
-                <p className="text-[11px] opacity-80">支持从 GitHub 仓库直接同步符合规范的技能定义</p>
+                <p className="text-2xs opacity-80">支持从 GitHub 仓库直接同步符合规范的技能定义</p>
               </CardContent>
             </Card>
           ) : (
@@ -218,8 +189,8 @@ export default function ExtensionsPage() {
                 <Card key={skill.id} className="border-border/60">
                   <CardHeader className="pb-2">
                     <div className="flex items-center justify-between">
-                      <CardTitle className="text-sm font-semibold">{skill.name}</CardTitle>
-                      <Badge variant={skill.enabled ? "success" : "secondary"} className="text-[10px]">
+                      <CardTitle className="text-sm">{skill.name}</CardTitle>
+                      <Badge variant={skill.enabled ? "success" : "secondary"} className="text-2xs">
                         {skill.enabled ? "启用中" : "已禁用"}
                       </Badge>
                     </div>
@@ -243,7 +214,7 @@ export default function ExtensionsPage() {
               <CardContent className="p-8 text-center text-muted-foreground text-xs space-y-2">
                 <FileText className="h-8 w-8 mx-auto text-muted-foreground/50" />
                 <p>暂无自定义提示词模板</p>
-                <p className="text-[11px] opacity-80">可在 Profile 配置中绑定针对性系统提示词与代码审查规范</p>
+                <p className="text-2xs opacity-80">可在 Profile 配置中绑定针对性系统提示词与代码审查规范</p>
               </CardContent>
             </Card>
           ) : (
@@ -252,19 +223,19 @@ export default function ExtensionsPage() {
                 <Card key={p.id} className="border-border/60">
                   <CardHeader className="pb-2">
                     <div className="flex items-center justify-between">
-                      <CardTitle className="text-sm font-semibold">{p.name}</CardTitle>
-                      <Badge variant="outline" className="text-[10px]">{p.scope}</Badge>
+                      <CardTitle className="text-sm">{p.name}</CardTitle>
+                      <Badge variant="outline" className="text-2xs">{p.scope}</Badge>
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-2 text-xs">
-                    <div className="p-2 bg-muted/40 rounded font-mono text-[11px] max-h-24 overflow-y-auto">
+                    <div className="max-h-24 overflow-y-auto rounded-md border bg-muted/60 p-2 font-mono text-xs">
                       {p.content}
                     </div>
                     {p.variables.length > 0 && (
-                      <div className="flex gap-1 flex-wrap text-[10px]">
-                        <span className="text-muted-foreground">变量:</span>
+                      <div className="flex flex-wrap items-center gap-1 text-2xs">
+                        <span className="text-muted-foreground">变量</span>
                         {p.variables.map((v) => (
-                          <Badge key={v} variant="secondary" className="text-[9px] px-1 py-0">{v}</Badge>
+                          <Badge key={v} variant="secondary" className="px-1.5 py-0 text-2xs font-mono">{v}</Badge>
                         ))}
                       </div>
                     )}
@@ -298,28 +269,20 @@ export default function ExtensionsPage() {
                 针对使用 Electron / Chromium Webview 的 GUI AI 客户端（如 Codex Desktop 等），PolyDeck 支持通过 Native 用户脚本与 CDP 调试通道实现无感抓包与 Stepwise 建议注入。
               </p>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
-                <div className="p-3 bg-muted/30 rounded-lg border space-y-1">
-                  <div className="text-muted-foreground text-[11px]">当前阶段 (Stage)</div>
-                  <div className="font-semibold text-xs">{injectStatus?.stage ?? "Unavailable"}</div>
-                </div>
-                <div className="p-3 bg-muted/30 rounded-lg border space-y-1">
-                  <div className="text-muted-foreground text-[11px]">注入通道 (Channel)</div>
-                  <div className="font-semibold text-xs">{injectStatus?.channel ?? "None"}</div>
-                </div>
-                <div className="p-3 bg-muted/30 rounded-lg border space-y-1">
-                  <div className="text-muted-foreground text-[11px]">脚本状态</div>
-                  <div className="font-semibold text-xs">
-                    {injectStatus?.native?.installed ? "已就绪" : "未安装"}
-                  </div>
-                </div>
-                <div className="p-3 bg-muted/30 rounded-lg border space-y-1">
-                  <div className="text-muted-foreground text-[11px]">校验摘要</div>
-                  <div className="font-mono text-[10px] truncate" title={injectStatus?.native?.script_hash ?? "N/A"}>
-                    {injectStatus?.native?.script_hash ? injectStatus.native.script_hash.slice(0, 12) + "..." : "无"}
-                  </div>
-                </div>
-              </div>
+              <KeyValueGrid className="rounded-lg border bg-muted/30 p-4 lg:grid-cols-4">
+                <KeyValue label="当前阶段 Stage">{injectStatus?.stage ?? "Unavailable"}</KeyValue>
+                <KeyValue label="注入通道 Channel">{injectStatus?.channel ?? "None"}</KeyValue>
+                <KeyValue label="脚本状态">
+                  {injectStatus?.native?.installed ? "已就绪" : "未安装"}
+                </KeyValue>
+                <KeyValue label="校验摘要" mono>
+                  <span title={injectStatus?.native?.script_hash ?? "N/A"}>
+                    {injectStatus?.native?.script_hash
+                      ? injectStatus.native.script_hash.slice(0, 12) + "…"
+                      : "无"}
+                  </span>
+                </KeyValue>
+              </KeyValueGrid>
 
               <div className="flex gap-3 pt-2">
                 <Button

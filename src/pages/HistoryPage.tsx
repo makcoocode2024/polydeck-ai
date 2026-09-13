@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { StatTile } from "@/components/ui/stat-tile";
 import { backend } from "@/services/backend";
 import type { ConsolidateReport, SessionSummary } from "@/domain/history";
 import {
@@ -175,7 +176,7 @@ export default function HistoryPage() {
             导出 JSON
           </Button>
           <Button variant="outline" size="sm" onClick={() => setShowBackupModal(true)} className="text-xs">
-            <ShieldCheck className="h-3.5 w-3.5 mr-1 text-emerald-500" />
+            <ShieldCheck className="h-3.5 w-3.5 mr-1 text-success" />
             加密备份
           </Button>
           <Button variant="outline" size="sm" onClick={() => setShowRestoreModal(true)} className="text-xs">
@@ -199,43 +200,20 @@ export default function HistoryPage() {
         </div>
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <Card className="border-border/60 shadow-sm">
-          <CardContent className="p-4 flex items-center gap-4">
-            <div className="p-3 rounded-xl bg-primary/10 text-primary">
-              <MessageSquare className="h-5 w-5" />
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">会话总数</div>
-              <div className="text-2xl font-bold">{sessions.length}</div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-border/60 shadow-sm">
-          <CardContent className="p-4 flex items-center gap-4">
-            <div className="p-3 rounded-xl bg-sky-500/10 text-sky-500">
-              <Layers className="h-5 w-5" />
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">累计交互轮次</div>
-              <div className="text-2xl font-bold">{totalMessages.toLocaleString()}</div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-border/60 shadow-sm">
-          <CardContent className="p-4 flex items-center gap-4">
-            <div className="p-3 rounded-xl bg-amber-500/10 text-amber-500">
-              <Zap className="h-5 w-5" />
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">消耗 Tokens 估算</div>
-              <div className="text-2xl font-bold">{totalTokens.toLocaleString()}</div>
-            </div>
-          </CardContent>
-        </Card>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <StatTile label="会话总数" value={sessions.length} icon={MessageSquare} tone="primary" />
+        <StatTile
+          label="累计交互轮次"
+          value={totalMessages.toLocaleString()}
+          icon={Layers}
+          tone="info"
+        />
+        <StatTile
+          label="消耗 Tokens 估算"
+          value={totalTokens.toLocaleString()}
+          icon={Zap}
+          tone="warning"
+        />
       </div>
 
       {/* Filter and Search */}
@@ -255,9 +233,8 @@ export default function HistoryPage() {
             <span className="text-xs text-muted-foreground shrink-0">客户端筛选:</span>
             <Button
               variant={selectedClient === "all" ? "default" : "outline"}
-              size="sm"
+              size="xs"
               onClick={() => setSelectedClient("all")}
-              className="text-xs h-7"
             >
               全部
             </Button>
@@ -265,9 +242,8 @@ export default function HistoryPage() {
               <Button
                 key={c}
                 variant={selectedClient === c ? "default" : "outline"}
-                size="sm"
+                size="xs"
                 onClick={() => setSelectedClient(c)}
-                className="text-xs h-7"
               >
                 {c}
               </Button>
@@ -277,18 +253,20 @@ export default function HistoryPage() {
       </div>
 
       {historyError && (
-        <div className="p-3 rounded-lg border border-destructive/40 bg-destructive/5 text-xs text-destructive" role="alert">
+        <div className="rounded-lg border border-destructive/30 bg-destructive-surface p-3 text-xs text-destructive" role="alert">
           读取或整合历史失败：{historyError}
         </div>
       )}
 
       {consolidateResult && (
-        <div className="p-3 rounded-lg border border-emerald-500/40 bg-emerald-500/5 text-xs space-y-1">
-          <div className="flex items-center gap-2 font-semibold text-emerald-600 dark:text-emerald-400">
+        <div className="space-y-1 rounded-lg border border-success/30 bg-success-surface p-3 text-xs">
+          <div className="flex items-center gap-2 font-semibold text-success-foreground">
             <CheckCircle2 className="h-3.5 w-3.5" />
             整合完成，当前共 {consolidateResult.sessionsAfter} 个会话
           </div>
-          <div className="text-muted-foreground">
+          {/* Tinted surface, so the body text follows the same tone rather than
+              muted-foreground, which is tuned against the page background. */}
+          <div className="text-success-foreground/80">
             {consolidateResult.duplicatesMerged > 0
               ? `合并重复记录 ${consolidateResult.duplicatesMerged} 条`
               : "没有发现重复记录"}
@@ -310,7 +288,7 @@ export default function HistoryPage() {
             <div className="py-12 text-center text-muted-foreground text-xs space-y-2">
               <History className="h-8 w-8 mx-auto text-muted-foreground/40" />
               <p>暂无符合条件的会话记录</p>
-              <p className="text-[11px] opacity-70">当您通过本地网关向大模型发起请求或使用各客户端时，会话将自动同步在此处。</p>
+              <p className="text-2xs opacity-70">当您通过本地网关向大模型发起请求或使用各客户端时，会话将自动同步在此处。</p>
             </div>
           ) : (
             <div className="divide-y divide-border/40">
@@ -318,38 +296,36 @@ export default function HistoryPage() {
                 <div key={s.id} className="py-3 flex items-center justify-between gap-4 hover:bg-muted/20 px-2 rounded-lg transition-colors">
                   <div className="space-y-1 min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <Badge variant="outline" className="text-[10px] shrink-0 font-mono">{s.client}</Badge>
-                      <span className="text-xs font-semibold truncate text-foreground">{s.title || "未命名会话"}</span>
+                      <Badge variant="outline" className="shrink-0 font-mono text-2xs">{s.client}</Badge>
+                      <span className="truncate text-sm font-medium text-foreground">{s.title || "未命名会话"}</span>
                     </div>
-                    <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
-                      <span className="flex items-center gap-1">
+                    {/* Timestamp and counts always show; provider and merge origin
+                        drop out below md rather than wrapping the row onto a
+                        second line. */}
+                    <div className="flex items-center gap-x-3 text-2xs text-muted-foreground">
+                      <span className="flex shrink-0 items-center gap-1">
                         <Clock className="h-3 w-3" />
                         {new Date(s.updatedAt || s.createdAt).toLocaleString()}
                       </span>
-                      <span>·</span>
-                      <span>{s.messageCount} 消息</span>
-                      <span>·</span>
-                      <span>{s.totalTokens.toLocaleString()} tokens</span>
+                      <span className="shrink-0">{s.messageCount} 消息</span>
+                      <span className="shrink-0 tabular-nums">{s.totalTokens.toLocaleString()} tokens</span>
                       {s.providerId && (
-                        <>
-                          <span>·</span>
-                          <span className="flex items-center gap-1" title={`Provider: ${s.providerId}`}>
-                            <Server className="h-3 w-3" />
-                            {s.providerId}
-                          </span>
-                        </>
+                        <span
+                          className="hidden shrink-0 items-center gap-1 md:flex"
+                          title={`Provider: ${s.providerId}`}
+                        >
+                          <Server className="h-3 w-3" />
+                          {s.providerId}
+                        </span>
                       )}
                       {s.mergedFrom > 1 && (
-                        <>
-                          <span>·</span>
-                          <span
-                            className="flex items-center gap-1 text-sky-500"
-                            title="该会话由多份不同 id 方案的记录合并而来"
-                          >
-                            <Combine className="h-3 w-3" />
-                            合并 {s.mergedFrom} 份
-                          </span>
-                        </>
+                        <span
+                          className="hidden shrink-0 items-center gap-1 text-info md:flex"
+                          title="该会话由多份不同 id 方案的记录合并而来"
+                        >
+                          <Combine className="h-3 w-3" />
+                          合并 {s.mergedFrom} 份
+                        </span>
                       )}
                     </div>
                   </div>
@@ -366,8 +342,8 @@ export default function HistoryPage() {
           <Card className="w-full max-w-md border-border bg-card shadow-2xl">
             <CardHeader className="pb-3">
               <div className="flex items-center gap-2">
-                <ShieldCheck className="h-5 w-5 text-emerald-500" />
-                <CardTitle className="text-base font-bold">创建 XChaCha20-Poly1305 加密备份</CardTitle>
+                <ShieldCheck className="h-5 w-5 text-success" />
+                <CardTitle>创建 XChaCha20-Poly1305 加密备份</CardTitle>
               </div>
             </CardHeader>
             <CardContent className="space-y-4 text-xs">
@@ -386,7 +362,7 @@ export default function HistoryPage() {
               </div>
 
               {backupResult && (
-                <div className="p-3 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded text-xs flex items-start gap-2">
+                <div className="flex items-start gap-2 rounded-md border border-success/30 bg-success-surface p-3 text-xs text-success-foreground">
                   <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
                   <div className="font-mono break-all">{backupResult}</div>
                 </div>
@@ -438,10 +414,10 @@ export default function HistoryPage() {
 
               {restoreMessage && (
                 <div
-                  className={`p-3 rounded text-xs flex items-start gap-2 ${
+                  className={`flex items-start gap-2 rounded-md border p-3 text-xs ${
                     restoreMessage.success
-                      ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                      : "bg-destructive/10 text-destructive"
+                      ? "border-success/30 bg-success-surface text-success-foreground"
+                      : "border-destructive/30 bg-destructive-surface text-destructive"
                   }`}
                 >
                   {restoreMessage.success ? (

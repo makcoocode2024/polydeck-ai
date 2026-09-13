@@ -34,7 +34,7 @@ export function Sidebar() {
           </div>
           <div>
             <h1 className="text-base font-bold tracking-tight">PolyDeck</h1>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-2xs text-muted-foreground">
               {version ? `v${version} · ` : ""}Polymorphic Gateway
             </p>
           </div>
@@ -52,10 +52,13 @@ export function Sidebar() {
             onFocus={() => preloadPage(preload)}
             className={({ isActive }) =>
               cn(
-                "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150",
+                "relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                // A tinted row with a brand-coloured rail, rather than a fully
+                // filled bar: six of these stacked in solid primary made the
+                // sidebar the loudest thing on screen.
                 isActive
-                  ? "bg-primary text-primary-foreground shadow-sm"
-                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                  ? "bg-accent text-accent-foreground before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-full before:bg-primary"
+                  : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
               )
             }
           >
@@ -65,11 +68,11 @@ export function Sidebar() {
         ))}
       </nav>
 
-      <div className="p-3 border-t bg-muted/20 text-xs text-muted-foreground">
-        <div className="flex items-center justify-between">
-          <span>Tauri 2 · Rust Engine</span>
-          <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-        </div>
+      {/* No status dot here. It was a hardcoded green pulse that never read any
+          state, so it claimed health even with the gateway stopped; the status bar
+          reports the real thing. */}
+      <div className="p-3 border-t text-2xs text-muted-foreground">
+        Tauri 2 · Rust Engine
       </div>
     </aside>
   );

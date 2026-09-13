@@ -15,9 +15,17 @@ export const CardHeader = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivEleme
 );
 CardHeader.displayName = "CardHeader";
 
+/**
+ * Defaults to `text-base`, not shadcn's `text-2xl`.
+ *
+ * Every one of the call sites in this app passed an override — `text-base` for a
+ * top-level card, `text-sm` for a nested one — because a 24px title does not fit
+ * a panel that is mostly labelled values. The default now matches the common
+ * case, so an override means the caller genuinely wants a different level.
+ */
 export const CardTitle = forwardRef<HTMLParagraphElement, HTMLAttributes<HTMLHeadingElement>>(
   ({ className, ...props }, ref) => (
-    <h3 ref={ref} className={cn("text-2xl font-semibold leading-none tracking-tight", className)} {...props} />
+    <h3 ref={ref} className={cn("text-base font-semibold leading-tight tracking-tight", className)} {...props} />
   )
 );
 CardTitle.displayName = "CardTitle";

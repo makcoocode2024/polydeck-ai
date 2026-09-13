@@ -1,49 +1,159 @@
-﻿@tailwind base;
+@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Design tokens.
+ *
+ * These were the unmodified shadcn defaults: every channel at 0% saturation,
+ * `--card` numerically equal to `--background`, and `--muted` / `--secondary` /
+ * `--accent` all sharing one value. Three consequences worth naming, because
+ * they are what the pages had been working around:
+ *
+ *   - No brand hue, so a primary button and the active nav item were plain
+ *     black on white (or white on black in dark mode).
+ *   - Cards could not read as surfaces. With card == background, the only thing
+ *     separating a card from the page was its border, which is why dense screens
+ *     looked like a grid of outlines rather than a hierarchy.
+ *   - Status colours did not exist as tokens, so every page hand-rolled its own
+ *     `bg-emerald-500/10 text-emerald-600 dark:text-emerald-400` triplet and no
+ *     two pages agreed on the shade.
+ *
+ * Each status colour therefore ships as a trio: the ink (`--success`), the text
+ * colour to sit on a tinted chip (`--success-foreground`), and the chip fill
+ * itself (`--success-surface`). Callers use the semantic name; the light/dark
+ * split lives here and only here.
+ */
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 0 0% 3.9%;
-    --muted: 0 0% 96.1%;
-    --muted-foreground: 0 0% 45.1%;
-    --border: 0 0% 89.8%;
-    --input: 0 0% 89.8%;
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 3.9%;
-    --primary: 0 0% 9%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 0 0% 96.1%;
-    --secondary-foreground: 0 0% 9%;
-    --accent: 0 0% 96.1%;
-    --accent-foreground: 0 0% 9%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
-    --ring: 0 0% 3.9%;
-    --radius: 0.5rem;
-    --sidebar-width: 240px;
-  }
-  .dark {
-    --background: 0 0% 3.9%;
-    --foreground: 0 0% 98%;
-    --muted: 0 0% 14.9%;
-    --muted-foreground: 0 0% 63.9%;
-    --border: 0 0% 14.9%;
-    --input: 0 0% 14.9%;
-    --card: 0 0% 3.9%;
-    --card-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 0 0% 9%;
-    --secondary: 0 0% 14.9%;
-    --secondary-foreground: 0 0% 98%;
-    --accent: 0 0% 14.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --ring: 0 0% 83.1%;
-  }
-  * { @apply border-border; }
-  body { @apply bg-background text-foreground; }
-}
+    /* Page sits slightly off-white so white cards lift off it. */
+    --background: 220 16% 96%;
+    --foreground: 224 24% 12%;
 
+    --card: 0 0% 100%;
+    --card-foreground: 224 24% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 224 24% 12%;
+
+    /* Recessed fills: table stripes, disabled surfaces, inline code. */
+    --muted: 220 14% 93%;
+    --muted-foreground: 220 10% 42%;
+
+    /* Neutral raised fills: secondary buttons. Distinct from --muted. */
+    --secondary: 220 14% 90%;
+    --secondary-foreground: 224 22% 18%;
+
+    /* Hover/selected tint, related to the brand hue rather than plain grey. */
+    --accent: 250 62% 96%;
+    --accent-foreground: 250 58% 32%;
+
+    --border: 220 13% 87%;
+    --input: 220 13% 84%;
+
+    --primary: 250 80% 58%;
+    --primary-foreground: 0 0% 100%;
+    --ring: 250 80% 58%;
+
+    --success: 152 58% 36%;
+    --success-foreground: 152 62% 24%;
+    --success-surface: 152 55% 92%;
+
+    --warning: 32 86% 42%;
+    --warning-foreground: 28 82% 28%;
+    --warning-surface: 40 94% 90%;
+
+    --info: 212 84% 46%;
+    --info-foreground: 214 82% 30%;
+    --info-surface: 210 92% 93%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --destructive-surface: 0 88% 95%;
+
+    --radius: 0.625rem;
+    --sidebar-width: 240px;
+
+    /* Tuned for a light page: tight, low-opacity, no coloured spill. */
+    --shadow-sm: 0 1px 2px 0 hsl(224 24% 12% / 0.05);
+    --shadow-md: 0 2px 4px -1px hsl(224 24% 12% / 0.07), 0 1px 2px -1px hsl(224 24% 12% / 0.04);
+    --shadow-lg: 0 12px 24px -6px hsl(224 24% 12% / 0.12), 0 4px 8px -4px hsl(224 24% 12% / 0.06);
+  }
+
+  .dark {
+    --background: 225 20% 7%;
+    --foreground: 220 16% 96%;
+
+    /* Lifted above the page rather than equal to it, so cards read as surfaces. */
+    --card: 225 17% 11%;
+    --card-foreground: 220 16% 96%;
+
+    --popover: 225 17% 12%;
+    --popover-foreground: 220 16% 96%;
+
+    --muted: 225 14% 16%;
+    --muted-foreground: 220 12% 64%;
+
+    --secondary: 225 14% 19%;
+    --secondary-foreground: 220 16% 94%;
+
+    --accent: 250 28% 20%;
+    --accent-foreground: 250 70% 88%;
+
+    --border: 225 13% 20%;
+    --input: 225 13% 24%;
+
+    --primary: 252 88% 68%;
+    --primary-foreground: 250 60% 10%;
+    --ring: 252 88% 68%;
+
+    --success: 152 52% 52%;
+    --success-foreground: 152 58% 78%;
+    --success-surface: 152 40% 16%;
+
+    --warning: 36 90% 60%;
+    --warning-foreground: 40 92% 80%;
+    --warning-surface: 32 50% 17%;
+
+    --info: 208 88% 62%;
+    --info-foreground: 208 86% 82%;
+    --info-surface: 210 52% 18%;
+
+    /* The default dark destructive was 0 62.8% 30.6% — dark enough that a
+     * delete button read as muddy brown rather than as a warning. */
+    --destructive: 0 72% 58%;
+    --destructive-foreground: 0 0% 100%;
+    --destructive-surface: 0 42% 18%;
+
+    /* Shadows barely register on a dark page; depth comes from --card instead,
+     * so these stay present but restrained. */
+    --shadow-sm: 0 1px 2px 0 hsl(0 0% 0% / 0.3);
+    --shadow-md: 0 2px 4px -1px hsl(0 0% 0% / 0.4), 0 1px 2px -1px hsl(0 0% 0% / 0.3);
+    --shadow-lg: 0 12px 24px -6px hsl(0 0% 0% / 0.5), 0 4px 8px -4px hsl(0 0% 0% / 0.35);
+  }
+
+  * { @apply border-border; }
+
+  body {
+    @apply bg-background text-foreground;
+    /* Dense numeric UI: tabular figures stop token counts and ports from
+     * shifting width as they update. */
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The app is a fixed-size desktop shell, so a thin scrollbar reads better
+   * than the OS default and keeps dense panels from losing horizontal room. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+  *::-webkit-scrollbar { width: 10px; height: 10px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border));
+    border: 3px solid transparent;
+    border-radius: 9999px;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover { background-color: hsl(var(--muted-foreground) / 0.5); }
+}

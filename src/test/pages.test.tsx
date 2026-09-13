@@ -7,6 +7,7 @@ import ExtensionsPage from "@/pages/ExtensionsPage";
 import HistoryPage from "@/pages/HistoryPage";
 import SettingsPage from "@/pages/SettingsPage";
 import { backend, invalidateBackendReadCache } from "@/services/backend";
+import { AGNES_DEFAULT_MODEL } from "@/domain/agnes";
 import { setMockResponse } from "./setup";
 
 describe("Frontend Pages", () => {
@@ -15,25 +16,30 @@ describe("Frontend Pages", () => {
 
     // Panel is present but no route armed, so no model choices yet.
     expect(screen.getByTestId("agnes-panel")).toBeInTheDocument();
-    expect(screen.queryByTestId("agnes-model-agnes-2.5-flash")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId(`agnes-model-${AGNES_DEFAULT_MODEL}`),
+    ).not.toBeInTheDocument();
 
     const baseUrlInput = screen.getByPlaceholderText("https://api.openai.com/v1") as HTMLInputElement;
     const modelInput = screen.getByPlaceholderText("gpt-4o / claude-3-7-sonnet") as HTMLInputElement;
 
     // Arming the CN route fills base URL and model, and opens the model picker.
+    // Asserted against the constant, not a literal id: this test pinned
+    // "agnes-2.5-flash" and kept passing after 3.0 shipped, so it could not have
+    // caught the panel prefilling a superseded generation.
     fireEvent.click(screen.getByTestId("agnes-route-agnes-cn"));
     await waitFor(() => {
       expect(baseUrlInput.value).toBe("https://api.agnes-ai.cn/v1");
     });
-    expect(modelInput.value).toBe("agnes-2.5-flash");
-    expect(screen.getByTestId("agnes-model-agnes-2.5-flash")).toBeInTheDocument();
+    expect(modelInput.value).toBe(AGNES_DEFAULT_MODEL);
+    expect(screen.getByTestId(`agnes-model-${AGNES_DEFAULT_MODEL}`)).toBeInTheDocument();
 
     // Switching to the international route only changes the host.
     fireEvent.click(screen.getByTestId("agnes-route-agnes-global"));
     await waitFor(() => {
       expect(baseUrlInput.value).toBe("https://apihub.agnes-ai.com/v1");
     });
-    expect(modelInput.value).toBe("agnes-2.5-flash");
+    expect(modelInput.value).toBe(AGNES_DEFAULT_MODEL);
 
     // A paid model raises the output-budget warning; the free default does not.
     expect(screen.queryByText(/先消耗输出预算做推理/)).not.toBeInTheDocument();
@@ -59,7 +65,7 @@ describe("Frontend Pages", () => {
 
     fireEvent.click(screen.getByTestId("agnes-route-agnes-cn"));
     await waitFor(() => {
-      expect(screen.getByTestId("agnes-model-agnes-2.5-flash")).toBeInTheDocument();
+      expect(screen.getByTestId(`agnes-model-${AGNES_DEFAULT_MODEL}`)).toBeInTheDocument();
     });
 
     const claudeCode = await screen.findByRole("checkbox", { name: /Claude Code/i });
@@ -96,7 +102,7 @@ describe("Frontend Pages", () => {
     render(<QuickSetupPage />);
     fireEvent.click(screen.getByTestId("agnes-route-agnes-cn"));
     await waitFor(() => {
-      expect(screen.getByTestId("agnes-model-agnes-2.5-flash")).toBeInTheDocument();
+      expect(screen.getByTestId(`agnes-model-${AGNES_DEFAULT_MODEL}`)).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: /获取模型/i }));
@@ -121,7 +127,7 @@ describe("Frontend Pages", () => {
 
     fireEvent.click(screen.getByTestId("agnes-route-agnes-cn"));
     await waitFor(() => {
-      expect(screen.getByTestId("agnes-model-agnes-2.5-flash")).toBeInTheDocument();
+      expect(screen.getByTestId(`agnes-model-${AGNES_DEFAULT_MODEL}`)).toBeInTheDocument();
     });
 
     // Agnes arms as chat_function, which Codex cannot reach directly.

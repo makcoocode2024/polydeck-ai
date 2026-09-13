@@ -59,6 +59,124 @@ import {
   PROTOCOLS,
 } from "./quick-setup/presets";
 
+/**
+ * One numbered stage of the wizard.
+ *
+ * The three stages had their header markup written out three times, which is
+ * why the step badge and title drifted apart in size between them.
+ */
+function StepCard({
+  step,
+  title,
+  hint,
+  aside,
+  children,
+}: {
+  step: number;
+  title: string;
+  hint?: string;
+  aside?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <Card>
+      <CardHeader className="gap-3 p-5 pb-0 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
+            {step}
+          </div>
+          <div className="min-w-0 space-y-1">
+            <CardTitle className="text-base">{title}</CardTitle>
+            {hint && <p className="text-xs leading-relaxed text-muted-foreground">{hint}</p>}
+          </div>
+        </div>
+        {aside && <div className="shrink-0">{aside}</div>}
+      </CardHeader>
+      <CardContent className="space-y-5 p-5">{children}</CardContent>
+    </Card>
+  );
+}
+
+/**
+ * A labelled band inside a step.
+ *
+ * Deliberately not another bordered box: step 1 nested five `rounded-xl border
+ * bg-muted/20` panels inside a bordered card, so every group carried the same
+ * visual weight as the card containing it and nothing read as subordinate. A
+ * label plus a rule gives the grouping without a fourth level of frame.
+ */
+function Field({
+  label,
+  hint,
+  action,
+  children,
+  className,
+}: {
+  label: string;
+  hint?: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={"space-y-2 border-t pt-4 first:border-t-0 first:pt-0 " + (className ?? "")}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {label}
+          </h3>
+          {hint && <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{hint}</p>}
+        </div>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/** An inline status line. Tone maps to a token trio, never a raw palette entry. */
+function Notice({
+  tone,
+  icon: Icon,
+  children,
+  className,
+}: {
+  tone: "success" | "warning" | "info" | "danger" | "neutral";
+  icon: typeof AlertCircle;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  const tones = {
+    success: "border-success/25 bg-success-surface text-success-foreground",
+    warning: "border-warning/25 bg-warning-surface text-warning-foreground",
+    info: "border-info/25 bg-info-surface text-info-foreground",
+    danger: "border-destructive/30 bg-destructive-surface text-destructive",
+    neutral: "border-border bg-muted/50 text-muted-foreground",
+  } as const;
+  return (
+    <div
+      className={
+        "flex items-start gap-2 rounded-md border px-2.5 py-2 text-xs " +
+        tones[tone] +
+        (className ? " " + className : "")
+      }
+    >
+      <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+      <span className="leading-snug">{children}</span>
+    </div>
+  );
+}
+
+/** Shared frame for the selectable tiles: presets, routes, models, protocols. */
+function tileClass(active: boolean) {
+  return (
+    "rounded-lg border p-2.5 text-left transition-colors " +
+    (active
+      ? "border-primary bg-accent ring-1 ring-primary"
+      : "border-border bg-card hover:border-input hover:bg-accent/50")
+  );
+}
+
 export default function QuickSetupPage() {
   const [apiKey, setApiKey] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
@@ -500,103 +618,92 @@ export default function QuickSetupPage() {
 
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8 pb-12">
+    <div className="mx-auto max-w-5xl space-y-5 pb-12">
       {/* Hero Title */}
       <div className="space-y-2">
-        <div className="flex items-center gap-2">
-          <Badge variant="info" className="px-3 py-1">
-            <Zap className="h-3 w-3 mr-1" />
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="info">
+            <Zap className="mr-1 h-3 w-3" />
             快速向导 v{version}
           </Badge>
           <span className="text-xs text-muted-foreground">三步完成 AI 开发客户端统一代理接入</span>
         </div>
-        <h1 className="text-3xl font-extrabold tracking-tight">快速配置 PolyDeck</h1>
-        <p className="text-muted-foreground text-sm leading-relaxed">
+        <h1 className="text-2xl font-bold tracking-tight">快速配置 PolyDeck</h1>
+        <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">
           PolyDeck 通过智能协议感知与本地网关代理 OpenAI、Anthropic 及各类推理模型，提供智能协议转换、多客户端配置分发与凭据安全托管。
         </p>
       </div>
 
       {/* Step 1: Provider Setup */}
-      <Card className="border-border/60 shadow-sm">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="h-6 w-6 rounded-full bg-primary text-primary-foreground text-xs flex items-center justify-center font-bold">
-                1
-              </div>
-              <CardTitle className="text-lg">配置大模型服务商与 API Key</CardTitle>
-            </div>
-            {detectedProviderType && (
-              <Badge variant="info">
-                <Sparkles className="h-3 w-3 mr-1 text-sky-400" />
-                识别到: {detectedProviderType}
-              </Badge>
-            )}
+      <StepCard
+        step={1}
+        title="配置大模型服务商与 API Key"
+        hint="先挑模板或 Agnes 线路，再核对协议与端点，最后验证连通性。"
+        aside={
+          detectedProviderType && (
+            <Badge variant="info">
+              <Sparkles className="mr-1 h-3 w-3" />
+              识别到: {detectedProviderType}
+            </Badge>
+          )
+        }
+      >
+        {/* Quick presets */}
+        <Field label="常用服务商模板">
+          <div className="flex flex-wrap gap-2">
+            {PRESETS.map((p) => (
+              <Button
+                key={p.name}
+                type="button"
+                variant="outline"
+                size="xs"
+                onClick={() => handleSelectPreset(p)}
+                className="hover:border-primary"
+              >
+                <Server className="h-3 w-3 text-muted-foreground" />
+                {p.name}
+              </Button>
+            ))}
           </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Quick presets */}
-          <div>
-            <label className="text-xs text-muted-foreground mb-1.5 block">常用服务商快捷模板</label>
-            <div className="flex flex-wrap gap-2">
-              {PRESETS.map((p) => (
-                <Button
-                  key={p.name}
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handleSelectPreset(p)}
-                  className="text-xs h-8 hover:border-primary transition-all"
-                >
-                  <Server className="h-3 w-3 mr-1 text-muted-foreground" />
-                  {p.name}
-                </Button>
-              ))}
-            </div>
-          </div>
+        </Field>
 
-          {/* Agnes dedicated panel */}
+        {/* Agnes dedicated panel */}
+        <Field label="Agnes AI 专区" className="border-t pt-4">
           <div
             className={
-              "rounded-xl border p-3.5 space-y-3 transition-all " +
-              (agnesRouteId
-                ? "border-primary/60 bg-primary/5 ring-1 ring-primary/30"
-                : "border-border bg-muted/10")
+              "space-y-3 rounded-lg border p-3 transition-colors " +
+              (agnesRouteId ? "border-primary/50 bg-accent/60" : "border-border bg-muted/30")
             }
             data-testid="agnes-panel"
           >
-            <div className="flex items-start justify-between gap-3 flex-wrap">
-              <div className="space-y-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Boxes className="h-4 w-4 text-primary shrink-0" />
-                  <span className="text-sm font-semibold">Agnes AI 专区</span>
-                  <Badge variant="success" className="text-[10px] px-1.5 py-0">
-                    Flash 现价免费
-                  </Badge>
-                  <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-                    三协议齐备
-                  </Badge>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Boxes className="h-4 w-4 shrink-0 text-primary" />
+                  <span className="text-sm font-semibold">一键接入 Claude Code 与 Codex</span>
+                  <Badge variant="success">Flash 现价免费</Badge>
+                  <Badge variant="outline">三协议齐备</Badge>
                 </div>
-                <p className="text-[11px] text-muted-foreground leading-relaxed">
-                  一键完成 Claude Code 与 Codex 接入，无需 CC-Switch 或 Codex++。选择线路后网关自动启用并映射 Claude 三档模型。
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  无需 CC-Switch 或 Codex++。选择线路后网关自动启用并映射 Claude 三档模型。
                 </p>
               </div>
               <a
                 href={AGNES_CONSOLE_URL}
                 target="_blank"
                 rel="noreferrer noopener"
-                className="text-[11px] text-primary hover:underline whitespace-nowrap shrink-0 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded"
+                className="shrink-0 whitespace-nowrap rounded text-xs text-primary hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 获取 API Key ↗
               </a>
             </div>
 
             {/* Route choice */}
-            <div>
-              <label className="text-[11px] text-muted-foreground mb-1.5 block">
+            <div className="space-y-2">
+              <label className="block text-xs text-muted-foreground">
                 接入线路（按你的网络环境选择）
               </label>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {AGNES_ROUTES.map((route) => {
                   const isActive = agnesRouteId === route.id;
                   return (
@@ -606,36 +713,30 @@ export default function QuickSetupPage() {
                       onClick={() => handleSelectAgnesRoute(route)}
                       aria-pressed={isActive}
                       data-testid={"agnes-route-" + route.id}
-                      className={
-                        "p-2.5 rounded-lg border text-left transition-all " +
-                        (isActive
-                          ? "border-primary bg-primary/10 ring-1 ring-primary"
-                          : "border-border bg-card/60 hover:border-border/80 hover:bg-muted/30")
-                      }
+                      className={tileClass(isActive)}
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-semibold">{route.label}</span>
-                        {isActive && <CheckCircle2 className="h-3.5 w-3.5 text-primary shrink-0" />}
+                        <span className="text-sm font-semibold">{route.label}</span>
+                        {isActive && <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-primary" />}
                       </div>
-                      <div className="text-[10px] text-muted-foreground mt-0.5">{route.hint}</div>
-                      <div className="text-[10px] font-mono text-muted-foreground/80 truncate mt-0.5">
+                      <div className="mt-0.5 text-xs text-muted-foreground">{route.hint}</div>
+                      <div className="mt-0.5 truncate font-mono text-2xs text-muted-foreground">
                         {route.baseUrl}
                       </div>
                     </button>
                   );
                 })}
               </div>
-              <div className="text-[11px] flex items-start gap-1.5 px-2.5 py-1.5 mt-2 rounded-md border bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400">
-                <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                <span className="leading-snug">{AGNES_ROUTE_KEY_SCOPE_NOTE}</span>
-              </div>
+              <Notice tone="warning" icon={AlertCircle}>
+                {AGNES_ROUTE_KEY_SCOPE_NOTE}
+              </Notice>
             </div>
 
             {/* Model choice, only once a route is armed */}
             {agnesRouteId && (
-              <div className="space-y-2 animate-in fade-in duration-200">
-                <label className="text-[11px] text-muted-foreground block">模型</label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div className="animate-fade-in space-y-2">
+                <label className="block text-xs text-muted-foreground">模型</label>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   {AGNES_MODELS.map((m) => {
                     const isActive = agnesModel === m.id;
                     return (
@@ -645,30 +746,19 @@ export default function QuickSetupPage() {
                         onClick={() => handleSelectAgnesModel(m.id)}
                         aria-pressed={isActive}
                         data-testid={"agnes-model-" + m.id}
-                        className={
-                          "p-2 rounded-lg border text-left transition-all " +
-                          (isActive
-                            ? "border-primary bg-primary/10 ring-1 ring-primary"
-                            : "border-border bg-card/60 hover:border-border/80 hover:bg-muted/30")
-                        }
+                        className={tileClass(isActive)}
                       >
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="text-xs font-medium">{m.label}</span>
-                          {m.free ? (
-                            <Badge variant="success" className="text-[9px] px-1 py-0">
-                              免费
-                            </Badge>
-                          ) : (
-                            <Badge variant="outline" className="text-[9px] px-1 py-0">
-                              计费
-                            </Badge>
-                          )}
-                          {isActive && <CheckCircle2 className="h-3 w-3 text-primary shrink-0" />}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-sm font-medium">{m.label}</span>
+                          <Badge variant={m.free ? "success" : "outline"}>
+                            {m.free ? "免费" : "计费"}
+                          </Badge>
+                          {isActive && <CheckCircle2 className="h-3 w-3 shrink-0 text-primary" />}
                         </div>
-                        <div className="text-[10px] text-muted-foreground mt-0.5 leading-tight">
+                        <div className="mt-0.5 text-xs leading-snug text-muted-foreground">
                           {m.note}
                         </div>
-                        <div className="text-[10px] font-mono text-muted-foreground/70 mt-0.5">
+                        <div className="mt-0.5 font-mono text-2xs text-muted-foreground">
                           {m.id}
                         </div>
                       </button>
@@ -677,59 +767,57 @@ export default function QuickSetupPage() {
                 </div>
 
                 {!AGNES_MODELS.find((m) => m.id === agnesModel)?.free && (
-                  <div className="text-[11px] flex items-start gap-1.5 px-2.5 py-1.5 rounded-md border bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400">
-                    <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                    <span className="leading-snug">{AGNES_PRO_BUDGET_WARNING}</span>
-                  </div>
+                  <Notice tone="warning" icon={AlertCircle}>
+                    {AGNES_PRO_BUDGET_WARNING}
+                  </Notice>
                 )}
 
-                <div className="text-[11px] text-muted-foreground flex items-start gap-1.5 px-2.5 py-1.5 rounded-md bg-muted/40 border border-border/60">
-                  <Radio className="h-3.5 w-3.5 mt-0.5 shrink-0 text-muted-foreground" />
-                  <span className="leading-snug">
-                    限流已设为 {AGNES_FREE_TIER_RPM} RPM（免费档实测上限）。Agnes 不返回限流响应头，自动探测会给出偏高的 60，此处不采用。
-                  </span>
-                </div>
+                <Notice tone="neutral" icon={Radio}>
+                  限流已设为 {AGNES_FREE_TIER_RPM} RPM（免费档实测上限）。Agnes 不返回限流响应头，自动探测会给出偏高的 60，此处不采用。
+                </Notice>
               </div>
             )}
           </div>
+        </Field>
 
-          {/* Manual Protocol Selector */}
-          <div className="p-3 rounded-xl border bg-muted/20 space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-medium text-foreground flex items-center gap-1.5">
-                <Network className="h-3.5 w-3.5 text-primary" />
-                服务协议类型 (可手动切换或由下方测试自动探测)
-              </label>
-              <Badge variant="outline" className="text-[10px] uppercase font-mono">
-                当前协议: {currentProtocol}
-              </Badge>
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-              {PROTOCOLS.map((proto) => {
-                const isActive = currentProtocol === proto.id;
-                return (
-                  <button
-                    key={proto.id}
-                    type="button"
-                    onClick={() => handleSelectProtocol(proto.id)}
-                    className={"p-2.5 rounded-lg border text-left transition-all flex flex-col justify-between gap-1 " + (isActive ? "border-primary bg-primary/10 text-foreground ring-1 ring-primary shadow-xs" : "border-border bg-card/60 text-muted-foreground hover:border-border/80 hover:bg-muted/30")}
-                  >
-                    <div className="flex items-center justify-between w-full">
-                      <span className="text-xs font-semibold">{proto.name}</span>
-                      {isActive && <CheckCircle2 className="h-3.5 w-3.5 text-primary shrink-0" />}
-                    </div>
-                    <span className="text-[10px] leading-tight text-muted-foreground line-clamp-2">
-                      {proto.desc}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+        {/* Manual Protocol Selector */}
+        <Field
+          label="服务协议"
+          hint="可手动切换，或由下方连通性测试自动探测。"
+          action={
+            <Badge variant="outline" className="font-mono uppercase">
+              <Network className="mr-1 h-3 w-3" />
+              当前协议: {currentProtocol}
+            </Badge>
+          }
+        >
+          {/* Five columns left ~195px per cell at this page width, too narrow for
+              a protocol name plus two lines of description. */}
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {PROTOCOLS.map((proto) => {
+              const isActive = currentProtocol === proto.id;
+              return (
+                <button
+                  key={proto.id}
+                  type="button"
+                  onClick={() => handleSelectProtocol(proto.id)}
+                  className={tileClass(isActive) + " flex flex-col justify-between gap-1"}
+                >
+                  <div className="flex w-full items-center justify-between gap-2">
+                    <span className="text-sm font-semibold">{proto.name}</span>
+                    {isActive && <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-primary" />}
+                  </div>
+                  <span className="text-xs leading-snug text-muted-foreground">{proto.desc}</span>
+                </button>
+              );
+            })}
           </div>
+        </Field>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Field label="端点参数">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <div>
-              <label className="text-xs font-medium text-muted-foreground flex items-center gap-1 mb-1">
+              <label className="mb-1 flex items-center gap-1 text-xs font-medium text-muted-foreground">
                 <Globe className="h-3.5 w-3.5" /> API 基础地址 (Base URL)
               </label>
               <Input
@@ -740,26 +828,26 @@ export default function QuickSetupPage() {
               />
             </div>
             <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <label className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
                   <Radio className="h-3.5 w-3.5" /> 默认模型标识 (Default Model)
                 </label>
                 <Button
                   type="button"
                   variant="outline"
-                  size="sm"
+                  size="xs"
                   onClick={handleFetchModels}
                   disabled={fetchingModels || !baseUrl.trim()}
-                  className="h-6 px-2 text-[11px] font-medium border-primary/40 text-primary hover:bg-primary/10 hover:border-primary transition-all"
+                  className="border-primary/40 text-primary hover:border-primary hover:bg-accent"
                 >
                   {fetchingModels ? (
                     <>
-                      <RotateCw className="h-3 w-3 mr-1 animate-spin" />
+                      <RotateCw className="h-3 w-3 animate-spin" />
                       正在获取...
                     </>
                   ) : (
                     <>
-                      <ListFilter className="h-3 w-3 mr-1" />
+                      <ListFilter className="h-3 w-3" />
                       获取模型
                     </>
                   )}
@@ -776,15 +864,15 @@ export default function QuickSetupPage() {
                 {/* Dropdown if models are fetched */}
                 {selectableModels.length > 0 && (
                   <div className="space-y-1">
-                    <label className="text-[11px] text-muted-foreground flex items-center gap-1">
-                      <Sparkles className="h-3 w-3 text-sky-400" />
+                    <label className="flex items-center gap-1 text-xs text-muted-foreground">
+                      <Sparkles className="h-3 w-3 text-info" />
                       从已获取的模型列表中快速选择：
                     </label>
                     <select
                       aria-label="从已获取的模型列表中选择"
                       value={selectableModels.some((m) => m.id === model) ? model : ""}
                       onChange={(e) => handleSelectModelDropdown(e.target.value)}
-                      className="w-full text-xs font-mono bg-background border border-input rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-ring text-foreground shadow-sm"
+                      className="w-full rounded-md border border-input bg-card px-2.5 py-1.5 font-mono text-xs text-foreground shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
                     >
                       <option value="" disabled>
                         -- 共 {selectableModels.length} 个可用于对话的模型，点击选择 --
@@ -796,7 +884,7 @@ export default function QuickSetupPage() {
                       ))}
                     </select>
                     {availableModels.length > selectableModels.length && (
-                      <p className="text-[10px] text-muted-foreground leading-snug">
+                      <p className="text-xs leading-snug text-muted-foreground">
                         已隐藏 {availableModels.length - selectableModels.length} 个非对话模型(图像/视频),它们走独立端点,不能作为对话模型使用。
                       </p>
                     )}
@@ -805,23 +893,19 @@ export default function QuickSetupPage() {
 
                 {/* Fetch status/fallback alert */}
                 {fetchMessage && (
-                  <div
-                    className={"text-xs flex items-start gap-1.5 px-2.5 py-1.5 rounded-md border " + (fetchSuccess ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400" : "bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400")}
+                  <Notice
+                    tone={fetchSuccess ? "success" : "warning"}
+                    icon={fetchSuccess ? CheckCircle2 : AlertCircle}
                   >
-                    {fetchSuccess ? (
-                      <CheckCircle2 className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                    ) : (
-                      <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                    )}
-                    <span className="leading-snug">{fetchMessage}</span>
-                  </div>
+                    {fetchMessage}
+                  </Notice>
                 )}
               </div>
             </div>
           </div>
 
           <div>
-            <label className="text-xs font-medium text-muted-foreground flex items-center gap-1 mb-1">
+            <label className="mb-1 flex items-center gap-1 text-xs font-medium text-muted-foreground">
               <Key className="h-3.5 w-3.5" /> API Key / 访问凭据 (存储于操作系统加密安全区)
             </label>
             <div className="relative flex items-center">
@@ -830,13 +914,13 @@ export default function QuickSetupPage() {
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 placeholder="sk-..."
-                className="font-mono text-xs pr-8"
+                className="pr-8 font-mono text-xs"
                 data-testid="quicksetup-api-key-input"
               />
               <button
                 type="button"
                 onClick={() => setShowApiKey(!showApiKey)}
-                className="absolute right-2 text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded focus:outline-none"
+                className="absolute right-2 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground focus:outline-none"
                 title={showApiKey ? "隐藏 API Key" : "显示 API Key"}
                 data-testid="quicksetup-api-key-toggle"
               >
@@ -848,8 +932,10 @@ export default function QuickSetupPage() {
               </button>
             </div>
           </div>
+        </Field>
 
-          <div className="flex flex-wrap items-center gap-3 pt-2">
+        <Field label="连通性验证">
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               variant="outline"
               size="sm"
@@ -859,12 +945,12 @@ export default function QuickSetupPage() {
             >
               {testing ? (
                 <>
-                  <RotateCw className="h-3.5 w-3.5 mr-1 animate-spin" />
+                  <RotateCw className="mr-1 h-3.5 w-3.5 animate-spin" />
                   正在测试连通性...
                 </>
               ) : (
                 <>
-                  <Radio className="h-3.5 w-3.5 mr-1" />
+                  <Radio className="mr-1 h-3.5 w-3.5" />
                   测试连接
                 </>
               )}
@@ -875,67 +961,68 @@ export default function QuickSetupPage() {
               size="sm"
               onClick={handleTestChat}
               disabled={testingChat || !baseUrl.trim()}
-              className="text-xs border-primary/40 text-primary hover:bg-primary/10"
+              className="border-primary/40 text-xs text-primary hover:bg-accent"
             >
               {testingChat ? (
                 <>
-                  <RotateCw className="h-3.5 w-3.5 mr-1 animate-spin" />
+                  <RotateCw className="mr-1 h-3.5 w-3.5 animate-spin" />
                   正在进行真实对话...
                 </>
               ) : (
                 <>
-                  <MessageSquare className="h-3.5 w-3.5 mr-1" />
+                  <MessageSquare className="mr-1 h-3.5 w-3.5" />
                   真实对话测试
                 </>
               )}
             </Button>
-
-            {testResult && (
-              <div
-                className={"text-xs flex items-center gap-1.5 px-3 py-1.5 rounded-md " + (testResult.success ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : "bg-destructive/10 text-destructive")}
-              >
-                {testResult.success ? (
-                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-                ) : (
-                  <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                )}
-                <span>{testResult.message}</span>
-                {testResult.latency !== undefined && (
-                  <span className="font-mono opacity-80">({testResult.latency}ms)</span>
-                )}
-              </div>
-            )}
           </div>
+
+          {testResult && (
+            <Notice
+              tone={testResult.success ? "success" : "danger"}
+              icon={testResult.success ? CheckCircle2 : AlertCircle}
+            >
+              {testResult.message}
+              {testResult.latency !== undefined && (
+                <span className="ml-1 font-mono opacity-80">({testResult.latency}ms)</span>
+              )}
+            </Notice>
+          )}
 
           {/* Real Chat Test Result Feedback */}
           {chatResult && (
             <div
-              className={"p-3.5 rounded-xl border text-xs space-y-2 animate-in fade-in duration-200 " + (chatResult.success ? "bg-emerald-500/5 border-emerald-500/30 text-foreground" : "bg-destructive/10 border-destructive/30 text-destructive")}
+              className={
+                "animate-fade-in space-y-2 rounded-lg border p-3 text-xs " +
+                (chatResult.success
+                  ? "border-success/25 bg-success-surface"
+                  : "border-destructive/30 bg-destructive-surface text-destructive")
+              }
             >
-              <div className="flex items-center justify-between font-medium">
+              <div className="flex items-center justify-between gap-2 font-medium">
                 <div className="flex items-center gap-2">
                   {chatResult.success ? (
-                    <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                    <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />
                   ) : (
-                    <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
+                    <AlertCircle className="h-4 w-4 shrink-0 text-destructive" />
                   )}
-                  <span className={chatResult.success ? "text-emerald-600 dark:text-emerald-400 font-semibold" : "font-semibold"}>
+                  <span className={chatResult.success ? "font-semibold text-success-foreground" : "font-semibold"}>
                     {chatResult.success
                       ? ("真实对话测试成功 (耗时: " + (("latencyMs" in chatResult) ? chatResult.latencyMs : 0) + "ms)")
                       : "真实对话测试失败"}
                   </span>
                 </div>
                 {"model" in chatResult && chatResult.model && (
-                  <Badge variant="outline" className="text-[10px] font-mono">
+                  <Badge variant="outline" className="font-mono">
                     模型: {chatResult.model}
                   </Badge>
                 )}
               </div>
 
               {"reply" in chatResult && chatResult.reply && (
-                <div className="p-3 rounded-lg bg-background/90 border border-border/80 text-foreground text-xs leading-relaxed font-mono whitespace-pre-wrap select-text shadow-inner">
-                  <div className="text-[10px] text-muted-foreground mb-1 flex items-center gap-1 font-sans font-medium">
-                    <MessageSquare className="h-3 w-3 text-sky-400" />
+                <div className="select-text whitespace-pre-wrap rounded-md border bg-card p-3 font-mono text-xs leading-relaxed text-foreground">
+                  <div className="mb-1 flex items-center gap-1 font-sans text-xs font-medium text-muted-foreground">
+                    <MessageSquare className="h-3 w-3 text-info" />
                     模型回复内容：
                   </div>
                   {chatResult.reply}
@@ -943,54 +1030,46 @@ export default function QuickSetupPage() {
               )}
 
               {"message" in chatResult && !chatResult.success && (
-                <div className="text-xs leading-relaxed opacity-95">{chatResult.message}</div>
+                <div className="text-xs leading-relaxed">{chatResult.message}</div>
               )}
             </div>
           )}
-        </CardContent>
-      </Card>
+        </Field>
+      </StepCard>
 
 
       {/* Step 2: Smart Gateway & Clients Selection */}
-      <Card className="border-border/60 shadow-sm">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="h-6 w-6 rounded-full bg-primary text-primary-foreground text-xs flex items-center justify-center font-bold">
-                2
-              </div>
-              <CardTitle className="text-lg">智能关联客户端与本地网关设置</CardTitle>
-            </div>
-            <Badge variant={gatewayEnabled ? "success" : "secondary"} className="text-xs">
-              <Cpu className="h-3 w-3 mr-1" />
-              {gatewayEnabled ? "已启用本地网关" : "原生直连模式"}
-            </Badge>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Gateway toggle and explanation */}
-          <div className="p-3.5 rounded-xl border bg-muted/20 space-y-2">
-            <div className="flex items-center justify-between">
+      <StepCard
+        step={2}
+        title="选网关模式与要同步的客户端"
+        aside={
+          <Badge variant={gatewayEnabled ? "success" : "secondary"}>
+            <Cpu className="mr-1 h-3 w-3" />
+            {gatewayEnabled ? "已启用本地网关" : "原生直连模式"}
+          </Badge>
+        }
+      >
+        {/* Gateway toggle and explanation */}
+        <Field label="本地网关">
+          <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <input
                   type="checkbox"
                   id="enable-gateway"
                   checked={gatewayEnabled}
                   onChange={(e) => setGatewayEnabled(e.target.checked)}
-                  className="rounded border-input text-primary focus:ring-primary h-4 w-4"
+                  className="h-4 w-4 rounded border-input text-primary focus:ring-primary"
                 />
-                <label htmlFor="enable-gateway" className="text-xs font-semibold cursor-pointer">
+                <label htmlFor="enable-gateway" className="cursor-pointer text-sm font-semibold">
                   启用本地代理网关 (127.0.0.1:18888)
                 </label>
               </div>
-              <Badge
-                variant={codexNeedsGateway(codexCompat) ? "destructive" : "outline"}
-                className="text-[10px]"
-              >
+              <Badge variant={codexNeedsGateway(codexCompat) ? "destructive" : "outline"}>
                 {codexNeedsGateway(codexCompat) ? "Codex 必须开启桥接" : "推荐开启"}
               </Badge>
             </div>
-            <p className="text-[11px] text-muted-foreground leading-relaxed pl-6">
+            <p className="pl-6 text-xs leading-relaxed text-muted-foreground">
               {gatewayReason}
             </p>
 
@@ -1001,10 +1080,10 @@ export default function QuickSetupPage() {
             */}
             {!gatewayEnabled && codexNeedsGateway(codexCompat) && selectedClients.includes("codex-cli") && (
               <div
-                className="text-[11px] flex items-start gap-1.5 px-2.5 py-2 rounded-md border bg-destructive/10 border-destructive/30 text-destructive ml-6"
+                className="ml-6 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive-surface px-2.5 py-2 text-xs text-destructive"
                 data-testid="codex-needs-gateway-warning"
               >
-                <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                 <span className="leading-snug">
                   网关已关闭,但 Codex CLI 在同步列表中。该上游会拒绝 Codex 的 <code className="font-mono">custom</code> 类型工具(如 <code className="font-mono">apply_patch</code>),Codex 第一轮就会返回{" "}
                   <code className="font-mono">400 unknown variant `custom`</code>。要么开启网关,要么在下方取消勾选 Codex CLI。
@@ -1012,105 +1091,89 @@ export default function QuickSetupPage() {
               </div>
             )}
           </div>
+        </Field>
 
-          {/* Target clients checkboxes (Smart selected) */}
-          <div className="space-y-2.5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <label className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-                <Layers className="h-3.5 w-3.5" /> 自动同步配置的 AI 客户端：
-              </label>
-              <div className="flex items-center gap-1.5 text-xs">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleSelectAllCoreClients}
-                  className="h-6 px-2 text-[11px] text-primary hover:bg-primary/10"
-                >
-                  <CheckSquare className="h-3 w-3 mr-1" />
-                  全选主流客户端 (Codex/Claude/Hermes)
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleSelectAllClients}
-                  className="h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground"
-                >
-                  全选所有
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleSelectSmartClients}
-                  className="h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground"
-                >
-                  智能推荐
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleClearClients}
-                  className="h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground"
-                >
-                  <Square className="h-3 w-3 mr-1" />
-                  清空
-                </Button>
-              </div>
+        {/* Target clients checkboxes (Smart selected) */}
+        <Field
+          label="自动同步配置的客户端"
+          action={
+            <div className="flex flex-wrap items-center gap-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                onClick={handleSelectAllCoreClients}
+                className="text-primary hover:bg-accent"
+              >
+                <CheckSquare className="h-3 w-3" />
+                全选主流 (Codex/Claude/Hermes)
+              </Button>
+              <Button type="button" variant="ghost" size="xs" onClick={handleSelectAllClients}>
+                全选所有
+              </Button>
+              <Button type="button" variant="ghost" size="xs" onClick={handleSelectSmartClients}>
+                智能推荐
+              </Button>
+              <Button type="button" variant="ghost" size="xs" onClick={handleClearClients}>
+                <Square className="h-3 w-3" />
+                清空
+              </Button>
             </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              {detectedClients.map((c) => {
-                const isSelected = selectedClients.includes(c.id);
-                const isCore = CORE_CLIENT_IDS.includes(c.id);
-                return (
-                  <label
-                    key={c.id}
-                    className={"flex items-center justify-between p-2.5 rounded-lg border text-xs cursor-pointer transition-all " + (isSelected ? "border-primary bg-primary/5 font-medium" : "border-border bg-card/40 text-muted-foreground hover:border-border/80")}
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => handleToggleClient(c.id)}
-                        className="rounded border-input text-primary focus:ring-primary h-3.5 w-3.5"
-                      />
-                      <span className="truncate">{c.name}</span>
-                      {isCore && (
-                        <Badge variant="outline" className="text-[9px] px-1 py-0 border-primary/40 text-primary shrink-0">
-                          主流
-                        </Badge>
-                      )}
-                    </div>
-                    {c.installed ? (
-                      <Badge variant="success" className="text-[9px] px-1 py-0 shrink-0">已检测到</Badge>
-                    ) : (
-                      <Badge variant="outline" className="text-[9px] px-1 py-0 text-muted-foreground shrink-0">未安装</Badge>
-                    )}
-                  </label>
-                );
-              })}
-            </div>
+          }
+        >
+          <div className="flex items-center gap-1 text-xs text-muted-foreground">
+            <Layers className="h-3.5 w-3.5" />
+            激活方案时，PolyDeck 会为勾选的客户端写入端点与令牌。
           </div>
-        </CardContent>
-      </Card>
+
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {detectedClients.map((c) => {
+              const isSelected = selectedClients.includes(c.id);
+              const isCore = CORE_CLIENT_IDS.includes(c.id);
+              return (
+                <label
+                  key={c.id}
+                  className={
+                    "flex cursor-pointer items-center justify-between gap-2 rounded-lg border p-2.5 text-sm transition-colors " +
+                    (isSelected
+                      ? "border-primary bg-accent font-medium"
+                      : "border-border bg-card text-muted-foreground hover:border-input hover:bg-accent/50")
+                  }
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => handleToggleClient(c.id)}
+                      className="h-3.5 w-3.5 rounded border-input text-primary focus:ring-primary"
+                    />
+                    <span className="truncate">{c.name}</span>
+                    {isCore && (
+                      <Badge variant="outline" className="shrink-0 border-primary/40 text-primary">
+                        主流
+                      </Badge>
+                    )}
+                  </div>
+                  <Badge variant={c.installed ? "success" : "outline"} className="shrink-0">
+                    {c.installed ? "已检测到" : "未安装"}
+                  </Badge>
+                </label>
+              );
+            })}
+          </div>
+        </Field>
+      </StepCard>
 
       {/* Step 3: Save Profile & Gateway */}
-      <Card className="border-border/60 shadow-sm">
-        <CardHeader className="pb-3">
-          <div className="flex items-center gap-2">
-            <div className="h-6 w-6 rounded-full bg-primary text-primary-foreground text-xs flex items-center justify-center font-bold">
-              3
-            </div>
-            <CardTitle className="text-lg">保存配置方案与激活</CardTitle>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex flex-col sm:flex-row gap-3">
+      <StepCard
+        step={3}
+        title="保存方案并激活"
+        hint="仅保存会写入方案但不改动客户端；激活才会分发配置。"
+      >
+        <Field label="方案">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
             <div className="flex-1">
-              <label className="text-xs font-medium text-muted-foreground block mb-1">方案名称</label>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">方案名称</label>
               <Input
                 value={profileName}
                 onChange={(e) => setProfileName(e.target.value)}
@@ -1132,12 +1195,12 @@ export default function QuickSetupPage() {
                   </>
                 ) : saveStatus === "saved" ? (
                   <>
-                    <Check className="h-3.5 w-3.5 mr-1.5 text-emerald-500" />
+                    <Check className="mr-1.5 h-3.5 w-3.5 text-success" />
                     方案已保存
                   </>
                 ) : (
                   <>
-                    <Save className="h-3.5 w-3.5 mr-1.5" />
+                    <Save className="mr-1.5 h-3.5 w-3.5" />
                     仅保存方案
                   </>
                 )}
@@ -1155,33 +1218,37 @@ export default function QuickSetupPage() {
                   </>
                 ) : saveStatus === "activated" ? (
                   <>
-                    <Check className="h-3.5 w-3.5 mr-1.5 text-emerald-400" />
+                    <Check className="mr-1.5 h-3.5 w-3.5 text-success" />
                     方案已激活 & 配置已分发
                   </>
                 ) : (
                   <>
-                    <ArrowRight className="h-3.5 w-3.5 mr-1.5" />
+                    <ArrowRight className="mr-1.5 h-3.5 w-3.5" />
                     保存并立即激活
                   </>
                 )}
               </Button>
             </div>
           </div>
+        </Field>
 
-          {gatewayEnabled && (
-            <div className="p-3 bg-muted/40 rounded-lg border flex items-center justify-between">
-              <div className="space-y-0.5">
-                <div className="text-xs font-semibold">本地网关代理接入地址</div>
-                <div className="text-xs text-muted-foreground font-mono">http://127.0.0.1:18888/v1</div>
+        {gatewayEnabled && (
+          <Field label="接入地址">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/30 p-3">
+              <div className="min-w-0 space-y-0.5">
+                <div className="text-sm font-semibold">本地网关代理接入地址</div>
+                <div className="truncate font-mono text-xs text-muted-foreground">
+                  http://127.0.0.1:18888/v1
+                </div>
               </div>
-              <Button variant="outline" size="sm" onClick={copyProxyUrl} className="h-7 text-xs">
-                {copied ? <Check className="h-3 w-3 mr-1 text-emerald-500" /> : <Copy className="h-3 w-3 mr-1" />}
+              <Button variant="outline" size="xs" onClick={copyProxyUrl}>
+                {copied ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
                 {copied ? "已复制" : "复制地址"}
               </Button>
             </div>
-          )}
-        </CardContent>
-      </Card>
+          </Field>
+        )}
+      </StepCard>
     </div>
   );
 }
