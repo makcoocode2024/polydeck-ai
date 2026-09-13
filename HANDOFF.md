@@ -53,17 +53,19 @@ Claude Code 参数 Tab 原来只能显示「将要写入什么」，看不到「
 
 六道门禁全绿：fmt / clippy `-D warnings` / `cargo test --workspace`（15 个二进制、393 测试）/ tsc / eslint `--max-warnings 0`。
 
-## Release 产物：2.1.1（2026-09-13 09:54 构建）
+## Release 产物：2.2.0（2026-09-13 10:40 构建）
 
-`npm run tauri build` 出的第一个 2.1.x 安装包——此前产物止于 2.0.11，所以没有覆盖任何旧文件。**版本号未动**，`Cargo.toml` / `package.json` 进本次会话前就已是 2.1.1；env 预览这个功能没有单独升版本，要升得另行决定。
+升版提交 `f75afd3`，已 push 到 `origin/fix/codex-wire-api-direct-mode`。这是一个 minor：自 2.1.1 以来落地了 Claude Code 参数 Tab、env 预览、中转站非流式重组、会话整合四项功能，没有破坏性变更。证书校验从「无条件跳过」改为尊重 profile 开关，是恢复文档里写过的契约，不是新引入的行为。
+
+第一次 `npm run tauri build` 因正在运行的 `polydeck.exe`（PID 19968）锁文件失败（os error 5）。把被锁的 exe 改名为 `polydeck.exe.locked-19968` 后第二次构建成功。那个进程当时还活着，没有杀。
 
 | 产物 | 大小 | sha256 |
 | --- | --- | --- |
-| `target/release/polydeck.exe` | 23M | `80dde64126148f86efcd3f806a1dc533ceb2e96cba9d05aa9f883ffa84b647dd` |
-| `target/release/bundle/msi/PolyDeck_2.1.1_x64_en-US.msi` | 9.2M | `e0ff3d18d36607a063293d55fcbdff024c1755e9483c12bda302176c1eb9a94e` |
-| `target/release/bundle/nsis/PolyDeck_2.1.1_x64-setup.exe` | 5.7M | `357e68c0ba1b7fd9046fa52dc828c4bc4ab6d2f7db639b33ead21574280d22dd` |
+| `target/release/polydeck.exe` | 23M | `959c8c23d6f2bacd131b37620fb324ea5808abf4b8bb6072ed2731b7c2467af3` |
+| `target/release/bundle/msi/PolyDeck_2.2.0_x64_en-US.msi` | 9.2M | `58e226d79532a70c5eb34ec31712d8f10b74e41b879dd247baed678d9f886fb5` |
+| `target/release/bundle/nsis/PolyDeck_2.2.0_x64-setup.exe` | 5.7M | `6e65a3cf9eb366dbf3f9b6dd8645a44f5afc839148352bed7cc06194abb15cad` |
 
-对应源码是 `7b7cecd`（含 `cba1eaa` 的 env 预览）。`target/` 已 gitignore，产物不入库。
+对应源码是 `f75afd3`。`target/` 已 gitignore，产物不入库。同目录还留着 09:54 打的 `PolyDeck_2.1.1_*`（exe `80dde641…`，msi `e0ff3d18…`，nsis `357e68c0…`），那是升版前的构建，不要拿来当 2.2.0。
 
 ## 未决
 
