@@ -57,3 +57,7 @@ _gen*.py
 # Local investigation scratch: captured requests, vendored upstream docs,
 # repro scripts. Useful locally, not part of the source tree.
 .scratch/
+
+# Timestamped handoff snapshots (patch + sha256) for work that is not committed
+# yet. Local safety net, not history.
+.backups/

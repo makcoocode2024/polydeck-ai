@@ -1,12 +1,38 @@
-# HANDOFF — 2026-09-12
+# HANDOFF — 2026-09-13
 
-分支 `fix/codex-wire-api-direct-mode`，领先 `main` 9 个提交。
+分支 `fix/codex-wire-api-direct-mode`，领先 `main` 13 个提交。数字会变，以 `git log --oneline main..HEAD | wc -l` 为准。
 
 ## 当前状态
 
-工作区干净，全部改动已提交。上一版本文（2026-09-11）声称「21 个已改文件 + 3 个新文件未提交」——**已过期**，那些改动在 `9e339aa` / `e7d5fcd` / `b3eda36` 里。读到旧结论一律以 `git log` 为准。
+工作区干净，全部改动已提交。下面「settings.json env 预览」那一节的代码在 `cba1eaa`，本文与 `.gitignore` 的改动在紧随其后的 docs 提交里。涉及「已提交 / 已落地」的陈述一律以 `git log` / `git status` 为准，不要信本文的口头结论。
 
-## 本次落地：网关证书校验穿透
+`.backups/env-preview-20260913-090433.patch` 是提交前留的快照（`git diff HEAD`，740 行）+ 两个绑定副本 + `SHA256-20260913-090433.txt`。代码已入库，这份快照现在只是冗余，可删。该目录已 gitignore。
+
+## 本次落地：settings.json env 预览（`cba1eaa`）
+
+Claude Code 参数 Tab 原来只能显示「将要写入什么」，看不到「现在文件里到底是什么」。这两者会不一致：`settings.json` 是合并写入而非整体替换，上一个 profile 留下的键、或者用户手改的值，都只能从文件本身看出来。
+
+新增读回链路：
+
+- `crates/core/src/profile_switch/mod.rs` — `read_claude_env_preview()` 加 `ClaudeEnvPreview` / `ClaudeEnvEntry` 两个类型。读 `~/.claude/settings.json` 的 `env` 块，按键名排序返回
+- `src-tauri/src/commands/profile.rs` — `ad_read_claude_env_preview` 命令，注册在 `lib.rs:126`
+- `src/domain/profile.ts`、`src/services/backend.ts` — 手写 TS 类型 + `readClaudeEnvPreview()`（不走读缓存：激活会在这个调用背后重写文件）
+- `src/pages/ProfilesPage.tsx` — 参数 Tab 底部「当前生效的 env」区块，带「重新读取」按钮；`useEffect` 在切到该 Tab 时才读
+- `crates/core/bindings/ClaudeEnv{Preview,Entry}.ts` — ts-rs 生成物，同目录另外 67 个绑定都已入库，这两个也该一起提交
+
+三处设计上的取舍，改动前先看这里：
+
+1. **凭证不过 IPC 边界。** 打码在 core 里做，命令层拿到的已经是打过码的。判据是后缀匹配（`_API_KEY` / `_AUTH_TOKEN` / `_SECRET` / `_PASSWORD`），**不能用 `TOKEN` 子串**——那会把 `CLAUDE_CODE_MAX_OUTPUT_TOKENS` 和 `MAX_THINKING_TOKENS` 一起盖掉，而这两个数字正是这个面板存在的理由。测试 `env_preview_masks_credentials_and_keeps_token_ceilings_readable` 锁住这一点。
+2. **JSON 解析不容错。** `write_claude_config` 可以容错（它反正要覆写整个文件），读回不行：一个解析失败却报「没有 env 键」的读法，会让用户以为配置没写进去，跑到错的地方去查。文件不存在 → `exists: false`；文件存在但 `env` 为空 → `exists: true` 且 `entries` 为空；解析失败 → 返回错误。三种状态在面板上是三句不同的话。
+3. **对照只在 claude-code 确实绑在当前方案时才做。** 文件属于 Claude Code 当前跟随的那个方案。编辑另一个方案时，每一行都会「不一致」，而这是完全正常的——无条件对照等于满屏假警报。另外 `ANTHROPIC_BASE_URL` 只在网关开启时对照：直连模式下后端会剥掉 `/v1` 后缀（`strip_anthropic_version_suffix`），在前端重复那套逻辑只会制造不存在的差异。
+
+六道门禁全绿：fmt / clippy `-D warnings` / `cargo test --workspace`（core 253 个，含 4 个新测试）/ tsc / eslint `--max-warnings 0` / Vitest（63 个，原 61，新增 2 个）。
+
+## Codex token 上限输入项：无此项，零改动
+
+用户要求「移除 Codex 的 token 上限输入项」。实测该输入项不存在：`model_max_output_tokens` 在全仓只有一处命中，就是本文第 45 行那条记录本身；前端按 `codex.*[Tt]oken` 正则搜 `src/**/*.{ts,tsx}` 零命中。没有可移除的东西，未做任何改动。
+
+## 上一次落地：网关证书校验穿透
 
 `crates/gateway/src/client.rs` 原来硬编码 `.danger_accept_invalid_certs(true)`，**对所有上游无条件跳过证书校验**。前端 `ProfilesPage.tsx:1900` 那个复选框、core 侧 `ProviderProfile.accept_invalid_certs`（默认 `false`）都早已存在，穿透链只在 gateway 断掉：探测请求（core/protocol.rs）尊重开关，真实转发流量不尊重。UI 上那个默认关闭、带警示标记的开关，对跑业务的路径是假的。
 
@@ -33,14 +59,17 @@
 - 中转站非流式兼容层（`RelayChatCompat`）缺真实中转站验证
 - Anthropic 中转兼容未做，另开任务
 - 证书校验现在尊重 profile 配置，但**尚未做真实自签名站点的行为验证**（reqwest 的 `Client` 不暴露 TLS 配置，单测只能锁默认值，端到端要靠手工测）
+- env 预览区只在 jsdom（Vitest）里验证过，**没在真实应用里打开过**。core 侧读回逻辑有真实文件系统测试（tempdir + `AI_DECK_HOME_OVERRIDE`），但「切到参数 Tab → 面板出现正确内容」这一条链路要跑 `npm run tauri dev` 手工确认
 
-### 任务 B：模型能力自动检测面板（探索已完成，设计未写，零代码）
+### 任务 B：模型能力自动检测面板 —— 已完成
 
-会话 `c7ec21ca`（2026-09-12 本地 01:34–10:54）做完了 Phase 1 探索就被 autocompact 抖死，计划文件 `~/.claude/plans/swirling-wishing-brook.md` 的「设计 / 实施步骤 / 验证」三节仍是空的待写状态。Phase 2 的 Plan 代理也死了（sotamodel 503），设计一段没产出。
+五项功能全部落地，分布在 `d4994ce`（能力解析）、`afb6d60`（参数 Tab）和上面那节未提交的改动（env 预览）里。
 
-用户已拍板三处（真实 AskUserQuestion 答复）：①任务描述写 Vue3，实为 React 19 → 按仓库现状全新实现；②面板放编辑 Modal 新增 Tab，参数存 Profile 级；③Codex 同步扩展（非推荐项，用户主动选的）。
+用户拍板的三处（真实 AskUserQuestion 答复）都已照办：①任务描述写 Vue3，实为 React 19 → 按仓库现状实现；②面板放编辑 Modal 新增 Tab，参数存 Profile 级；③Codex 同步扩展。第 ③ 项落到 Codex 侧只剩 `model_verbosity` 等真实存在的键，token 上限那一项按用户后续指令确认为「本就不存在」，见上面那一节。
 
-探索阶段已确认的事实值得复用：五项功能里只有 `ANTHROPIC_BASE_URL` 注入已实现（`profile_switch/mod.rs:548-551`），其余四项在工作区与全部 git 历史零落地；`claude env` 回显面板不存在，属新增；shadcn 只有 5 个组件、无 Select/Switch；数值校验可抄 RPM/TPM 范本（`ProfilesPage.tsx:2173-2205`）。
+本文旧版称「只有 `ANTHROPIC_BASE_URL` 注入已实现，其余四项零落地；`claude env` 回显面板不存在」——**已过期**，那是探索期的结论。现状看 `profile_switch/mod.rs` 的 `write_claude_config` 与 `read_claude_env_preview`。
+
+仍然有效的探索事实：shadcn 只有 5 个组件、无 Select/Switch（参数 Tab 因此用原生 `input` / `select`）；数值校验抄的是 RPM/TPM 范本。
 
 Codex 配置键已用本机二进制 grep 定案（codex-cli 0.154.0，`codex.exe` 298MB）：`model_verbosity` 命中 22 次为真实 config 键；`model_max_output_tokens` **零命中**，该版本没有输出上限顶层键。阳性对照 `model_context_window`（24 次）、`model_reasoning_effort`（26 次）证明方法有效。这条定案省掉一次重复查证，别重做。
 
