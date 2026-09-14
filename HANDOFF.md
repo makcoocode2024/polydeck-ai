@@ -53,6 +53,33 @@ Claude Code 参数 Tab 原来只能显示「将要写入什么」，看不到「
 
 六道门禁全绿：fmt / clippy `-D warnings` / `cargo test --workspace`（15 个二进制、393 测试）/ tsc / eslint `--max-warnings 0`。
 
+## Release 产物：2.2.1（2026-09-14 11:25 构建，待用户测试）
+
+升版提交 `0141740`，**未 push、未打 tag**。用户要的是可安装包用来自己测，不是发版。
+
+**版本号是 patch，内容不是。** 自 2.2.0 起换了默认模型、重做了整层设计 token。开始构建时工作区里那四个版本文件**已经被改成 2.2.1 了，不是我改的**——查证过只含版本号、无夹带，所以沿用而没有重写成 2.3.0。要按 semver 正名，得改成 minor。
+
+同样撞到运行中的 `polydeck.exe`（PID 23124）锁输出路径，处理方式与上次一致：把被锁的 exe 改名（`polydeck.exe.locked-111742`）而不杀进程。`target/release/` 下现在积了两个 `.locked-*`，可随时删。
+
+| 产物 | 大小 | sha256 |
+| --- | --- | --- |
+| `target/release/polydeck.exe` | 23M | `c5240b830fbe74b8e5a20ec44025fde019692fb0444e9bcd233c0591da156579` |
+| `target/release/bundle/msi/PolyDeck_2.2.1_x64_en-US.msi` | 9.2M | `248cd5b77ff4b49fce9db7182542a056cd15d1096af04270c07ad93d7aa0d61c` |
+| `target/release/bundle/nsis/PolyDeck_2.2.1_x64-setup.exe` | 5.7M | `fc7afd8da20640c0809270015208447942bf423683ff7bb839777d9dd0c9768a` |
+
+对应源码 `0141740`。六道门禁全绿（Vitest 67 个）。同目录还留着 2.2.0 与 2.1.1 的旧包，别混。
+
+### 这个版本要测什么
+
+界面改动只经用户目视确认，**没有自动化视觉验证**——我起过 dev server 截了八张图，但读图工具返回空，实际没看到。所以以下几处值得在真机上重点看：
+
+- 亮/暗两套主题下卡片与背景是否分得开（`--card` 此前与 `--background` 数值相同）
+- 状态色（成功/警告/信息）在两套主题下是否都可读
+- 1280px 窗口下三列网格与编辑 Modal 是否还挤（断点已从 `sm` 推到 `lg`，Modal 已放到 1024px）
+- 删除按钮静止态是否已带危险色、与「编辑」能否一眼区分
+- 历史页筛选客户端后三张统计卡的数字是否随之变化，首张标签是否变成「会话数（筛选后）」
+- 客户端页在**未绑定方案**时是否明确说「暂无可用凭证」，而不是给出一个假 token
+
 ## Release 产物：2.2.0（2026-09-13 10:40 构建）
 
 升版提交 `f75afd3`，已 push 到 `origin/fix/codex-wire-api-direct-mode`。这是一个 minor：自 2.1.1 以来落地了 Claude Code 参数 Tab、env 预览、中转站非流式重组、会话整合四项功能，没有破坏性变更。证书校验从「无条件跳过」改为尊重 profile 开关，是恢复文档里写过的契约，不是新引入的行为。
