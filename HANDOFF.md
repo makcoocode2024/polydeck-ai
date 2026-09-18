@@ -1,3 +1,75 @@
+# HANDOFF — 2026-09-19
+
+原"工作区未提交改动"已于 9-18 晚按内容拆成三个提交落库（见下"三次提交拆分结果"），随后所有验证跑在新提交链上。源码指纹：HEAD = `git log --oneline -5` 现查，勿信本文哈希。
+
+## 本会话（9-18 下午）：网关行为端到端验证 —— 已完成，全绿
+
+用户新指令是"你来帮我测试"。由于真实上游 sharellm 断流不可控，测试走**本地 stub 上游 + 真实网关 HTTP 面**路线，新增集成测试文件：
+
+**`crates/gateway/tests/thinking_discovery_wire.rs`（未跟踪新文件，4 个测试）**——复刻 `route_by_token.rs` 的 stub 模式（axum 起在 127.0.0.1 随机端口、记录网关实际转发的请求体），针对用户报的两个问题逐条锁行为：
+
+1. `unprobed_upstream_advertises_no_thinking_and_configured_output_ceiling` — unprobed 路由的 `GET /v1/models` 返回 `thinking.supported=false` 且 `max_tokens=262144`（不再是旧版硬编码 true / 32000）
+2. `signed_upstream_still_advertises_thinking` — Signed 路由继续报 true（修复收窄谎报，不是砍能力）
+3. `client_thinking_is_stripped_before_an_unprobed_upstream` — 客户端自带的 `thinking.budget_tokens=8192` 在转发前被剥离，model/max_tokens 原样保留
+4. `client_thinking_passes_through_to_a_signed_upstream` — Signed 上游不动客户端 thinking
+
+这四个测的是**接线**（route 配置的 `thinking_support`/`claude_max_output_tokens` 真到 handler），router 内已有的单测（`router/mod.rs:1489` `unprobed_upstream_strips_client_thinking`、`:1719` `model_discovery_reflects_measured_thinking_support_and_output_limit`）测的是函数本身，两层互补。
+
+验证命令与结果（全部实际执行过）：
+- `cargo test -p polydeck-gateway --test thinking_discovery_wire` → 4 过 0 挂
+- `cargo fmt --all -- --check` → 通过（中途 fmt 自动整理过一次 import 顺序/换行）
+- `cargo clippy -p polydeck-gateway --all-targets -- -D warnings` → 通过（修掉两处"MutexGuard 跨 await"：断言前先 `.clone()` 出 bodies 再 drop 锁）
+
+注意：新测试只进了 **debug 测试二进制**；13:24 的 release 构建产物**不含**这个测试文件（测试不进产物，但也不影响）。构建产物哈希仍以下表为准。
+
+【无法确认】未经真实 Claude Code 客户端 + 真实上游的联调——stub 验证的是网关侧行为契约，端到端仍要用户装包实测（见下）。
+
+## 2026-09-18：8192/token 排查结论 + 新测试构建
+
+用户报告两问题，排查结论（证据链已实测闭合）：
+
+1. **`OUTPUT_TOKENS_WITHOUT_THINKING=8192` 并未写死**。resolve 优先级=用户手填>probe>兜底（`crates/core/src/claude_code_params.rs:33`）。用户 262144 已双链落位：`~/.claude/settings.json` 的 `CLAUDE_CODE_MAX_OUTPUT_TOKENS=262144`、`~/.ai-deck/state.json` 的 `claudeCodeParams.maxOutputTokens=262144`。2.2.1 网关不改写请求 `max_tokens`（该词在 HEAD 版 router/mod.rs 只出现在测试）。"Streaming response ended…" 的根因是上游 sharellm.net 断流：当日日志 72× `no message_stop`、30 组×3 次 503、9× TimedOut、5× decode error、2× TLS 重置。
+2. **`thinking.budget_tokens=8192` 来自 Claude Code 客户端自身**，非网关注入（注入门控需 `defaultEffortLevel=Some`+Signed，sharellm 是 None+unprobed）。链条：`defaultEffortLevel` 为 null → 写 env 时回退 `get_model_reasoning_config("glm-5.3-flash")` → glm 不匹配任何家族 → 兜底 "medium"（`codex_catalog.rs:254-259`）；而用户在跑的 2.2.1 构建的 `/v1/models` 把 `capabilities.thinking.supported` **硬编码 true**（`git show HEAD:crates/gateway/src/router/models.rs`），客户端遂按 medium 自开 8192。工作区未提交的 models.rs/effort.rs 改动正对症：supported 改实测值、新增"客户端 thinking 但上游不可注入则剥离"。
+
+临时缓解（2.2.1 有效）：`~/.claude/settings.json` env 加 `"MAX_THINKING_TOKENS": "0"`。
+
+## 2026-09-18 测试构建产物（基于未提交工作区，非 2.2.1 发布内容）
+
+六道门禁全绿：fmt ✅ / clippy `-D warnings` ✅（仅 ts-rs 对 serde alias 的既有警告）/ cargo test 418 过 0 挂 ✅ / tsc ✅ / eslint `--max-warnings 0` ✅ / Vitest 67 过 ✅。
+
+构建时间 13:24–13:25。**同日构建与 2.2.1 发布版产物文件名相同，只有 sha256 不同，务必按哈希区分，别混。**
+
+| 产物 | 大小 | sha256 |
+| --- | --- | --- |
+| `target/release/polydeck.exe` | 23M | `d89b3ab769c358552ff66ecfd7ebbd54d61d05446a10811fd1549d2c21f45fca` |
+| `target/release/bundle/msi/PolyDeck_2.2.1_x64_en-US.msi` | 9.2M | `d8d307ec206d14757a3bea51568db4feb6d57dd34cc708d44e12cf08a0252339` |
+| `target/release/bundle/nsis/PolyDeck_2.2.1_x64-setup.exe` | 5.7M | `1c49e9b4b74b7706e1eb5063fcf748576bdb34e481d739e38681e23cf72b7ba9` |
+
+### 这个版本要测什么
+
+- Claude Code 模型选择器里 thinking 选项是否消失/被压（unprobed → /models 不再谎报 supported=true）；请求里不再出现 `budget_tokens=8192`
+- 客户端发来 thinking 而上游 unprobed 时，网关日志应出现 `Removed client thinking`
+- `/v1/models` 的 `max_tokens` 是否反映方案里配的 262144
+- Cline provider 路由（工作区新功能 `cline_auth.rs`，未经真实验证）
+- 流式断连（`Streaming response ended…`）**不在本版修复范围**——根因是上游质量，换稳定上游或开故障转移
+
+## 三次提交拆分结果（9-18 晚已落库，9-19 复核每个提交独立编译通过）
+
+- 提交 ① `feat(gateway): thinking 能力探测与客户端 thinking 剃离` — 9 文件：router/effort/models/middleware + thinking_discovery_wire.rs（4 测试）+ server.rs（AppState 增 `claude_max_output_tokens`，config.rs 同步加字段）。**独立 `cargo check` 通过，不引用 extra_headers**。
+- 提交 ② `feat(oauth): Cline OAuth 流程与自定义请求头全栈支持` — 17 文件：cline_auth.rs、credentials/profile/config、tauri IPC、前端 UI。`ProviderConfig.extra_headers`（core + 各测试初始化）**全部在本提交**。**独立 `cargo check` 通过**。
+- 提交 ③ `feat(gateway): extra_headers 转发与 Cline token 刷新集成` — 3 文件：protocol.rs、client.rs、failover.rs（转发链路本体）。**独立 `cargo check` 通过**。
+- 文档提交：HANDOFF 拆分记录。
+
+三次 rebase 期间的教训：提交 ① 曾把 `claude_max_output_tokens` 的 config.rs 字段定义漏在提交 ②，提交 ② 曾把三个 core 文件的 `extra_headers` 初始化漏在提交 ③，均通过"检出该提交 → cargo check → 把缺失 hunk 从后继提交搬回"修复。**拆分提交后必逐提交 checkout 验证独立编译**。
+
+## 下一步（新会话从这接）
+
+1. **先复核状态**：`git status --short` + `git log --oneline -5`；跑 `cargo test -p polydeck-gateway --test thinking_discovery_wire` 确认 4 测试仍绿。
+2. **等用户装包实测**（产物哈希见上表，按 sha256 区分别拿成 09-14 那版）：重点看上节"这个版本要测什么"清单。测试结果反馈回来后：通过 → 收尾（如 push 或删临时文件）；不通过 → 拿现象继续查。
+3. **别做**：不重做已落地的修复；未经确认不删 `src/test/tmp-fork-verify.test.tsx`（来历不明的未跟踪文件，问用户）；流式断连别再往网关侧查，根因在 sharellm 上游。
+
+---
+
 # HANDOFF — 2026-09-13
 
 分支 `fix/codex-wire-api-direct-mode`，领先 `main` 若干提交——数字每提交一次就变，别写死，用 `git log --oneline main..HEAD | wc -l` 现查。
