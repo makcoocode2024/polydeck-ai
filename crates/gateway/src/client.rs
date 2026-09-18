@@ -3,11 +3,44 @@
 use polydeck_core::types::RelayChatCompat;
 use reqwest::{Client, Response};
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{debug, warn};
 
 /// The one origin that is the real OpenAI service rather than a relay.
 const OFFICIAL_OPENAI_ORIGIN: &str = "https://api.openai.com";
+
+/// Cline API host — auto-inject product headers when detected.
+const CLINE_API_HOST: &str = "cline.bot";
+
+/// Build the Cline product-identification headers required by api.cline.bot.
+pub fn cline_product_headers() -> HashMap<String, String> {
+    let mut h = HashMap::new();
+    h.insert("HTTP-Referer".into(), "https://cline.bot".into());
+    h.insert("X-Title".into(), "Cline".into());
+    h.insert("X-IS-MULTIROOT".into(), "false".into());
+    h.insert("X-CLIENT-TYPE".into(), "Cline".into());
+    h.insert("User-Agent".into(), "Cline/0.0.83".into());
+    h.insert("X-CLIENT-VERSION".into(), "0.0.83".into());
+    h.insert("X-PLATFORM".into(), "cli".into());
+    h.insert("X-PLATFORM-VERSION".into(), "0.0.83".into());
+    h.insert("X-CORE-VERSION".into(), "0.0.83".into());
+    h
+}
+
+/// True when the base URL points at the Cline API.
+pub fn is_cline_api(base_url: &str) -> bool {
+    base_url.contains(CLINE_API_HOST)
+}
+
+/// Ensure the API key has the `workos:` prefix required by Cline.
+pub fn ensure_workos_prefix(key: &str) -> String {
+    if key.to_lowercase().starts_with("workos:") {
+        key.to_string()
+    } else {
+        format!("workos:{key}")
+    }
+}
 
 #[derive(Clone)]
 pub struct UpstreamClient {
@@ -19,6 +52,8 @@ pub struct UpstreamClient {
     /// buffered back into a single JSON body. Comes from the provider's probed
     /// `relay_chat_compat`, so it is per-provider rather than process-wide.
     relay_chat_compat: RelayChatCompat,
+    /// Extra headers injected into every outbound request.
+    extra_headers: HashMap<String, String>,
 }
 
 pub fn is_loopback_url(url: &str) -> bool {
@@ -384,12 +419,19 @@ impl UpstreamClient {
         accept_invalid_certs: bool,
     ) -> Result<Self, String> {
         let client = build_http_client(&base_url, timeout, accept_invalid_certs)?;
+        // Auto-detect Cline API and inject required headers + key prefix
+        let (effective_key, auto_headers) = if is_cline_api(&base_url) {
+            (ensure_workos_prefix(&api_key), cline_product_headers())
+        } else {
+            (api_key, HashMap::new())
+        };
         Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
-            api_key,
+            api_key: effective_key,
             max_retries,
             relay_chat_compat: RelayChatCompat::default(),
+            extra_headers: auto_headers,
         })
     }
 
@@ -409,6 +451,15 @@ impl UpstreamClient {
         self
     }
 
+    /// Apply provider-configured extra HTTP headers to every outbound request.
+    /// Merges with any auto-detected headers (e.g. Cline); explicit values win.
+    pub fn with_extra_headers(mut self, extra_headers: HashMap<String, String>) -> Self {
+        for (k, v) in extra_headers {
+            self.extra_headers.insert(k, v);
+        }
+        self
+    }
+
     pub async fn chat_completions(&self, body: Value) -> Result<Response, UpstreamError> {
         self.send(Endpoint::ChatCompletions, body).await
     }
@@ -423,22 +474,24 @@ impl UpstreamClient {
 
     pub async fn get_models(&self) -> Result<Response, UpstreamError> {
         let url = format!("{}{}", self.base_url, Endpoint::Models.path(&self.base_url));
-        self.client
+        let mut request = self
+            .client
             .get(&url)
             .bearer_auth(&self.api_key)
-            .header("x-api-key", &self.api_key)
-            .send()
-            .await
-            .map_err(|e| {
-                UpstreamError::new(
-                    format!(
-                        "Network error: {:?} | source: {:?}",
-                        e,
-                        std::error::Error::source(&e)
-                    ),
-                    e.is_connect(),
-                )
-            })
+            .header("x-api-key", &self.api_key);
+        for (key, value) in &self.extra_headers {
+            request = request.header(key.as_str(), value.as_str());
+        }
+        request.send().await.map_err(|e| {
+            UpstreamError::new(
+                format!(
+                    "Network error: {:?} | source: {:?}",
+                    e,
+                    std::error::Error::source(&e)
+                ),
+                e.is_connect(),
+            )
+        })
     }
 
     pub async fn send(&self, endpoint: Endpoint, body: Value) -> Result<Response, UpstreamError> {
@@ -500,26 +553,26 @@ impl UpstreamClient {
             body
         };
 
-        let response = self
+        let mut request = self
             .client
             .post(url)
             .bearer_auth(&self.api_key)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
-            .header("Content-Type", "application/json")
-            .json(&outbound)
-            .send()
-            .await
-            .map_err(|e| {
-                UpstreamError::new(
-                    format!(
-                        "Network error: {:?} | source: {:?}",
-                        e,
-                        std::error::Error::source(&e)
-                    ),
-                    e.is_connect(),
-                )
-            })?;
+            .header("Content-Type", "application/json");
+        for (key, value) in &self.extra_headers {
+            request = request.header(key.as_str(), value.as_str());
+        }
+        let response = request.json(&outbound).send().await.map_err(|e| {
+            UpstreamError::new(
+                format!(
+                    "Network error: {:?} | source: {:?}",
+                    e,
+                    std::error::Error::source(&e)
+                ),
+                e.is_connect(),
+            )
+        })?;
 
         if !buffer_stream || !response.status().is_success() {
             return Ok(response);

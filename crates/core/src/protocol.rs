@@ -7,7 +7,50 @@
 use crate::error::{AppError, AppResult};
 use crate::types::{CodexToolCompat, Confidence, ProtocolKind, RelayChatCompat};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use ts_rs::TS;
+
+/// Cline API host — auto-inject product headers when detected.
+const CLINE_API_HOST: &str = "cline.bot";
+
+/// Build the Cline product-identification headers required by api.cline.bot.
+fn cline_product_headers() -> HashMap<String, String> {
+    let mut h = HashMap::new();
+    h.insert("HTTP-Referer".into(), "https://cline.bot".into());
+    h.insert("X-Title".into(), "Cline".into());
+    h.insert("X-IS-MULTIROOT".into(), "false".into());
+    h.insert("X-CLIENT-TYPE".into(), "Cline".into());
+    h.insert("User-Agent".into(), "Cline/0.0.83".into());
+    h.insert("X-CLIENT-VERSION".into(), "0.0.83".into());
+    h.insert("X-PLATFORM".into(), "cli".into());
+    h.insert("X-PLATFORM-VERSION".into(), "0.0.83".into());
+    h.insert("X-CORE-VERSION".into(), "0.0.83".into());
+    h
+}
+
+/// True when the base URL points at the Cline API.
+fn is_cline_api(base_url: &str) -> bool {
+    base_url.contains(CLINE_API_HOST)
+}
+
+/// Ensure the API key has the `workos:` prefix required by Cline.
+fn ensure_workos_prefix(key: &str) -> String {
+    if key.to_lowercase().starts_with("workos:") {
+        key.to_string()
+    } else {
+        format!("workos:{key}")
+    }
+}
+
+/// Apply Cline-specific transformations: prepend `workos:` to the key
+/// and return the auto-injected product headers. Returns `(key, headers)`.
+fn apply_cline_auto_detect(base_url: &str, api_key: &str) -> (String, HashMap<String, String>) {
+    if is_cline_api(base_url) {
+        (ensure_workos_prefix(api_key), cline_product_headers())
+    } else {
+        (api_key.to_string(), HashMap::new())
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -122,7 +165,9 @@ pub async fn probe(
         ));
     }
     let url = normalize_url(raw_url);
-    let client = build_client(accept_invalid_certs)?;
+    // Cline API auto-detection: inject workos: prefix and product headers
+    let (effective_key, auto_headers) = apply_cline_auto_detect(raw_url, api_key);
+    let client = build_client_with_headers(accept_invalid_certs, &auto_headers)?;
     let mut evidence = Vec::new();
     let mut protocol = ProtocolKind::Unknown;
     let mut confidence = Confidence::Unknown;
@@ -130,7 +175,7 @@ pub async fn probe(
     let mut auth_error = None;
 
     // Try OpenAI-compatible /v1/models first (most common)
-    match fetch_openai_models(&client, &url, api_key).await {
+    match fetch_openai_models(&client, &url, &effective_key).await {
         Ok(fetched) => {
             models = fetched;
             evidence.push("GET /v1/models 返回有效模型列表".into());
@@ -150,7 +195,7 @@ pub async fn probe(
 
             // Try fallback chat ping if not explicit auth failure
             if auth_error.is_none() {
-                match probe_openai_chat_fallback(&client, &url, api_key).await {
+                match probe_openai_chat_fallback(&client, &url, &effective_key).await {
                     Ok(true) => {
                         evidence.push("POST /v1/chat/completions 验证通过".into());
                         protocol = ProtocolKind::OpenAI;
@@ -174,7 +219,7 @@ pub async fn probe(
 
     // Try Anthropic if OpenAI failed and no fatal auth error
     if protocol == ProtocolKind::Unknown && auth_error.is_none() {
-        match fetch_anthropic_models(&client, &url, api_key).await {
+        match fetch_anthropic_models(&client, &url, &effective_key).await {
             Ok(fetched) => {
                 models = fetched;
                 evidence.push("Anthropic /v1/models 返回有效模型列表".into());
@@ -193,7 +238,7 @@ pub async fn probe(
                 evidence.push(format!("Anthropic 探测失败：{err_msg}"));
 
                 if auth_error.is_none() {
-                    match probe_anthropic_messages_fallback(&client, &url, api_key).await {
+                    match probe_anthropic_messages_fallback(&client, &url, &effective_key).await {
                         Ok(true) => {
                             evidence.push("Anthropic /v1/messages 验证通过".into());
                             protocol = ProtocolKind::Anthropic;
@@ -237,7 +282,7 @@ pub async fn probe(
     // Probe Codex tool compatibility
     let codex_compat = if !models.is_empty() {
         let model = models[0].id.clone();
-        probe_codex_compat(&client, &url, api_key, &model).await
+        probe_codex_compat(&client, &url, &effective_key, &model).await
     } else {
         CodexToolCompat::ResponsesCustom
     };
@@ -251,7 +296,7 @@ pub async fn probe(
     }
 
     let supports_1m_context = if let Some(first_model) = models.first() {
-        let ok = probe_1m_context(&client, &url, api_key, protocol, &first_model.id).await;
+        let ok = probe_1m_context(&client, &url, &effective_key, protocol, &first_model.id).await;
         if ok {
             evidence.push("供应商端点支持 [1m] 原生长上下文".into());
         }
@@ -262,7 +307,8 @@ pub async fn probe(
 
     let relay_chat_compat = match models.first() {
         Some(first_model) => {
-            let verdict = probe_relay_chat_compat(&client, &url, api_key, &first_model.id).await;
+            let verdict =
+                probe_relay_chat_compat(&client, &url, &effective_key, &first_model.id).await;
             match verdict {
                 RelayChatCompat::Buffered => evidence
                     .push("非流式 /chat/completions 返回不规范，网关将改用流式缓冲后拼装".into()),
@@ -361,7 +407,10 @@ pub async fn test_chat(
     prompt: Option<&str>,
 ) -> AppResult<ChatTestResult> {
     let url = normalize_url(base_url);
-    let client = build_client(accept_invalid_certs)?;
+    let raw_url = base_url.trim();
+    // Cline API auto-detection: inject workos: prefix and product headers
+    let (effective_key, auto_headers) = apply_cline_auto_detect(raw_url, api_key);
+    let client = build_client_with_headers(accept_invalid_certs, &auto_headers)?;
     let test_prompt = prompt.unwrap_or("请回复五个字以内：连接测试成功");
     let model_to_use = if model.trim().is_empty() {
         "gpt-4o"
@@ -380,7 +429,7 @@ pub async fn test_chat(
         });
         let resp = client
             .post(format!("{url}/v1/messages"))
-            .header("x-api-key", api_key)
+            .header("x-api-key", &effective_key)
             .header("anthropic-version", "2023-06-01")
             .json(&body)
             .send()
@@ -419,7 +468,7 @@ pub async fn test_chat(
         });
         let resp = client
             .post(format!("{url}/v1/responses"))
-            .bearer_auth(api_key)
+            .bearer_auth(&effective_key)
             .json(&resp_body)
             .send()
             .await
@@ -459,7 +508,7 @@ pub async fn test_chat(
 
     let resp = client
         .post(format!("{url}/v1/chat/completions"))
-        .bearer_auth(api_key)
+        .bearer_auth(&effective_key)
         .json(&chat_body)
         .send()
         .await;
@@ -492,7 +541,7 @@ pub async fn test_chat(
             });
             let resp2 = client
                 .post(format!("{url}/v1/responses"))
-                .bearer_auth(api_key)
+                .bearer_auth(&effective_key)
                 .json(&resp_body)
                 .send()
                 .await
@@ -838,18 +887,19 @@ pub async fn probe_rate_limits(
         ));
     }
     let url = normalize_url(raw_url);
-    let client = build_client(accept_invalid_certs)?;
-
+    // Cline API auto-detection
+    let (effective_key, auto_headers) = apply_cline_auto_detect(raw_url, api_key);
+    let client = build_client_with_headers(accept_invalid_certs, &auto_headers)?;
     let mut detected_rpm = None;
     let mut detected_tpm = None;
 
     // 1. Try GET /v1/models to probe RateLimit headers
     let models_url = format!("{url}/v1/models");
     let mut req = client.get(&models_url);
-    if !api_key.trim().is_empty() {
+    if !effective_key.trim().is_empty() {
         req = req
-            .bearer_auth(api_key.trim())
-            .header("x-api-key", api_key.trim());
+            .bearer_auth(effective_key.trim())
+            .header("x-api-key", effective_key.trim());
     }
 
     if let Ok(resp) = req.send().await {
@@ -863,7 +913,7 @@ pub async fn probe_rate_limits(
     }
 
     // 2. If headers not found, send minimal POST /v1/chat/completions ping to check response headers
-    if (detected_rpm.is_none() || detected_tpm.is_none()) && !api_key.trim().is_empty() {
+    if (detected_rpm.is_none() || detected_tpm.is_none()) && !effective_key.trim().is_empty() {
         let chat_url = format!("{url}/v1/chat/completions");
         let probe_model = model.unwrap_or("gpt-4o");
         let body = serde_json::json!({
@@ -873,8 +923,8 @@ pub async fn probe_rate_limits(
         });
         if let Ok(resp) = client
             .post(&chat_url)
-            .bearer_auth(api_key.trim())
-            .header("x-api-key", api_key.trim())
+            .bearer_auth(effective_key.trim())
+            .header("x-api-key", effective_key.trim())
             .json(&body)
             .send()
             .await
@@ -1042,11 +1092,27 @@ fn is_loopback_or_private_url(url: &str) -> bool {
         || lower.contains("172.31.")
 }
 
-fn build_client(accept_invalid_certs: bool) -> AppResult<reqwest::Client> {
+/// Build a reqwest client with optional default headers (e.g. Cline product headers).
+fn build_client_with_headers(
+    accept_invalid_certs: bool,
+    default_headers: &HashMap<String, String>,
+) -> AppResult<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .danger_accept_invalid_certs(accept_invalid_certs)
         .use_rustls_tls()
         .timeout(std::time::Duration::from_secs(30));
+    if !default_headers.is_empty() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        for (k, v) in default_headers {
+            if let (Ok(name), Ok(value)) = (
+                reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+                reqwest::header::HeaderValue::from_str(v),
+            ) {
+                headers.insert(name, value);
+            }
+        }
+        builder = builder.default_headers(headers);
+    }
     if let Some(proxy_url) = crate::proxy_manager::get_configured_proxy() {
         if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
             builder = builder.proxy(proxy);

@@ -28,6 +28,9 @@ pub struct ProviderConfig {
     /// profile asked for.
     #[serde(default)]
     pub accept_invalid_certs: bool,
+    /// Extra HTTP headers forwarded from the provider's profile.
+    #[serde(default)]
+    pub extra_headers: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,7 +188,8 @@ impl FailoverManager {
                     0,
                     provider.accept_invalid_certs,
                 )?
-                .with_relay_chat_compat(provider.relay_chat_compat),
+                .with_relay_chat_compat(provider.relay_chat_compat)
+                .with_extra_headers(provider.extra_headers.clone()),
             );
             health.insert(
                 provider.id.clone(),
@@ -348,13 +352,22 @@ impl FailoverManager {
             PROBE_TIMEOUT,
             provider.accept_invalid_certs,
         )?;
+        // Auto-detect Cline API: inject workos: prefix and product headers
+        let (effective_key, auto_headers) = if crate::client::is_cline_api(&provider.base_url) {
+            (
+                crate::client::ensure_workos_prefix(&provider.api_key),
+                crate::client::cline_product_headers(),
+            )
+        } else {
+            (provider.api_key.clone(), HashMap::new())
+        };
         let start = Instant::now();
         let models_url = format!("{}/v1/models", provider.base_url.trim_end_matches('/'));
-        let models = client
-            .get(models_url)
-            .bearer_auth(&provider.api_key)
-            .send()
-            .await;
+        let mut models_req = client.get(models_url).bearer_auth(&effective_key);
+        for (k, v) in auto_headers.iter().chain(provider.extra_headers.iter()) {
+            models_req = models_req.header(k.as_str(), v.as_str());
+        }
+        let models = models_req.send().await;
         let mut result = match &models {
             Ok(response) if response.status().is_success() => Ok(()),
             Ok(response) => Err(format!("models probe returned {}", response.status())),
@@ -366,10 +379,14 @@ impl FailoverManager {
                 "{}/v1/chat/completions",
                 provider.base_url.trim_end_matches('/')
             );
-            let chat = client.post(chat_url).bearer_auth(&provider.api_key).json(&json!({
+            let mut chat_req = client.post(chat_url).bearer_auth(&effective_key).json(&json!({
                 "model": provider.default_model, "messages": [{"role": "user", "content": "hi"}],
                 "max_tokens": 1, "stream": false
-            })).send().await;
+            }));
+            for (k, v) in auto_headers.iter().chain(provider.extra_headers.iter()) {
+                chat_req = chat_req.header(k.as_str(), v.as_str());
+            }
+            let chat = chat_req.send().await;
             result = match chat {
                 Ok(r) if r.status().is_success() => Ok(()),
                 Ok(r) => Err(format!("probe returned {}", r.status())),
@@ -572,6 +589,7 @@ mod tests {
             default_model: "m".into(),
             relay_chat_compat: Default::default(),
             accept_invalid_certs: false,
+            extra_headers: Default::default(),
         }
     }
 
