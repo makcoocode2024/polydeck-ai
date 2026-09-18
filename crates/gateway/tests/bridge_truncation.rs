@@ -123,6 +123,7 @@ async fn gateway_in_front_of(upstream: String) -> (GatewayServer, String) {
             rate_limit: polydeck_core::profile::RateLimitSettings::default(),
             default_effort_level: None,
             thinking_support: polydeck_core::types::ThinkingSupport::Unprobed,
+            claude_max_output_tokens: None,
         },
         Vec::new(),
     );

@@ -91,6 +91,10 @@ pub struct UpstreamConfig {
     /// measures the OpenAI `reasoning_effort` path.
     #[serde(default)]
     pub thinking_support: polydeck_core::types::ThinkingSupport,
+    /// Claude Code's configured output ceiling. Used by `/models` discovery so
+    /// the client does not cap its configured limit back to the synthesized 32k.
+    #[serde(default)]
+    pub claude_max_output_tokens: Option<u64>,
     /// How to get a non-streaming Chat Completions answer out of this upstream,
     /// as probed into the provider's profile. Only the OpenAI Chat Completions
     /// path reads it; the Anthropic path is unaffected.

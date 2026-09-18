@@ -150,6 +150,7 @@ impl GatewayServer {
                         max_retries: self.config.max_retries,
                         default_effort_level: route.upstream.default_effort_level.clone(),
                         thinking_support: route.upstream.thinking_support,
+                        claude_max_output_tokens: route.upstream.claude_max_output_tokens,
                     });
                     by_upstream.insert(key, Arc::clone(&state));
                     state
@@ -229,6 +230,7 @@ mod tests {
             rate_limit: polydeck_core::profile::RateLimitSettings::default(),
             default_effort_level: None,
             thinking_support: polydeck_core::types::ThinkingSupport::default(),
+            claude_max_output_tokens: None,
             relay_chat_compat: Default::default(),
             accept_invalid_certs: false,
         }

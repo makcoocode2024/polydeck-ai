@@ -64,6 +64,8 @@ pub struct AppState {
     pub default_effort_level: Option<String>,
     /// Whether the upstream returns *signed* thinking blocks. Gates injection.
     pub thinking_support: ThinkingSupport,
+    /// Output ceiling configured for Claude Code and reflected in discovery.
+    pub claude_max_output_tokens: Option<u64>,
 }
 
 impl AppState {
@@ -389,6 +391,20 @@ async fn handle_messages(
         .map(str::to_string)
         .unwrap_or_default();
     sanitize_messages_effort(&mut body, &upstream_model);
+    let effort = body.get("reasoning_effort").and_then(Value::as_str);
+    debug!(
+        "messages-request model={} max_tokens={:?} thinking.type={:?} thinking.budget_tokens={:?} effort={:?}",
+        upstream_model,
+        body.get("max_tokens").and_then(|v| v.as_u64()),
+        body
+            .get("thinking")
+            .and_then(|t| t.get("type"))
+            .and_then(|v| v.as_str()),
+        body.get("thinking")
+            .and_then(|t| t.get("budget_tokens"))
+            .and_then(|v| v.as_u64()),
+        effort,
+    );
     let is_stream = body
         .get("stream")
         .and_then(|s| s.as_bool())
@@ -1209,6 +1225,7 @@ mod tests {
             max_retries: 3,
             default_effort_level: None,
             thinking_support: ThinkingSupport::Signed,
+            claude_max_output_tokens: None,
         }
     }
 
@@ -1469,6 +1486,17 @@ mod tests {
     }
 
     #[test]
+    fn unprobed_upstream_strips_client_thinking() {
+        let mut body = injectable_body();
+        body["thinking"] = serde_json::json!({
+            "type": "enabled",
+            "budget_tokens": 8192
+        });
+        inject_thinking_if_needed(&mut body, Some("medium"), ThinkingSupport::Unprobed);
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
     fn absent_thinking_upstream_never_gets_injection() {
         let mut body = injectable_body();
         inject_thinking_if_needed(&mut body, Some("high"), ThinkingSupport::Absent);
@@ -1586,7 +1614,7 @@ mod tests {
                 { "id": "deepseek-v4-pro-0813" }
             ]
         });
-        let resp = synthesize_models_response(raw);
+        let resp = synthesize_models_response(raw, ThinkingSupport::Signed, None);
         let ids: Vec<&str> = resp["data"]
             .as_array()
             .unwrap()
@@ -1621,7 +1649,7 @@ mod tests {
                 { "id": "model-T" }
             ]
         });
-        let resp = synthesize_models_response(raw);
+        let resp = synthesize_models_response(raw, ThinkingSupport::Signed, Some(262_144));
         for m in resp["data"].as_array().unwrap() {
             assert_eq!(m["capabilities"]["effort"]["max"]["supported"], true);
             assert_eq!(m["capabilities"]["effort"]["xhigh"]["supported"], true);
@@ -1680,11 +1708,34 @@ mod tests {
                 { "id": "m1", "capabilities": { "effort": { "supported": false } } }
             ]
         });
-        let resp = synthesize_models_response(raw);
+        let resp = synthesize_models_response(raw, ThinkingSupport::Signed, None);
         assert_eq!(
             resp["data"][0]["capabilities"]["effort"]["supported"],
             false
         );
+    }
+
+    #[test]
+    fn model_discovery_reflects_measured_thinking_support_and_output_limit() {
+        let raw = serde_json::json!({
+            "data": [
+                { "id": "glm-5.3-flash", "max_tokens": 32000 }
+            ]
+        });
+        let resp =
+            synthesize_models_response(raw.clone(), ThinkingSupport::Unprobed, Some(262_144));
+        assert_eq!(
+            resp["data"][0]["capabilities"]["thinking"]["supported"],
+            false
+        );
+        assert_eq!(resp["data"][0]["max_tokens"], 262_144);
+
+        let resp = synthesize_models_response(raw, ThinkingSupport::Signed, None);
+        assert_eq!(
+            resp["data"][0]["capabilities"]["thinking"]["supported"],
+            true
+        );
+        assert_eq!(resp["data"][0]["max_tokens"], 32000);
     }
 
     #[test]

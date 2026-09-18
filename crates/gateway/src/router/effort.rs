@@ -35,6 +35,13 @@ pub fn inject_thinking_if_needed(
     thinking_support: ThinkingSupport,
 ) {
     if body.get("thinking").is_some() {
+        if !thinking_support.is_injectable() {
+            body.as_object_mut().map(|o| o.remove("thinking"));
+            warn!(
+                "Removed client thinking: upstream thinking support is {:?}",
+                thinking_support
+            );
+        }
         return;
     }
 

@@ -137,6 +137,7 @@ fn upstream(base_url: &str, token: &str, mode: ResponsesMode) -> UpstreamConfig 
         rate_limit: Default::default(),
         default_effort_level: None,
         thinking_support: polydeck_core::types::ThinkingSupport::Unprobed,
+        claude_max_output_tokens: None,
     }
 }
 

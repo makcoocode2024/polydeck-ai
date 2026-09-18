@@ -13,6 +13,7 @@ use axum::{
     extract::Extension,
     http::{header, Response, StatusCode},
 };
+use polydeck_core::types::ThinkingSupport;
 use serde_json::Value;
 use std::sync::Arc;
 use tracing::debug;
@@ -37,7 +38,8 @@ pub(super) async fn handle_models(Extension(state): Extension<Arc<AppState>>) ->
         Ok(v) => v,
         Err(_) => return json_error(StatusCode::BAD_GATEWAY, "Invalid models upstream response"),
     };
-    let response = synthesize_models_response(json);
+    let response =
+        synthesize_models_response(json, state.thinking_support, state.claude_max_output_tokens);
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")
@@ -84,7 +86,10 @@ pub(super) fn upstream_serves_max_effort(data: &[Value]) -> bool {
 /// `capabilities.effort.supported`, not from the model name, so third-party
 /// names (gpt-5.6-luna, deepseek-v4-pro-0813) need this synthesized or the
 /// picker never appears.
-pub(super) fn synthesize_capabilities(serves_max: bool) -> Value {
+pub(super) fn synthesize_capabilities(
+    serves_max: bool,
+    thinking_support: ThinkingSupport,
+) -> Value {
     serde_json::json!({
         "effort": {
             "supported": true,
@@ -95,7 +100,7 @@ pub(super) fn synthesize_capabilities(serves_max: bool) -> Value {
             "max": {"supported": serves_max}
         },
         "thinking": {
-            "supported": true,
+            "supported": thinking_support == ThinkingSupport::Signed,
             "types": {
                 "enabled": {"supported": true},
                 "adaptive": {"supported": true}
@@ -124,7 +129,11 @@ pub(super) fn synthesize_capabilities(serves_max: bool) -> Value {
 /// 7-model catalog showed only the 3 whose names already began with `claude-`.
 /// Requests still accept the prefix (see `strip_claude_code_prefix`) so a name
 /// persisted by an older build keeps resolving.
-pub(super) fn synthesize_models_response(raw: Value) -> Value {
+pub(super) fn synthesize_models_response(
+    raw: Value,
+    thinking_support: ThinkingSupport,
+    claude_max_output_tokens: Option<u64>,
+) -> Value {
     let data = raw
         .get("data")
         .and_then(Value::as_array)
@@ -135,12 +144,17 @@ pub(super) fn synthesize_models_response(raw: Value) -> Value {
         .into_iter()
         .map(|mut m| {
             if m.get("capabilities").is_none() {
-                m["capabilities"] = synthesize_capabilities(serves_max);
+                m["capabilities"] = synthesize_capabilities(serves_max, thinking_support);
+            } else {
+                m["capabilities"]["thinking"]["supported"] =
+                    serde_json::json!(thinking_support == ThinkingSupport::Signed);
             }
             if !m.get("max_input_tokens").and_then(Value::as_u64).is_some() {
                 m["max_input_tokens"] = serde_json::json!(200000);
             }
-            if !m.get("max_tokens").and_then(Value::as_u64).is_some() {
+            if let Some(max_output) = claude_max_output_tokens {
+                m["max_tokens"] = serde_json::json!(max_output);
+            } else if m.get("max_tokens").and_then(Value::as_u64).is_none() {
                 m["max_tokens"] = serde_json::json!(32000);
             }
             m

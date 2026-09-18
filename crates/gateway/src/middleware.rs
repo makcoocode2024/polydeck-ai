@@ -237,6 +237,7 @@ mod tests {
             max_retries: 0,
             default_effort_level: None,
             thinking_support: Default::default(),
+            claude_max_output_tokens: None,
         })
     }
 
