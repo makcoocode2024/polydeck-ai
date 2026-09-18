@@ -102,6 +102,7 @@ fn agnes_provider(id: &str, name: &str, base_url: &str) -> ProviderConfig {
         sonnet_display_name: None,
         haiku_display_name: None,
         probed_max_output_tokens: None,
+        extra_headers: std::collections::HashMap::new(),
     }
 }
 
@@ -135,6 +136,7 @@ pub fn builtin_templates() -> Vec<ProfileTemplate> {
                 sonnet_display_name: None,
                 haiku_display_name: None,
                 probed_max_output_tokens: None,
+                extra_headers: std::collections::HashMap::new(),
             },
         },
         ProfileTemplate {
@@ -165,6 +167,7 @@ pub fn builtin_templates() -> Vec<ProfileTemplate> {
                 sonnet_display_name: None,
                 haiku_display_name: None,
                 probed_max_output_tokens: None,
+                extra_headers: std::collections::HashMap::new(),
             },
         },
         ProfileTemplate {
@@ -195,6 +198,7 @@ pub fn builtin_templates() -> Vec<ProfileTemplate> {
                 sonnet_display_name: None,
                 haiku_display_name: None,
                 probed_max_output_tokens: None,
+                extra_headers: std::collections::HashMap::new(),
             },
         },
         ProfileTemplate {
@@ -225,6 +229,7 @@ pub fn builtin_templates() -> Vec<ProfileTemplate> {
                 sonnet_display_name: None,
                 haiku_display_name: None,
                 probed_max_output_tokens: None,
+                extra_headers: std::collections::HashMap::new(),
             },
         },
         ProfileTemplate {
@@ -268,6 +273,7 @@ pub fn builtin_templates() -> Vec<ProfileTemplate> {
                 sonnet_display_name: None,
                 haiku_display_name: None,
                 probed_max_output_tokens: None,
+                extra_headers: std::collections::HashMap::new(),
             },
         },
     ]

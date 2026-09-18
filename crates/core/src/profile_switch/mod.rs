@@ -1401,6 +1401,7 @@ mod tests {
             sonnet_display_name: None,
             haiku_display_name: None,
             probed_max_output_tokens: None,
+            extra_headers: std::collections::HashMap::new(),
         };
 
         let res = write_claude_config(&provider, &Default::default(), "adk_test", true).await;
@@ -1507,6 +1508,7 @@ mod tests {
             sonnet_display_name: None,
             haiku_display_name: None,
             probed_max_output_tokens: None,
+            extra_headers: std::collections::HashMap::new(),
         };
 
         let res2 =
@@ -1615,6 +1617,7 @@ mod tests {
             sonnet_display_name: None,
             haiku_display_name: None,
             probed_max_output_tokens: None,
+            extra_headers: std::collections::HashMap::new(),
         }
     }
 
@@ -1849,6 +1852,7 @@ mod tests {
             sonnet_display_name: None,
             haiku_display_name: Some("   ".into()),
             probed_max_output_tokens: None,
+            extra_headers: std::collections::HashMap::new(),
         };
 
         let settings_path = claude_dir.join("settings.json");
@@ -2093,6 +2097,7 @@ mod tests {
             sonnet_display_name: None,
             haiku_display_name: None,
             probed_max_output_tokens: None,
+            extra_headers: std::collections::HashMap::new(),
         };
 
         let read_base_url = |dir: &std::path::Path| -> String {
@@ -2670,6 +2675,7 @@ mod tests {
             sonnet_display_name: None,
             haiku_display_name: None,
             probed_max_output_tokens: None,
+            extra_headers: std::collections::HashMap::new(),
         }
     }
 

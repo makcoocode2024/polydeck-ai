@@ -43,6 +43,7 @@ fn provider(
         sonnet_display_name: None,
         haiku_display_name: None,
         probed_max_output_tokens: None,
+        extra_headers: Default::default(),
     }
 }
 

@@ -113,7 +113,8 @@ export const backend = {
     model: string,
     protocol?: ProtocolKind,
     acceptInvalidCerts?: boolean,
-    prompt?: string
+    prompt?: string,
+    profileId?: string
   ) =>
     invoke<ChatTestResult>("ad_test_provider_chat", {
       baseUrl,
@@ -122,11 +123,24 @@ export const backend = {
       protocol,
       acceptInvalidCerts,
       prompt,
+      profileId,
     }),
   setProfileApiKey: (profileId: string, apiKey: string) =>
     invoke<void>("ad_set_profile_api_key", { profileId, apiKey }),
   getProfileApiKey: (profileId: string) =>
     invoke<string | null>("ad_get_profile_api_key", { profileId }),
+
+  // Cline OAuth
+  clineStartDeviceAuth: () =>
+    invoke<{ device_code: string; user_code: string; verification_uri: string; verification_uri_complete: string | null; expires_in: number; interval: number }>("ad_cline_start_device_auth"),
+  clineCompleteDeviceAuth: (profileId: string, deviceCode: string, expiresIn: number, pollInterval: number) =>
+    invoke<{ email: string | null; accountId: string | null; expires: number }>("ad_cline_complete_device_auth", { profileId, deviceCode, expiresIn, pollInterval }),
+  clineTokenStatus: (profileId: string) =>
+    invoke<{ hasTokens: boolean; expires?: number; email?: string | null; accountId?: string | null; isExpired?: boolean }>("ad_cline_token_status", { profileId }),
+  clineRefreshToken: (profileId: string) =>
+    invoke<{ success: boolean; expires: number; email: string | null }>("ad_cline_refresh_token", { profileId }),
+  clineDeleteCredentials: (profileId: string) =>
+    invoke<void>("ad_cline_delete_credentials", { profileId }),
 
   // Gateway
   gatewayStart: () => invoke<string>("ad_gateway_start"),

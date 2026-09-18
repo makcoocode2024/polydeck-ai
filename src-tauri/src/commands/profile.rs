@@ -308,10 +308,53 @@ pub async fn ad_test_provider_chat(
     protocol: Option<polydeck_core::types::ProtocolKind>,
     accept_invalid_certs: Option<bool>,
     prompt: Option<String>,
+    profile_id: Option<String>,
 ) -> Result<polydeck_core::protocol::ChatTestResult, String> {
+    // 注意：effective_key 已经是 workos: 前缀的完整 key，
+    // 但 protocol::test_chat 内部的 apply_cline_auto_detect 还会再加一次前缀。
+    // 所以这里传入不带前缀的裸 token，让 test_chat 自己加。
+    let effective_key = if polydeck_core::cline_auth::is_cline_api(&base_url) {
+        if let Some(pid) = &profile_id {
+            match polydeck_core::cline_auth::get_valid_access_token(pid).await {
+                Ok(token) => {
+                    // get_valid_access_token 返回 "workos:xxx"，
+                    // 但 test_chat→apply_cline_auto_detect 会再加一次，
+                    // 所以这里要去掉前缀。
+                    let raw = token.strip_prefix("workos:").unwrap_or(&token).to_string();
+                    tracing::info!(
+                        "Cline test_chat: profile={}, token_len={}, raw_first20={}",
+                        pid,
+                        raw.len(),
+                        &raw[..raw.len().min(20)]
+                    );
+                    raw
+                }
+                Err(_) if !api_key.is_empty() => {
+                    tracing::warn!(
+                        "Cline test_chat: get_valid_access_token 失败，回退到 api_key (len={})",
+                        api_key.len()
+                    );
+                    api_key.clone()
+                }
+                Err(e) => return Err(format!("Cline token 无效，请重新登录：{e}")),
+            }
+        } else {
+            tracing::warn!(
+                "Cline test_chat: 无 profile_id，api_key len={}",
+                api_key.len()
+            );
+            if api_key.is_empty() {
+                return Err("Cline 接口需要登录，请先点击「登录 Cline 账号」".into());
+            } else {
+                api_key.clone()
+            }
+        }
+    } else {
+        api_key.clone()
+    };
     polydeck_core::protocol::test_chat(
         &base_url,
-        &api_key,
+        &effective_key,
         &model,
         protocol,
         accept_invalid_certs.unwrap_or(false),
@@ -332,6 +375,84 @@ pub async fn ad_get_profile_api_key(profile_id: String) -> Result<Option<String>
         Ok(k) => Ok(Some(k)),
         Err(_) => Ok(None),
     }
+}
+
+// --- Cline OAuth commands ---
+
+#[command]
+pub async fn ad_cline_start_device_auth(
+) -> Result<polydeck_core::cline_auth::DeviceAuthResponse, String> {
+    let result = polydeck_core::cline_auth::start_device_auth()
+        .await
+        .map_err(|e| e.to_string())?;
+    // Open browser from Rust side (reliable in Tauri)
+    let url = result
+        .verification_uri_complete
+        .as_deref()
+        .unwrap_or(&result.verification_uri);
+    let _ = tauri_plugin_opener::open_url(url, None::<&str>);
+    Ok(result)
+}
+
+#[command]
+pub async fn ad_cline_complete_device_auth(
+    profile_id: String,
+    device_code: String,
+    expires_in: u64,
+    poll_interval: u64,
+) -> Result<serde_json::Value, String> {
+    let creds =
+        polydeck_core::cline_auth::complete_device_auth(&device_code, expires_in, poll_interval)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    polydeck_core::cline_auth::save_credentials(&profile_id, &creds).map_err(|e| e.to_string())?;
+    // Also store as plain API key for code paths unaware of refresh
+    let _ = polydeck_core::credentials::set_api_key(&profile_id, &creds.access);
+
+    Ok(serde_json::json!({
+        "email": creds.email,
+        "accountId": creds.account_id,
+        "expires": creds.expires,
+    }))
+}
+
+#[command]
+pub async fn ad_cline_token_status(profile_id: String) -> Result<serde_json::Value, String> {
+    if !polydeck_core::cline_auth::has_credentials(&profile_id) {
+        return Ok(serde_json::json!({ "hasTokens": false }));
+    }
+    match polydeck_core::cline_auth::load_credentials(&profile_id) {
+        Ok(creds) => Ok(serde_json::json!({
+            "hasTokens": true,
+            "expires": creds.expires,
+            "email": creds.email,
+            "accountId": creds.account_id,
+            "isExpired": creds.is_expired(),
+        })),
+        Err(_) => Ok(serde_json::json!({ "hasTokens": false })),
+    }
+}
+
+#[command]
+pub async fn ad_cline_refresh_token(profile_id: String) -> Result<serde_json::Value, String> {
+    let token = polydeck_core::cline_auth::get_valid_access_token(&profile_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    // Reload to get updated status
+    let creds =
+        polydeck_core::cline_auth::load_credentials(&profile_id).map_err(|e| e.to_string())?;
+    let _ = token; // token was used to trigger refresh
+    Ok(serde_json::json!({
+        "success": true,
+        "expires": creds.expires,
+        "email": creds.email,
+    }))
+}
+
+#[command]
+pub async fn ad_cline_delete_credentials(profile_id: String) -> Result<(), String> {
+    polydeck_core::cline_auth::delete_credentials(&profile_id).map_err(|e| e.to_string())
 }
 
 #[command]

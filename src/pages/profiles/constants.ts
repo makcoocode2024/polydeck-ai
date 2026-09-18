@@ -52,6 +52,14 @@ export const ALIAS_TIERS = [
 
 export const PROVIDER_PRESETS = [
   {
+    name: "Cline 免费模型",
+    baseUrl: "https://api.cline.bot/api/v1",
+    protocol: "openai" as ProtocolKind,
+    defaultModel: "deepseek/deepseek-v4.1-flash",
+    codexCompat: "chat_function" as CodexToolCompat,
+    reasoningConfidence: "unknown" as ReasoningConfidence,
+  },
+  {
     name: "自定义",
     baseUrl: "https://api.example.com/v1",
     protocol: "openai" as ProtocolKind,

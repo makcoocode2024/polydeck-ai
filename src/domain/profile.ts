@@ -101,6 +101,12 @@ export interface ProviderConfig {
    * probe so the parameter panel can recommend a measured value.
    */
   probedMaxOutputTokens?: number | null;
+  /**
+   * Arbitrary extra HTTP headers sent with every request to this upstream.
+   * For providers requiring product-identification headers (e.g. HTTP-Referer,
+   * X-Title). Not for secrets.
+   */
+  extraHeaders?: Record<string, string>;
 }
 
 /**

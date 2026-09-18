@@ -382,6 +382,7 @@ export default function ProfilesPage() {
       reasoningConfidence: "validated",
       acceptInvalidCerts: false,
       maxPricePerRequest: null,
+      extraHeaders: {},
     };
     setEditProviders((prev) => [...prev, newProv]);
   };
@@ -775,7 +776,9 @@ export default function ProfilesPage() {
         savedKey || "",
         primary.defaultModel || "gpt-4o",
         primary.protocol,
-        primary.acceptInvalidCerts
+        primary.acceptInvalidCerts,
+        undefined,
+        profile.id
       );
       setPrimaryChatResult(res);
     } catch (err) {
@@ -816,8 +819,11 @@ export default function ProfilesPage() {
         key,
         prov.defaultModel?.trim() || "gpt-4o",
         prov.protocol,
-        prov.acceptInvalidCerts
+        prov.acceptInvalidCerts,
+        undefined,
+        editingProfile?.id || undefined
       );
+      console.log('[Cline test] profileId=', editingProfile?.id, 'key_len=', key.length);
       setNodeChatStates((prev) => ({
         ...prev,
         [index]: { loading: false, result: res },
@@ -1711,6 +1717,66 @@ export default function ProfilesPage() {
                             </div>
 
                             {/* Inputs Row 3: API Key & Probe Test Action */}
+                            {/* Cline provider: show login button instead of API key input */}
+                            {prov.baseUrl.includes("cline.bot") ? (
+                            <div className="p-3 rounded-lg border bg-muted/15 space-y-2.5">
+                              <div className="flex items-center justify-between flex-wrap gap-2">
+                                <label className="text-2xs font-medium text-muted-foreground flex items-center gap-1">
+                                  <Key className="h-3 w-3 text-primary" />
+                                  Cline 账号登录（自动管理 Token）
+                                </label>
+                                <div className="flex items-center gap-2">
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={async () => {
+                                      if (!editingProfile) return;
+                                      try {
+                                        const auth = await backend.clineStartDeviceAuth();
+                                        window.open(auth.verification_uri_complete || auth.verification_uri, "_blank");
+                                        setNodeChatStates((prev) => ({
+                                          ...prev,
+                                          [index]: { loading: true, result: { success: true, reply: `请在浏览器中完成授权...\n用户码: ${auth.user_code}`, latencyMs: 0, model: "", protocol: "openai" as const } },
+                                        }));
+                                        const result = await backend.clineCompleteDeviceAuth(
+                                          editingProfile.id, auth.device_code, auth.expires_in, auth.interval
+                                        );
+                                        setNodeChatStates((prev) => ({
+                                          ...prev,
+                                          [index]: { loading: false, result: { success: true, reply: `登录成功！${result.email || ""}`, latencyMs: 0, model: "", protocol: "openai" as const } },
+                                        }));
+                                      } catch (err) {
+                                        setNodeChatStates((prev) => ({
+                                          ...prev,
+                                          [index]: { loading: false, result: { success: false, message: `Cline 登录失败: ${err instanceof Error ? err.message : String(err)}` } },
+                                        }));
+                                      }
+                                    }}
+                                    disabled={nodeChatStates[index]?.loading}
+                                    className="h-6 text-2xs px-2 text-primary hover:bg-primary/10 border-primary/30"
+                                  >
+                                    <UserCheck className={`h-3 w-3 mr-1 ${nodeChatStates[index]?.loading ? "animate-spin" : ""}`} />
+                                    {nodeChatStates[index]?.loading ? "等待授权..." : "登录 Cline 账号"}
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => handleChatTestProviderNode(index)}
+                                    disabled={nodeChatStates[index]?.loading || !prov.baseUrl.trim()}
+                                    className="h-6 text-2xs px-2 border-primary/40 text-primary hover:bg-primary/10"
+                                  >
+                                    <MessageSquare className={`h-3 w-3 mr-1 ${nodeChatStates[index]?.loading ? "animate-spin" : ""}`} />
+                                    {nodeChatStates[index]?.loading ? "测试中..." : "真实对话测试"}
+                                  </Button>
+                                </div>
+                              </div>
+                              <p className="text-2xs text-muted-foreground">
+                                点击登录后会打开浏览器进行 GitHub 授权，授权完成后 Token 自动保存并自动刷新，无需手动管理 API Key
+                              </p>
+                            </div>
+                            ) : (
                             <div className="p-3 rounded-lg border bg-muted/15 space-y-2.5">
                                                             <div className="flex items-center justify-between flex-wrap gap-2">
                                 <label className="text-2xs font-medium text-muted-foreground flex items-center gap-1">
@@ -1832,6 +1898,7 @@ export default function ProfilesPage() {
                                 </div>
                               )}
                             </div>
+                            )}
 
                             {/* Inputs Row 4: Default Model & Quick Model Picker */}
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1947,6 +2014,68 @@ export default function ProfilesPage() {
                                 允许无效或自签名 SSL 证书 (适用于局域网或本地反代服务)
                               </span>
                             </label>
+
+                            {/* Extra Headers (key-value pairs) */}
+                            <div className="space-y-2 pt-1">
+                              <div className="flex items-center justify-between">
+                                <label className="text-2xs font-medium text-muted-foreground">
+                                  自定义请求头 (Extra Headers)
+                                </label>
+                                <button
+                                  type="button"
+                                  className="text-2xs text-primary hover:underline"
+                                  onClick={() => {
+                                    const headers = { ...(prov.extraHeaders || {}) };
+                                    headers[`X-Header-${Object.keys(headers).length + 1}`] = "";
+                                    handleUpdateProviderField(index, "extraHeaders", headers);
+                                  }}
+                                >
+                                  + 添加
+                                </button>
+                              </div>
+                              {Object.keys(prov.extraHeaders || {}).length > 0 && (
+                                <div className="space-y-1.5">
+                                  {Object.entries(prov.extraHeaders || {}).map(([headerKey, headerValue], hIdx) => (
+                                    <div key={hIdx} className="flex items-center gap-1.5">
+                                      <input
+                                        value={headerKey}
+                                        onChange={(e) => {
+                                          const entries = Object.entries(prov.extraHeaders || {});
+                                          entries[hIdx] = [e.target.value, entries[hIdx][1]];
+                                          handleUpdateProviderField(index, "extraHeaders", Object.fromEntries(entries));
+                                        }}
+                                        placeholder="Header name"
+                                        className="flex-1 h-7 text-xs font-mono rounded-md border border-input bg-background px-2 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                                      />
+                                      <input
+                                        value={headerValue}
+                                        onChange={(e) => {
+                                          const updated = { ...(prov.extraHeaders || {}) };
+                                          updated[headerKey] = e.target.value;
+                                          handleUpdateProviderField(index, "extraHeaders", updated);
+                                        }}
+                                        placeholder="Value"
+                                        className="flex-1 h-7 text-xs font-mono rounded-md border border-input bg-background px-2 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                                      />
+                                      <button
+                                        type="button"
+                                        className="text-xs text-destructive hover:underline px-1"
+                                        onClick={() => {
+                                          const updated = { ...(prov.extraHeaders || {}) };
+                                          delete updated[headerKey];
+                                          handleUpdateProviderField(index, "extraHeaders", updated);
+                                        }}
+                                      >
+                                        ✕
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              <p className="text-2xs text-muted-foreground">
+                                部分服务商要求携带产品标识头 (如 HTTP-Referer、X-Title、User-Agent)，不要在此放 API Key
+                              </p>
+                            </div>
 
                             {/* Relay non-streaming compatibility. Probe-written;
                                 shown so a wrong verdict can be corrected. */}

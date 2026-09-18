@@ -29,6 +29,14 @@ export interface PresetProvider {
 
 export const PRESETS: PresetProvider[] = [
   {
+    name: "Cline 免费模型",
+    baseUrl: "https://api.cline.bot/api/v1",
+    defaultModel: "deepseek/deepseek-v4.1-flash",
+    keyPrefix: "",
+    protocol: "openai",
+    codexCompat: "chat_function",
+  },
+  {
     name: "自定义",
     baseUrl: "https://api.example.com/v1",
     defaultModel: "gpt-4o",

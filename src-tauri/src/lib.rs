@@ -93,6 +93,60 @@ pub fn run() {
                 }
             });
 
+            // 定时 Cline token 刷新（每 20 分钟），确保网关运行期间 token 不过期。
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(20 * 60));
+                    interval.tick().await; // 首次立即 tick 跳过
+                    loop {
+                        interval.tick().await;
+                        let Some(pm) = app_handle.try_state::<ProfileState>() else { break };
+                        let Some(gw) = app_handle.try_state::<GatewayState>() else { break };
+                        let Some(failover) = app_handle.try_state::<FailoverState>() else { break };
+
+                        // 收集所有需要刷新的 Cline profile
+                        let cline_profiles: Vec<String> = {
+                            let pm_guard = pm.lock().await;
+                            let mut pids = Vec::new();
+                            for binding in pm_guard.bindings() {
+                                if let Some(profile) = pm_guard.get_profile(&binding.profile_id) {
+                                    if !profile.gateway_enabled { continue; }
+                                    let is_cline = profile.providers.iter().any(|p| {
+                                        polydeck_core::cline_auth::is_cline_api(&p.base_url)
+                                    });
+                                    if is_cline
+                                        && polydeck_core::cline_auth::has_credentials(&profile.id)
+                                        && !pids.contains(&profile.id)
+                                    {
+                                        pids.push(profile.id.clone());
+                                    }
+                                }
+                            }
+                            pids
+                        };
+
+                        if cline_profiles.is_empty() { continue; }
+
+                        let mut refreshed = false;
+                        for pid in &cline_profiles {
+                            match polydeck_core::cline_auth::get_valid_access_token(pid).await {
+                                Ok(_) => { refreshed = true; }
+                                Err(e) => {
+                                    tracing::warn!("定时 Cline token 刷新失败（{pid}）：{e}");
+                                }
+                            }
+                        }
+                        // token 刷新后热重载网关，让新 token 生效
+                        if refreshed {
+                            if let Err(e) = crate::commands::gateway::refresh_gateway(&gw, &pm, &failover).await {
+                                tracing::warn!("定时 Cline token 刷新后网关热重载失败：{e}");
+                            }
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -127,6 +181,11 @@ pub fn run() {
             commands::profile::ad_test_provider_chat,
             commands::profile::ad_set_profile_api_key,
             commands::profile::ad_get_profile_api_key,
+            commands::profile::ad_cline_start_device_auth,
+            commands::profile::ad_cline_complete_device_auth,
+            commands::profile::ad_cline_token_status,
+            commands::profile::ad_cline_refresh_token,
+            commands::profile::ad_cline_delete_credentials,
             // gateway
             commands::gateway::ad_gateway_start,
             commands::gateway::ad_gateway_stop,

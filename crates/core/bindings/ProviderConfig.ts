@@ -36,4 +36,11 @@ opusDisplayName: string | null, sonnetDisplayName: string | null, haikuDisplayNa
  * the probe so the parameter panel has a measured value to recommend rather
  * than only its built-in table. `None` means no probe reported one.
  */
-probedMaxOutputTokens: bigint | null, };
+probedMaxOutputTokens: bigint | null, 
+/**
+ * Arbitrary extra HTTP headers sent with every request to this upstream.
+ * Use for providers that require product-identification headers (e.g.
+ * `HTTP-Referer`, `X-Title`, `User-Agent`). Not for secrets — those
+ * belong in the keyring via `api_key`.
+ */
+extraHeaders: { [key in string]?: string }, };

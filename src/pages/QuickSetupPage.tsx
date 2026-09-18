@@ -48,6 +48,7 @@ import {
   Eye,
   EyeOff,
   Boxes,
+  UserCheck,
 } from "lucide-react";
 
 import {
@@ -179,6 +180,9 @@ function tileClass(active: boolean) {
 
 export default function QuickSetupPage() {
   const [apiKey, setApiKey] = useState("");
+  // Cline 登录后创建的 profile id：凭据存这里，测试对话与保存都复用它，
+  // 否则 testProviderChat 拿不到 profile_id 会把占位符当 token 打出去（401）。
+  const [clineProfileId, setClineProfileId] = useState<string | null>(null);
   const [showApiKey, setShowApiKey] = useState(false);
   const [baseUrl, setBaseUrl] = useState("https://api.example.com/v1");
   const [model, setModel] = useState("gpt-4o");
@@ -269,6 +273,10 @@ export default function QuickSetupPage() {
     setCurrentProtocol(preset.protocol);
     if (preset.codexCompat) {
       setCodexCompat(preset.codexCompat);
+    }
+    // Cline needs gateway for model mapping
+    if (preset.baseUrl.includes("cline.bot")) {
+      setGatewayEnabled(true);
     }
     setTestResult(null);
     setChatResult(null);
@@ -503,7 +511,9 @@ export default function QuickSetupPage() {
         apiKey.trim(),
         model.trim() || "gpt-4o",
         currentProtocol,
-        false
+        false,
+        undefined,
+        clineProfileId || undefined
       );
       setChatResult(res);
     } catch (err) {
@@ -531,7 +541,11 @@ export default function QuickSetupPage() {
     if (!targetName) return;
     setSaving(true);
     try {
-      const created = await backend.createProfile(targetName);
+      // Cline 登录时凭据（OAuth token）已存进登录流程创建的那个 profile 里，
+      // 保存必须复用同一个 id，否则新建的空 profile 拿不到 token，网关 401。
+      const created = clineProfileId
+        ? { id: clineProfileId }
+        : await backend.createProfile(targetName);
       if (created?.id) {
         const armedAgnesRoute = AGNES_ROUTES.find((r) => r.id === agnesRouteId);
         const chosenModel = model.trim() || "gpt-4o";
@@ -575,7 +589,9 @@ export default function QuickSetupPage() {
             : {}),
         };
 
-        if (apiKey.trim()) {
+        // Cline 的占位符不进凭据库：真正的 token 由 cline_auth 的 keyring 保存，
+        // 这里再写会把占位符盖到 OAuth token 之上，网关会拿它当 key 打出 401。
+        if (apiKey.trim() && !baseUrl.includes("cline.bot")) {
           await backend.setProfileApiKey(created.id, apiKey.trim()).catch(() => {});
         }
 
@@ -904,6 +920,47 @@ export default function QuickSetupPage() {
             </div>
           </div>
 
+          {/* API Key or Cline Login */}
+          {baseUrl.includes("cline.bot") ? (
+          <div>
+            <label className="mb-1 flex items-center gap-1 text-xs font-medium text-muted-foreground">
+              <Key className="h-3.5 w-3.5" /> Cline 账号登录（自动管理 Token）
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  try {
+                    setChatResult(null);
+                    const auth = await backend.clineStartDeviceAuth();
+                    window.open(auth.verification_uri_complete || auth.verification_uri, "_blank");
+                    setChatResult({ success: false, message: `请在浏览器中完成授权...\n用户码: ${auth.user_code}` });
+                    // We need a profile to save to — save first, then poll
+                    // For now, save the profile first then complete auth
+                    const profileRes = await backend.createProfile(profileName || "Cline 免费模型");
+                    const result = await backend.clineCompleteDeviceAuth(
+                      profileRes.id, auth.device_code, auth.expires_in, auth.interval
+                    );
+                    setClineProfileId(profileRes.id);
+                    setApiKey("cline-oauth-managed");
+                    setChatResult({ success: true, reply: `登录成功！${result.email || ""}`, latencyMs: 0, model: "", protocol: "openai" });
+                  } catch (err) {
+                    setChatResult({ success: false, message: `Cline 登录失败: ${err instanceof Error ? err.message : String(err)}` });
+                  }
+                }}
+                disabled={testing}
+                className="text-xs"
+              >
+                <UserCheck className="mr-1 h-3.5 w-3.5" />
+                登录 Cline 账号
+              </Button>
+              <span className="text-2xs text-muted-foreground">
+                点击后打开浏览器进行 GitHub 授权，授权完成后 Token 自动保存并自动刷新
+              </span>
+            </div>
+          </div>
+          ) : (
           <div>
             <label className="mb-1 flex items-center gap-1 text-xs font-medium text-muted-foreground">
               <Key className="h-3.5 w-3.5" /> API Key / 访问凭据 (存储于操作系统加密安全区)
@@ -932,6 +989,7 @@ export default function QuickSetupPage() {
               </button>
             </div>
           </div>
+          )}
         </Field>
 
         <Field label="连通性验证">

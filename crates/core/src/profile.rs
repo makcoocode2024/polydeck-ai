@@ -166,6 +166,12 @@ pub struct ProviderConfig {
     /// than only its built-in table. `None` means no probe reported one.
     #[serde(default)]
     pub probed_max_output_tokens: Option<u64>,
+    /// Arbitrary extra HTTP headers sent with every request to this upstream.
+    /// Use for providers that require product-identification headers (e.g.
+    /// `HTTP-Referer`, `X-Title`, `User-Agent`). Not for secrets — those
+    /// belong in the keyring via `api_key`.
+    #[serde(default)]
+    pub extra_headers: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -745,6 +751,7 @@ impl ProfileManager {
             sonnet_display_name: None,
             haiku_display_name: None,
             probed_max_output_tokens: None,
+            extra_headers: HashMap::new(),
         };
         self.create_profile(ProfileCreate {
             name: name.to_string(),
@@ -852,6 +859,7 @@ mod tests {
                         sonnet_display_name: None,
                         haiku_display_name: None,
                         probed_max_output_tokens: None,
+                        extra_headers: HashMap::new(),
                     }]),
                     clients: None,
                     gateway_enabled: Some(false),

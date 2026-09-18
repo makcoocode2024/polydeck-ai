@@ -11,6 +11,7 @@ pub mod claude_code_params;
 pub mod claude_desktop;
 pub mod client_detector;
 pub mod client_rules;
+pub mod cline_auth;
 pub mod cloud_sync;
 pub mod credentials;
 pub mod deep_link;

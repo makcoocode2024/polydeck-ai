@@ -87,6 +87,7 @@ mod tests {
             sonnet_display_name: None,
             haiku_display_name: None,
             probed_max_output_tokens: probed,
+            extra_headers: std::collections::HashMap::new(),
         }
     }
 

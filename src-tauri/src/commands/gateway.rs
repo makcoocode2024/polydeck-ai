@@ -4,12 +4,12 @@ use tauri::{command, State};
 /// One client's route: which upstream its requests go to, under which token.
 pub fn build_route_config(
     client_id: &str,
-    profile_id: &str,
+    profile: &polydeck_core::profile::Profile,
     primary: &polydeck_core::profile::ProviderConfig,
 ) -> Result<polydeck_gateway::RouteConfig, String> {
     let local_token =
         polydeck_core::credentials::ensure_client_token(client_id).map_err(|e| e.to_string())?;
-    let inner = build_gateway_config(profile_id, primary);
+    let inner = build_gateway_config(profile, primary);
     let mut route = inner
         .routes
         .into_iter()
@@ -21,10 +21,10 @@ pub fn build_route_config(
 }
 
 pub fn build_gateway_config(
-    profile_id: &str,
+    profile: &polydeck_core::profile::Profile,
     primary: &polydeck_core::profile::ProviderConfig,
 ) -> polydeck_gateway::GatewayConfig {
-    let api_key = polydeck_core::credentials::get_api_key(profile_id).unwrap_or_default();
+    let api_key = polydeck_core::credentials::get_api_key(&profile.id).unwrap_or_default();
     let responses_mode = match primary.protocol {
         polydeck_core::types::ProtocolKind::Responses => polydeck_gateway::ResponsesMode::Native,
         polydeck_core::types::ProtocolKind::OpenAI => {
@@ -64,6 +64,10 @@ pub fn build_gateway_config(
             rate_limit: primary.rate_limit.clone(),
             default_effort_level: primary.default_effort_level.clone(),
             thinking_support: primary.thinking_support,
+            claude_max_output_tokens: profile
+                .claude_code_params
+                .max_output_tokens
+                .or(primary.probed_max_output_tokens),
             relay_chat_compat: primary.relay_chat_compat,
             accept_invalid_certs: primary.accept_invalid_certs,
         },
@@ -157,6 +161,7 @@ pub async fn refresh_gateway(
             rate_limit: Default::default(),
             default_effort_level: None,
             thinking_support: Default::default(),
+            claude_max_output_tokens: None,
             relay_chat_compat: Default::default(),
             // A placeholder every route overwrites, so it validates certificates
             // rather than handing out a bypass no profile asked for.
@@ -247,6 +252,7 @@ fn build_failover_manager(
             default_model: p.default_model.clone(),
             relay_chat_compat: p.relay_chat_compat,
             accept_invalid_certs: p.accept_invalid_certs,
+            extra_headers: Default::default(),
         };
 
     let primary = profile
@@ -337,7 +343,7 @@ fn collect_routes(
             );
         }
 
-        match build_route_config(&binding.client_id, &profile.id, primary) {
+        match build_route_config(&binding.client_id, &profile, primary) {
             Ok(route) => routes.push(route),
             Err(e) => warnings.push(format!("{} 的网关路由构建失败：{e}", binding.client_id)),
         }
