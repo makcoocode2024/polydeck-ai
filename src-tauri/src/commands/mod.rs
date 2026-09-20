@@ -8,4 +8,5 @@ pub mod inject;
 pub mod ops;
 pub mod profile;
 pub mod proxy;
+pub mod smart_route;
 pub mod system;

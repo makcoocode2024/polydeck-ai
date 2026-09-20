@@ -26,6 +26,7 @@ impl GatewayConfig {
                 client_id: "default".into(),
                 upstream,
                 model_rewrites,
+                smart_route: Default::default(),
             }],
             timeout: default_timeout(),
             max_retries: default_retries(),
@@ -42,6 +43,10 @@ pub struct RouteConfig {
     pub client_id: String,
     pub upstream: UpstreamConfig,
     pub model_rewrites: Vec<ModelRewriteRule>,
+    /// Global smart-route layer, identical for every route. `serde(default)`
+    /// keeps gateway configs written before the field parseable.
+    #[serde(default)]
+    pub smart_route: polydeck_core::smart_route::SmartRouteSettings,
 }
 
 fn default_timeout() -> Duration {
@@ -105,6 +110,11 @@ pub struct UpstreamConfig {
     /// silently keeping the old blanket bypass.
     #[serde(default)]
     pub accept_invalid_certs: bool,
+    /// The provider's known model list, used by smart-route validation (a
+    /// routed model missing from this list falls back to `default_model`).
+    /// Empty means "no list known" and skips validation.
+    #[serde(default)]
+    pub models: Vec<String>,
 }
 
 /// How `ModelRewriteRule::from` should be interpreted.
@@ -182,6 +192,20 @@ mod tests {
         )
         .expect("a config predating the field should still deserialize");
         assert!(!upstream.accept_invalid_certs);
+        assert!(upstream.models.is_empty());
+    }
+
+    #[test]
+    fn a_route_without_smart_route_field_keeps_default_settings() {
+        let route: RouteConfig = serde_json::from_str(
+            r#"{
+                "client_id": "c",
+                "upstream": {"base_url": "u", "api_key": "k", "protocol": "openai", "local_token": "t"},
+                "model_rewrites": []
+            }"#,
+        )
+        .expect("a route predating smart_route should still deserialize");
+        assert!(!route.smart_route.enable_route);
     }
 
     #[test]

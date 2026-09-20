@@ -13,6 +13,7 @@ const ClientsPage = lazy(pageLoaders.clients);
 const ExtensionsPage = lazy(pageLoaders.extensions);
 const HistoryPage = lazy(pageLoaders.history);
 const SettingsPage = lazy(pageLoaders.settings);
+const SmartRoutePage = lazy(pageLoaders.smartRoute);
 
 export default function App() {
   const theme = useAtomValue(themeAtom);
@@ -67,6 +68,7 @@ export default function App() {
                 <Route path="/extensions" element={<ExtensionsPage />} />
                 <Route path="/history" element={<HistoryPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
+                <Route path="/smart-route" element={<SmartRoutePage />} />
               </Routes>
             </Suspense>
           </div>

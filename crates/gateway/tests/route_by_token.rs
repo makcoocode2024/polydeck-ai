@@ -138,6 +138,7 @@ fn upstream(base_url: &str, token: &str, mode: ResponsesMode) -> UpstreamConfig 
         default_effort_level: None,
         thinking_support: polydeck_core::types::ThinkingSupport::Unprobed,
         claude_max_output_tokens: None,
+        models: vec![],
     }
 }
 
@@ -152,6 +153,7 @@ fn route(
         client_id: client_id.into(),
         upstream: upstream(base_url, token, mode),
         model_rewrites: rewrites,
+        smart_route: Default::default(),
     }
 }
 

@@ -32,6 +32,9 @@ pub fn run() {
         Arc::new(Mutex::new(InjectionManager::new(INJECT_SCRIPT_SOURCE)));
     // Empty until a bound profile enables failover; `refresh_gateway` fills it.
     let failover_state: FailoverState = Arc::new(polydeck_gateway::FailoverSlot::new());
+    // The same Arc the gateway's compiled routes will write audit records to
+    // (see `commands::gateway::audit_log`), managed for `ad_get_route_audit`.
+    let route_audit_state = commands::smart_route::RouteAuditState(commands::gateway::audit_log());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -39,6 +42,7 @@ pub fn run() {
         .manage(gateway_state)
         .manage(inject_state)
         .manage(failover_state)
+        .manage(route_audit_state)
         .setup(|app| {
             // Setup system tray
             let _ = tray::create_tray(app.handle());
@@ -190,6 +194,11 @@ pub fn run() {
             commands::gateway::ad_gateway_start,
             commands::gateway::ad_gateway_stop,
             commands::gateway::ad_gateway_status,
+            // smart route
+            commands::smart_route::ad_get_route_config,
+            commands::smart_route::ad_update_route_config,
+            commands::smart_route::ad_get_route_audit,
+            commands::smart_route::ad_simulate_route,
             // failover
             commands::failover::ad_failover_status,
             commands::failover::ad_failover_history,

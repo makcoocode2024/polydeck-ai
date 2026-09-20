@@ -30,12 +30,16 @@ use std::{
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, info, warn};
 
-mod effort;
+pub mod effort;
 mod models;
 mod respond;
+pub mod smart_route;
 mod sse;
 
 pub use effort::{effort_to_budget_tokens, inject_thinking_if_needed};
+pub use smart_route::{
+    AuditLog, BodyShape, RouteAuditRecord, RouteDecision, RouteReason, SmartRouteEngine,
+};
 
 use effort::{inject_max_price, normalize_effort, sanitize_messages_effort};
 use models::handle_models;
@@ -66,6 +70,13 @@ pub struct AppState {
     pub thinking_support: ThinkingSupport,
     /// Output ceiling configured for Claude Code and reflected in discovery.
     pub claude_max_output_tokens: Option<u64>,
+    /// Compiled smart-route engine, `None` when the layer is disabled. One
+    /// instance shared by every route — the config is global.
+    pub smart_route: Option<Arc<SmartRouteEngine>>,
+    /// The provider's known models, for smart-route validation.
+    pub provider_models: Vec<String>,
+    /// Ring buffer of routing decisions, shared with the Tauri shell.
+    pub audit: Arc<AuditLog>,
 }
 
 impl AppState {
@@ -91,6 +102,37 @@ impl AppState {
 struct UpstreamAttempt {
     response: reqwest::Response,
     switched_to: Option<String>,
+    /// The model-unavailable fallback fired and the request was resent with
+    /// `default_model`. Surfaced so handlers can append the retry to the
+    /// audit trail.
+    #[allow(dead_code)]
+    fallback_used: bool,
+}
+
+/// Upstream error bodies that mean "this model does not exist here". Only
+/// 4xx-class failures qualify — a 5xx or a 429 says the *provider* is in
+/// trouble, and re-sending the same prompt on the default model would just
+/// bill twice for a request that was never about the model.
+const MODEL_UNAVAILABLE_MARKERS: [&str; 6] = [
+    "model not found",
+    "does not exist",
+    "invalid model",
+    "no such model",
+    "unknown model",
+    "model_not_found",
+];
+
+fn is_model_unavailable(status: reqwest::StatusCode, body: &str) -> bool {
+    if !matches!(
+        status,
+        reqwest::StatusCode::BAD_REQUEST
+            | reqwest::StatusCode::NOT_FOUND
+            | reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    ) {
+        return false;
+    }
+    let detail = body.to_ascii_lowercase();
+    MODEL_UNAVAILABLE_MARKERS.iter().any(|m| detail.contains(m))
 }
 
 enum SendError {
@@ -166,6 +208,19 @@ async fn send_upstream(
             .rate_limiter_registry
             .get_or_create(provider_id, &state.rate_limit_settings)
             .await;
+        // Runtime fallback preconditions, resolved once: enabled in the
+        // smart-route settings and a default model to resend on.
+        let (fallback_enable, default_model) = state
+            .smart_route
+            .as_ref()
+            .map(|e| {
+                let cfg = e.settings();
+                (
+                    cfg.fallback_enable,
+                    cfg.default_model.clone().unwrap_or_default(),
+                )
+            })
+            .unwrap_or((false, String::new()));
 
         // 1. Acquire token from token bucket (queues asynchronously if limit reached)
         {
@@ -218,6 +273,7 @@ async fn send_upstream(
                         return Ok(UpstreamAttempt {
                             response,
                             switched_to: None,
+                            fallback_used: false,
                         });
                     }
 
@@ -225,9 +281,66 @@ async fn send_upstream(
                         let mut guard = limiter.lock().await;
                         guard.on_success();
                     }
+                    // Model-unavailable fallback: a 4xx whose body says the
+                    // model does not exist is not transient, so the retry loop
+                    // above never resends. One resend on the default model, if
+                    // the user enabled it, turns a dead end into a served
+                    // request. Safe for streams too: the response has not been
+                    // read yet, so no byte has reached the client.
+                    if fallback_enable && !status.is_success() && !status.is_server_error() {
+                        let error_body = response.text().await.unwrap_or_default();
+                        if is_model_unavailable(status, &error_body) {
+                            let body_model =
+                                body.get("model").and_then(Value::as_str).unwrap_or("");
+                            if default_model != body_model && !default_model.is_empty() {
+                                warn!(
+                                    "smart-route: upstream rejected model '{}' as unavailable; retrying once on default model '{}'",
+                                    body_model, default_model
+                                );
+                                let mut fallback_body = body.clone();
+                                fallback_body["model"] = Value::String(default_model.to_string());
+                                match state.upstream.send(endpoint, fallback_body).await {
+                                    Ok(retried) => {
+                                        if !retried.status().is_server_error() {
+                                            let mut guard = limiter.lock().await;
+                                            guard.on_success();
+                                        }
+                                        // Whether the resend succeeded or
+                                        // failed, it is the answer the client
+                                        // gets — the original response was
+                                        // consumed reading its error.
+                                        return Ok(UpstreamAttempt {
+                                            response: retried,
+                                            switched_to: None,
+                                            fallback_used: true,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        return Err(SendError::Unavailable(e.message));
+                                    }
+                                }
+                            }
+                            // No fallback possible: rebuild the error response
+                            // from the text we consumed.
+                            return Ok(UpstreamAttempt {
+                                response: http_response_from_error(status, &error_body),
+                                switched_to: None,
+                                fallback_used: false,
+                            });
+                        }
+                        // Not a model-unavailable error: the body was
+                        // consumed above, so rebuild the response for the
+                        // caller to pass through verbatim.
+                        return Ok(UpstreamAttempt {
+                            response: http_response_from_error(status, &error_body),
+                            switched_to: None,
+                            fallback_used: false,
+                        });
+                    }
                     return Ok(UpstreamAttempt {
                         response,
                         switched_to: None,
+                        fallback_used: false,
                     });
                 }
                 Err(e) => {
@@ -254,6 +367,7 @@ async fn send_upstream(
                 return Ok(UpstreamAttempt {
                     response,
                     switched_to: None,
+                    fallback_used: false,
                 });
             }
             Ok((pid, response)) => {
@@ -288,6 +402,7 @@ async fn send_upstream(
                 return Ok(UpstreamAttempt {
                     response: retried,
                     switched_to: Some(current),
+                    fallback_used: false,
                 })
             }
             Err(error) => return Err(SendError::Unavailable(error.message)),
@@ -297,12 +412,26 @@ async fn send_upstream(
         Some(response) => Ok(UpstreamAttempt {
             response,
             switched_to: None,
+            fallback_used: false,
         }),
         None => Err(SendError::Unavailable(format!(
             "All providers unavailable: {}",
             error_text
         ))),
     }
+}
+
+/// Rebuild a `reqwest::Response` from an error body the fallback check already
+/// consumed, so the original error still reaches the client byte-for-byte.
+/// `Response::from(http::Response)` is reqwest's documented way to wrap a
+/// fully-buffered in-memory response (see `client.rs::json_response`).
+fn http_response_from_error(status: reqwest::StatusCode, body: &str) -> reqwest::Response {
+    let inner = axum::http::Response::builder()
+        .status(status)
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(body.to_string())
+        .expect("in-memory response body cannot fail");
+    reqwest::Response::from(inner)
 }
 
 fn is_failure_status(status: reqwest::StatusCode) -> bool {
@@ -371,6 +500,125 @@ fn rewrite_model_in_place(body: &mut Value, rewriter: &ModelRewriter) -> Option<
     Some(client_model)
 }
 
+/// The one entry point for model routing on request bodies. Contract order:
+///
+/// 1. `force_model` non-empty → use it, nothing else runs.
+/// 2. Global alias map (`model_alias_map`) replaces the inbound model name.
+/// 3. Per-profile `ModelRewriter` rules (existing behaviour, when
+///    `profile_rewrite`).
+/// 4. The smart-route engine: `#MODEL:` tag → custom rules → category →
+///    `default_model` → provider-model validation.
+///
+/// `enable_route=false` leaves the whole function equivalent to
+/// [`rewrite_model_in_place`]. Returns the name the client sent, for
+/// response echo — the alias and the routed model never leak to the client.
+fn route_model(
+    body: &mut Value,
+    state: &AppState,
+    shape: BodyShape,
+    profile_rewrite: bool,
+) -> Option<String> {
+    let Some(engine) = state.smart_route.as_ref() else {
+        return rewrite_model_in_place(body, &state.rewriter);
+    };
+    let cfg = engine.settings();
+
+    let client_model = body.get("model")?.as_str()?.to_string();
+    // Step 1: forced model wins over every other rule.
+    if let Some(force) = cfg.force_model.as_ref().filter(|m| !m.is_empty()) {
+        if &client_model != force {
+            info!("smart-route: forcing model {} -> {}", client_model, force);
+            body["model"] = Value::String(force.clone());
+        }
+        return Some(client_model);
+    }
+
+    // Step 2: global alias map, keyed on the inbound name.
+    let (bare, _had_prefix) = strip_claude_code_prefix(&client_model);
+    let aliased = cfg
+        .model_alias_map
+        .get(&bare)
+        .cloned()
+        .unwrap_or(bare.clone());
+    if aliased != body.get("model").and_then(Value::as_str).unwrap_or("") {
+        debug!("smart-route: alias {} -> {}", client_model, aliased);
+        body["model"] = Value::String(aliased.clone());
+    }
+
+    // Step 3: the per-profile rewriter, on the aliased name.
+    if profile_rewrite {
+        rewrite_model_in_place(body, &state.rewriter);
+    }
+    let after_profile = body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or(&aliased)
+        .to_string();
+
+    // Steps 4-8.
+    let decision = engine.decide(body, shape, &after_profile, &state.provider_models);
+    if let Some(warn) = &decision.validation_warn {
+        warn!("smart-route: {}", warn);
+    }
+    if decision.routed_model != after_profile {
+        debug!(
+            "smart-route: {} -> {} ({})",
+            after_profile,
+            decision.routed_model,
+            decision.reason.as_str()
+        );
+    }
+    let record = RouteAuditRecord {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        client_id: state.primary_provider_id.clone(),
+        endpoint: shape_endpoint(shape).to_string(),
+        original_model: client_model.clone(),
+        aliased_model: after_profile.clone(),
+        routed_model: decision.routed_model.clone(),
+        route_reason: decision.reason.as_str().to_string(),
+        match_rule: decision.match_rule.clone(),
+        thinking_effort: thinking_effort_of(body, shape),
+        input_tokens: crate::rate_limiter::estimate_tokens(body),
+        is_fallback: false,
+    };
+    body["model"] = Value::String(decision.routed_model);
+    state.audit.push(record);
+    Some(client_model)
+}
+
+fn shape_endpoint(shape: BodyShape) -> &'static str {
+    match shape {
+        BodyShape::Messages => "messages",
+        BodyShape::Responses => "responses",
+        BodyShape::ChatCompletions => "chat_completions",
+    }
+}
+
+/// The effort marker a request carries, for the audit log. Extracts whatever
+/// field its dialect uses; `None` when the request did not ask for thinking.
+fn thinking_effort_of(body: &Value, shape: BodyShape) -> Option<String> {
+    match shape {
+        BodyShape::Messages => body
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                body.get("thinking")
+                    .and_then(|t| t.get("effort"))
+                    .and_then(Value::as_str)
+            })
+            .map(str::to_string),
+        BodyShape::Responses => body
+            .pointer("/reasoning/effort")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        BodyShape::ChatCompletions => body
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    }
+}
+
 async fn handle_messages(
     Extension(state): Extension<Arc<AppState>>,
     headers: HeaderMap,
@@ -379,7 +627,7 @@ async fn handle_messages(
     state.health.increment_connections();
     let _guard = ConnectionGuard(&state.health);
     debug!("Processing /messages request");
-    let client_model = rewrite_model_in_place(&mut body, &state.rewriter);
+    let client_model = route_model(&mut body, &state, BodyShape::Messages, true);
     inject_thinking_if_needed(
         &mut body,
         state.default_effort_level.as_deref(),
@@ -561,8 +809,12 @@ fn sanitize_responses_effort(body: &mut Value) {
 async fn handle_native_responses(
     state: &AppState,
     headers: &HeaderMap,
-    body: Value,
+    mut body: Value,
 ) -> Response<Body> {
+    // Native passthrough never rewrote the model before smart route; the
+    // profile rewriter is skipped so `enable_route=false` keeps this path
+    // byte-identical to its old behaviour.
+    route_model(&mut body, state, BodyShape::Responses, false);
     let is_stream = body
         .get("stream")
         .and_then(|s| s.as_bool())
@@ -629,7 +881,9 @@ async fn handle_bridged_responses(
     };
     let mut chat_body = converted.body;
     let tools = converted.tools;
-    let client_model = rewrite_model_in_place(&mut chat_body, &state.rewriter);
+    // The converted chat body carries the Responses dialect's content; the
+    // engine reads it with the ChatCompletions shape.
+    let client_model = route_model(&mut chat_body, state, BodyShape::ChatCompletions, true);
     let is_stream = chat_body
         .get("stream")
         .and_then(|s| s.as_bool())
@@ -803,7 +1057,7 @@ async fn handle_chat_completions(
     state.health.increment_connections();
     let _guard = ConnectionGuard(&state.health);
     debug!("Processing /v1/chat/completions request");
-    let client_model = rewrite_model_in_place(&mut body, &state.rewriter);
+    let client_model = route_model(&mut body, &state, BodyShape::ChatCompletions, true);
     let is_stream = body
         .get("stream")
         .and_then(|s| s.as_bool())
@@ -1226,6 +1480,9 @@ mod tests {
             default_effort_level: None,
             thinking_support: ThinkingSupport::Signed,
             claude_max_output_tokens: None,
+            smart_route: None,
+            provider_models: vec![],
+            audit: Arc::new(AuditLog::new()),
         }
     }
 

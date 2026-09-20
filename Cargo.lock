@@ -3359,7 +3359,7 @@ dependencies = [
 
 [[package]]
 name = "polydeck"
-version = "2.2.1"
+version = "2.2.2"
 dependencies = [
  "chrono",
  "polydeck-core",
@@ -3385,7 +3385,7 @@ dependencies = [
 
 [[package]]
 name = "polydeck-core"
-version = "2.2.1"
+version = "2.2.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3401,6 +3401,7 @@ dependencies = [
  "hex",
  "keyring",
  "notify",
+ "regex",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",
@@ -3422,7 +3423,7 @@ dependencies = [
 
 [[package]]
 name = "polydeck-gateway"
-version = "2.2.1"
+version = "2.2.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3450,7 +3451,7 @@ dependencies = [
 
 [[package]]
 name = "polydeck-inject"
-version = "2.2.1"
+version = "2.2.2"
 dependencies = [
  "anyhow",
  "axum",

@@ -526,6 +526,43 @@ const mockResponses: Record<string, unknown> = {
       ],
     };
   },
+  // Smart route: disabled by default, so the page's toggle starts unchecked.
+  ad_get_route_config: {
+    enableRoute: false,
+    forceModel: null,
+    defaultModel: null,
+    fallbackEnable: false,
+    modelAliasMap: {},
+    categoryRouteMap: { complexCore: null, regularDev: null, visualFrontend: null },
+    customRules: [],
+  },
+  ad_update_route_config: (args?: Record<string, unknown>) => ({
+    config: args?.config ?? null,
+    warnings: [],
+  }),
+  ad_simulate_route: (args?: Record<string, unknown>) => ({
+    routedModel: (args?.model as string) || "m-default",
+    reason: "default_model",
+    matchRule: null,
+    isTagHit: false,
+    validationWarn: null,
+  }),
+  ad_get_route_audit: [
+    {
+      requestId: "req-0001",
+      timestamp: "2026-09-19T10:00:00Z",
+      clientId: "prov_1",
+      endpoint: "messages",
+      originalModel: "claude-opus-5",
+      aliasedModel: "glm-5.3",
+      routedModel: "glm-5.3",
+      routeReason: "model_tag",
+      matchRule: null,
+      thinkingEffort: null,
+      inputTokens: 128,
+      isFallback: false,
+    },
+  ],
 };
 
 const mockInvoke = async (cmd: string, args?: Record<string, unknown>) => {

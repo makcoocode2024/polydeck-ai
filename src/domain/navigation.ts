@@ -4,4 +4,5 @@ export type PageId =
   | "clients"
   | "extensions"
   | "history"
+  | "smart-route"
   | "settings";

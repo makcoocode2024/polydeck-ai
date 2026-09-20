@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PolyDeck 智能路由使用说明</title>
+<style>
+  :root {
+    --ground: #FAFBFD;
+    --panel: #FFFFFF;
+    --ink: #21242E;
+    --muted: #6A6F80;
+    --accent: #4F46E5;
+    --accent-weak: #EEF0FF;
+    --accent-border: #C9CCF6;
+    --ok: #166A38;
+    --ok-surface: #EAF6EE;
+    --warn: #9A4A0B;
+    --warn-surface: #FBF2E2;
+    --bad: #B32222;
+    --bad-surface: #FBECEC;
+    --code-ground: #F1F2F7;
+    --line: #E3E5EC;
+    --shadow: 0 1px 2px rgba(30, 34, 48, 0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #101218;
+      --panel: #171A22;
+      --ink: #E7E9F0;
+      --muted: #9BA0B0;
+      --accent: #8B93F8;
+      --accent-weak: #1E2140;
+      --accent-border: #34386A;
+      --ok: #6FCF97;
+      --ok-surface: #12241A;
+      --warn: #E2A25C;
+      --warn-surface: #2A2113;
+      --bad: #F08A8A;
+      --bad-surface: #2A1416;
+      --code-ground: #1C1F29;
+      --line: #2A2E3A;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #101218;
+    --panel: #171A22;
+    --ink: #E7E9F0;
+    --muted: #9BA0B0;
+    --accent: #8B93F8;
+    --accent-weak: #1E2140;
+    --accent-border: #34386A;
+    --ok: #6FCF97;
+    --ok-surface: #12241A;
+    --warn: #E2A25C;
+    --warn-surface: #2A2113;
+    --bad: #F08A8A;
+    --bad-surface: #2A1416;
+    --code-ground: #1C1F29;
+    --line: #2A2E3A;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    font-size: 15px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+  .shell {
+    max-width: 1060px;
+    margin: 0 auto;
+    padding: 48px 24px 96px;
+    display: grid;
+    grid-template-columns: 188px minmax(0, 1fr);
+    gap: 48px;
+  }
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: 1fr; gap: 8px; padding-top: 28px; }
+    .toc { position: static; border: 0; padding: 0 0 16px; columns: 2; }
+    .toc ol { list-style: none; margin: 0; padding: 0; }
+  }
+
+  header.masthead { grid-column: 1 / -1; }
+  .kicker {
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+  }
+  h1 {
+    font-size: 30px;
+    line-height: 1.25;
+    margin: 6px 0 10px;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  .lede { color: var(--muted); max-width: 62ch; margin: 0; font-size: 15.5px; }
+  .lede strong { color: var(--ink); font-weight: 600; }
+
+  .toc { position: sticky; top: 24px; align-self: start; font-size: 13px; }
+  .toc .toc-label {
+    font-size: 11.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; }
+  .toc a { color: var(--muted); text-decoration: none; display: block; padding: 2px 0 2px 10px; border-left: 2px solid transparent; }
+  .toc a:hover { color: var(--ink); border-left-color: var(--line); }
+  .toc a.here { color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
+
+  main { min-width: 0; }
+  section { margin: 0 0 52px; scroll-margin-top: 24px; }
+  h2 {
+    font-size: 21px;
+    margin: 0 0 4px;
+    letter-spacing: -0.005em;
+    text-wrap: balance;
+  }
+  h2 .no { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 6px; }
+  .h2-sub { color: var(--muted); font-size: 13.5px; margin: 0 0 16px; }
+  h3 { font-size: 16px; margin: 26px 0 8px; }
+  p { margin: 0 0 12px; max-width: 74ch; }
+  ul, ol { margin: 0 0 12px; padding-left: 22px; max-width: 74ch; }
+  li { margin: 3px 0; }
+  strong { font-weight: 600; }
+  a { color: var(--accent); }
+
+  code, .mono {
+    font-family: "Cascadia Code", "JetBrains Mono", Consolas, ui-monospace, monospace;
+    font-size: 0.88em;
+  }
+  code {
+    background: var(--code-ground);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 5px;
+    white-space: nowrap;
+  }
+  pre {
+    background: var(--code-ground);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    margin: 12px 0 16px;
+  }
+  pre code { background: none; border: 0; padding: 0; white-space: pre; font-size: 12.8px; line-height: 1.65; }
+
+  .note {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-weak);
+    border-radius: 0 8px 8px 0;
+    padding: 10px 14px;
+    margin: 14px 0;
+    font-size: 14px;
+    max-width: 74ch;
+  }
+  .note.warn { border-left-color: var(--warn); background: var(--warn-surface); }
+  .note.ok { border-left-color: var(--ok); background: var(--ok-surface); }
+
+  table { border-collapse: collapse; width: 100%; margin: 12px 0 16px; font-size: 13.8px; }
+  .table-scroll { overflow-x: auto; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12.5px; letter-spacing: 0.04em; color: var(--muted); font-weight: 600; border-bottom: 2px solid var(--line); white-space: nowrap; }
+  td.mono-cell { font-family: "Cascadia Code", "JetBrains Mono", Consolas, ui-monospace, monospace; font-size: 12.6px; white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+
+  .pill {
+    display: inline-block;
+    font-size: 11.5px;
+    font-weight: 600;
+    border-radius: 999px;
+    padding: 1px 9px;
+    border: 1px solid var(--accent-border);
+    background: var(--accent-weak);
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  .pill.ok { border-color: var(--ok); background: var(--ok-surface); color: var(--ok); }
+  .pill.warn { border-color: var(--warn); background: var(--warn-surface); color: var(--warn); }
+
+  .flow { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; margin: 18px 0 6px; }
+  @media (max-width: 860px) { .flow { grid-template-columns: 1fr; } }
+  .step {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 12px;
+    box-shadow: var(--shadow);
+    position: relative;
+  }
+  .step .n {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  .step .t { font-weight: 600; font-size: 13.5px; margin: 1px 0 2px; }
+  .step .d { font-size: 12.3px; color: var(--muted); line-height: 1.55; }
+  .step.hard { border-color: var(--accent-border); background: var(--accent-weak); }
+
+  .kv { display: grid; grid-template-columns: 170px 1fr; gap: 8px 20px; margin: 12px 0; font-size: 14px; }
+  @media (max-width: 640px) { .kv { grid-template-columns: 1fr; } }
+  .kv dt { color: var(--muted); font-size: 13px; padding-top: 2px; }
+  .kv dt .mono { color: var(--ink); }
+  .kv dd { margin: 0; }
+
+  details {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    padding: 0 16px;
+    margin: 8px 0;
+  }
+  details summary {
+    cursor: pointer;
+    padding: 12px 0;
+    font-weight: 600;
+    font-size: 14.5px;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  details summary::before { content: "＋"; color: var(--accent); font-weight: 700; width: 14px; }
+  details[open] summary::before { content: "−"; }
+  details summary:hover { color: var(--accent); }
+  details .ans { padding: 0 0 14px; color: var(--ink); font-size: 14px; max-width: 74ch; }
+  details .ans p { margin-bottom: 8px; }
+
+  .endmark { color: var(--muted); font-size: 12.5px; border-top: 1px solid var(--line); padding-top: 16px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <header class="masthead">
+    <div class="kicker">PolyDeck · 网关功能</div>
+    <h1>智能路由使用说明</h1>
+    <p class="lede">按请求内容自动把活儿分给对的模型：架构与财务走强模型，CRUD 与文档走快模型，截图改页面走视觉模型。<strong>对客户端完全透明</strong>——Claude Code、Codex 等无需改任何配置，响应里回显的仍是客户端自己选的模型名。</p>
+  </header>
+
+  <nav class="toc" aria-label="目录">
+    <div class="toc-label">目录</div>
+    <ol>
+      <li><a href="#quickstart">快速开始</a></li>
+      <li><a href="#order">判定顺序</a></li>
+      <li><a href="#global">全局配置</a></li>
+      <li><a href="#alias">别名映射</a></li>
+      <li><a href="#category">分类路由</a></li>
+      <li><a href="#rules">自定义规则</a></li>
+      <li><a href="#tag">#MODEL: 标签</a></li>
+      <li><a href="#simulator">模拟调试器</a></li>
+      <li><a href="#audit">审计与复盘</a></li>
+      <li><a href="#fallback">失败回退</a></li>
+      <li><a href="#recipe">推荐配置</a></li>
+      <li><a href="#faq">常见问题</a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+  <section id="quickstart">
+    <h2><span class="no">01</span>快速开始</h2>
+    <p class="h2-sub">三步，全程不用重启网关</p>
+    <ol>
+      <li>侧边栏打开「<strong>智能路由</strong>」，勾选「启用智能路由」，在分类路由里给三个分类各选一个目标模型，点「<strong>保存配置</strong>」——保存即热生效。</li>
+      <li>在「路由模拟调试器」里粘一段真实 prompt 点「运行模拟」，确认判定结果符合预期（模拟器读的是<strong>已保存</strong>的配置）。</li>
+      <li>用客户端正常干活。想看实际效果，回面板在「路由审计」里点「刷新」。</li>
+    </ol>
+    <div class="note">
+      保存前的唯一前置：目标模型要出现在对应 Provider 的模型列表里（配置方案页 → 探测模型）。分类下拉的选项、以及「目标模型是否已接入」的校验都取自这个列表；没探测过的模型选不到，硬填也会被判无效回退。
+    </div>
+  </section>
+
+  <section id="order">
+    <h2><span class="no">02</span>判定顺序</h2>
+    <p class="h2-sub">这是固定契约，所有配置都围绕这八步起作用</p>
+    <div class="flow" role="list">
+      <div class="step hard" role="listitem"><div class="n">1</div><div class="t">强制模型</div><div class="d">force_model 非空则直接用它，后面全部跳过</div></div>
+      <div class="step" role="listitem"><div class="n">2</div><div class="t">别名替换</div><div class="d">model_alias_map 按入站名替换模型名</div></div>
+      <div class="step" role="listitem"><div class="n">3</div><div class="t">方案级重写</div><div class="d">原有 ModelRewriter 档位规则照常执行</div></div>
+      <div class="step" role="listitem"><div class="n">4</div><div class="t">#MODEL: 标签</div><div class="d">请求内容里的标签，命中即终止，只提取不修改原文</div></div>
+      <div class="step" role="listitem"><div class="n">5</div><div class="t">自定义规则</div><div class="d">按配置顺序，第一条命中的生效</div></div>
+      <div class="step" role="listitem"><div class="n">6</div><div class="t">任务分类</div><div class="d">复杂核心 → 视觉前端 → 常规兜底</div></div>
+      <div class="step" role="listitem"><div class="n">7</div><div class="t">默认模型</div><div class="d">以上全部无结果时用 default_model</div></div>
+      <div class="step hard" role="listitem"><div class="n">8</div><div class="t">已接入校验</div><div class="d">目标不在 Provider 模型列表 → 回退默认模型并记警告</div></div>
+    </div>
+    <p>生效端点：<code>/v1/messages</code>、<code>/v1/responses</code>、<code>/v1/chat/completions</code>。<code>count_tokens</code> 与 MCP 不做判定。总开关关闭时整层旁路，完全回到原有方案级重写路径，零行为变化。</p>
+  </section>
+
+  <section id="global">
+    <h2><span class="no">03</span>全局配置</h2>
+    <p class="h2-sub">总开关、强制、兜底、回退，四个参数管全局</p>
+    <div class="kv">
+      <dt><span class="mono">enableRoute</span> 启用智能路由</dt><dd>总开关。关闭 = 整层旁路。</dd>
+      <dt><span class="mono">forceModel</span> 强制模型</dt><dd>填了之后<strong>所有请求</strong>都走它，分类、规则、标签全部失效。适合临时全局锁定，用完记得清空保存。</dd>
+      <dt><span class="mono">defaultModel</span> 默认兜底模型</dt><dd>所有规则都没命中时用它；也是「目标模型校验失败」和「失败回退」的落点。建议填最稳的那个模型。</dd>
+      <dt><span class="mono">fallbackEnable</span> 模型不可用自动回退</dt><dd>仅当上游返回「模型不存在」类 4xx 错误时，用默认模型重发一次。详见<a href="#fallback">失败回退</a>。</dd>
+    </div>
+  </section>
+
+  <section id="alias">
+    <h2><span class="no">04</span>模型别名映射</h2>
+    <p class="h2-sub">解决「客户端叫的名」和「后端实际的名」对不上</p>
+    <p>键 = 客户端入站模型名，值 = 后端实际模型名。例如 <code>claude-opus-5 → glm-5.3</code>。客户端发的 <code>claude-code/</code> 前缀会先剥掉再匹配，所以 <code>claude-code/claude-opus-5</code> 也能命中键 <code>claude-opus-5</code>。</p>
+    <ul>
+      <li>别名在<strong>方案级重写之前</strong>执行——键按「客户端会发来的名字」写就行。</li>
+      <li>别名只影响后续判定的起点，不影响最终路由结果：替换后的名字仍会走标签 → 规则 → 分类这条链。</li>
+      <li>一般不需要配：方案页的 opus/sonnet/haiku 档位重写仍然在工作。别名是给它够不着的场景准备的（比如某个客户端发出非常规名字）。</li>
+    </ul>
+  </section>
+
+  <section id="category">
+    <h2><span class="no">05</span>分类路由</h2>
+    <p class="h2-sub">分类特征内置不可改，只给每类选目标模型；没选的类不参与路由</p>
+    <p>判定按 <strong>复杂核心 → 视觉前端 → 常规兜底</strong> 的顺序：先看是不是复杂核心，不是再看是不是视觉前端，都不是就落常规。</p>
+
+    <h3><span class="pill">complex_core</span> 复杂核心任务</h3>
+    <p>命中任一条件即判复杂核心：</p>
+    <ul>
+      <li>关键词（中英混合，大小写不敏感）：多租户、RBAC、行级权限、校区隔离、越权防护、财务结算、课时扣费、退费、转课、课消、排课引擎、事务一致性、资金分账、业务状态机、核心 Schema、架构设计、跨模块重构、安全审计、复杂事务 SQL、permission model、architecture design</li>
+      <li>请求带 <code>reasoning_effort=max</code>，或 Messages 协议 <code>thinking.budget_tokens ≥ 63999</code>（Claude Code 开深度思考即触发）</li>
+      <li>请求上下文估算超过 64k tokens 且未命中其他类</li>
+    </ul>
+
+    <h3><span class="pill">visual_frontend</span> 视觉前端任务</h3>
+    <ul>
+      <li>关键词：Vue、React、组件、表单、样式、UI、截图、Figma、切图、Playwright、视觉测试、页面还原、component、stylesheet、screenshot、frontend</li>
+      <li>请求内容包含图片（Messages 的 image 块、Responses 的 input_image、Chat 的 image_url——截图改页面、多模态识别自动命中）</li>
+    </ul>
+
+    <h3><span class="pill ok">regular_dev</span> 常规开发任务</h3>
+    <p>以上两类都没命中就是它：CRUD、DTO、迁移、测试、脚本、文档……日常开发的大头。</p>
+
+    <div class="note warn">
+      <strong>扫描范围与成本上限：</strong>分类与关键词只扫 system 提示 + 前 2 条 + 最后 6 条消息（Responses 的 input、Chat 的 messages 同理），每段文本最多 4000 字符、总量 24,000 字符。路由信号几乎总在最近几轮对话里，这个窗口在省掉全量扫描成本的同时不影响实际判定——但意味着 <code>#MODEL:</code> 标签或关键词写在很老的中间消息里不会命中。
+    </div>
+  </section>
+
+  <section id="rules">
+    <h2><span class="no">06</span>自定义规则</h2>
+    <p class="h2-sub">关键词或正则 → 指定模型；优先级低于标签、高于分类</p>
+    <p>每条规则四个字段：</p>
+    <div class="kv">
+      <dt>关键词 keyword</dt><dd>普通模式按子串匹配（英文小写化）；勾选「正则」后按正则匹配。</dd>
+      <dt>目标模型 targetModel</dt><dd>命中后转发的模型名。</dd>
+      <dt>正则 isRegex</dt><dd>正则模式。非法正则在面板里即时提示，保存后该规则被自动禁用并在保存结果里给警告，其余规则不受影响。灾难性回溯由 24k 扫描上限兜底。</dd>
+      <dt>启用 enable</dt><dd>关掉即跳过，配置保留。</dd>
+    </div>
+    <p>规则<strong>按列表顺序</strong>判定，第一条命中即生效。想覆盖内置分类，把规则加在分类能命中之前就行——例如教培项目想让「对账」强制走强模型，加一条 <code>对账 → glm-5.3</code> 即可，不必等分类。</p>
+  </section>
+
+  <section id="tag">
+    <h2><span class="no">07</span>#MODEL: 标签</h2>
+    <p class="h2-sub">单条请求临时指定模型，优先级仅次于强制模型</p>
+    <p>在 prompt 任意位置写 <code>#MODEL:模型名</code>，例如：</p>
+<pre><code>帮我细抠这段权限校验的边界情况 #MODEL:glm-5.3
+（只对这一条请求生效，其余请求照常走分类）</code></pre>
+    <ul>
+      <li>格式：<code>#MODEL:</code> 后跟模型名，允许字母、数字、<code>_ . - /</code>，中间可有空格；取<strong>第一个</strong>出现的标签。</li>
+      <li>只提取、<strong>不修改</strong>你的 prompt 原文——标签会原样发给模型。</li>
+      <li>优先级：低于强制模型，高于自定义规则与分类。强制模型非空时标签失效。</li>
+      <li>标签仍要过第 8 步校验：目标不在 Provider 模型列表时回退默认模型。</li>
+    </ul>
+  </section>
+
+  <section id="simulator">
+    <h2><span class="no">08</span>路由模拟调试器</h2>
+    <p class="h2-sub">不发真实请求，直接验证判定链</p>
+    <p>填入模型名、一段 prompt、可选 effort 档位，点「运行模拟」返回判定结果：目标模型、判定原因、命中规则、校验警告。它复用与网关<strong>同一套引擎与已保存配置</strong>，模型校验用所有已绑定网关方案的 Provider 模型并集。</p>
+    <div class="note">
+      改完配置必须先「保存配置」再模拟——模拟器读的是落盘配置，不读面板上未保存的草稿。判定结果与真实请求唯一的差别是审计：模拟不写审计记录。
+    </div>
+  </section>
+
+  <section id="audit">
+    <h2><span class="no">09</span>审计与复盘</h2>
+    <p class="h2-sub">每条请求一条决策记录，按 request_id 可追溯</p>
+    <p>真实请求经过智能路由后，面板「路由审计」点「刷新」可查（最新在前，内存保留最近 1000 条）。字段如下：</p>
+    <div class="table-scroll">
+    <table>
+      <thead><tr><th>字段</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td class="mono-cell">requestId / timestamp</td><td>请求标识与时间，同一次请求的回退重发共用同一 requestId</td></tr>
+        <tr><td class="mono-cell">originalModel → aliasedModel → routedModel</td><td>客户端原名 → 别名/方案级重写后的名字 → 最终路由结果，一眼看出每层改了什么</td></tr>
+        <tr><td class="mono-cell">routeReason</td><td>判定原因：<span class="pill">force_model</span> <span class="pill">model_tag</span> <span class="pill">custom_rule</span> <span class="pill">complex_core / visual_frontend / regular_dev</span> <span class="pill">default_model</span> <span class="pill">passthrough</span> <span class="pill warn">validation_fallback</span> <span class="pill warn">fallback_retry</span></td></tr>
+        <tr><td class="mono-cell">matchRule / thinkingEffort / inputTokens</td><td>命中的规则 id、请求携带的 effort 档、估算输入 tokens</td></tr>
+        <tr><td class="mono-cell">isFallback</td><td>是否为失败回退的重发请求</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>记录<strong>脱敏由构造保证</strong>：只记上述元数据，不含 prompt 内容、不含任何密钥。同一份决策也会写进应用日志（系统设置 → 日志可查），双写不丢。</p>
+    <div class="note">
+      日常排查口诀：先看 <code>routeReason</code>。出现 <code>validation_fallback</code> 说明目标模型不在 Provider 列表里——回配置方案页重新探测，或改选列表内的模型。
+    </div>
+  </section>
+
+  <section id="fallback">
+    <h2><span class="no">10</span>失败回退</h2>
+    <p class="h2-sub">仅「模型不存在」类错误才重发，避免无意义双倍计费</p>
+    <p>开启「模型不可用自动回退」后，满足<strong>全部</strong>条件才会用默认模型重发一次：</p>
+    <ul>
+      <li>上游返回 400 / 404 / 422，且错误信息含 <code>model not found</code>、<code>does not exist</code>、<code>invalid model</code>、<code>no such model</code>、<code>unknown model</code>、<code>model_not_found</code> 之一</li>
+      <li>默认模型非空，且与当前请求的模型不同</li>
+    </ul>
+    <p><strong>不回退</strong>的情况：5xx（服务端挂了，重发同样会挂）、429 限流（换模型不解决限流）、网络错误、内容审核类 4xx（重发只会再被拒一次并计两次费）。回退发生在任何字节发给客户端之前，流式请求同样安全；回退结果（无论成功失败）就是客户端拿到的最终响应，并写入同 requestId 的第二条审计记录。</p>
+    <div class="note warn">
+      走故障转移链（failover）的请求不做模型回退——那条路径的语义是「换 Provider」，两个机制各管各的。
+    </div>
+  </section>
+
+  <section id="recipe">
+    <h2><span class="no">11</span>推荐配置示例</h2>
+    <p class="h2-sub">双模型分工：强模型管核心与视觉，快模型管日常</p>
+    <p>以「教培管理系统开发，<code>glm-5.3</code> + <code>glm-5.3-flash</code>」为例：</p>
+    <div class="table-scroll">
+    <table>
+      <thead><tr><th>配置项</th><th>值</th><th>理由</th></tr></thead>
+      <tbody>
+        <tr><td class="mono-cell">defaultModel</td><td class="mono-cell">glm-5.3</td><td>兜底与回退都落在这里，放最稳的</td></tr>
+        <tr><td class="mono-cell">complexCore</td><td class="mono-cell">glm-5.3</td><td>架构/权限/财务/排课，教培域关键词内置覆盖</td></tr>
+        <tr><td class="mono-cell">regularDev</td><td class="mono-cell">glm-5.3-flash</td><td>日常 CRUD/测试/文档占大头，快且省</td></tr>
+        <tr><td class="mono-cell">visualFrontend</td><td class="mono-cell">glm-5.3</td><td>截图改页面依赖多模态质量；实测 flash 够用可降</td></tr>
+        <tr><td class="mono-cell">fallbackEnable</td><td>开</td><td>flash 挂了自动用 glm-5.3 顶上</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>想省去手点，在「导入 / 导出」卡粘贴下面的 JSON，点「导入」再「保存配置」：</p>
+<pre><code>{
+  "enableRoute": true,
+  "forceModel": null,
+  "defaultModel": "glm-5.3",
+  "fallbackEnable": true,
+  "modelAliasMap": {},
+  "categoryRouteMap": {
+    "complexCore": "glm-5.3",
+    "regularDev": "glm-5.3-flash",
+    "visualFrontend": "glm-5.3"
+  },
+  "customRules": []
+}</code></pre>
+    <p>日常最有用的两个操作：Claude Code 里开<strong>深度思考（effort=max）</strong>自动升到 glm-5.3，平时 flash 干活；单条请求想临时换模型就在 prompt 里打 <code>#MODEL:glm-5.3</code>。</p>
+  </section>
+
+  <section id="faq">
+    <h2><span class="no">12</span>常见问题</h2>
+
+    <details>
+      <summary>配置保存了，但请求还是走原来的模型？</summary>
+      <div class="ans"><p>按顺序查：① 总开关是否开启且点过「保存配置」；② 对应分类是否选了目标模型（未配置的分类不参与）；③ 审计里 <code>routeReason</code> 是不是 <code>validation_fallback</code>——是则说明目标模型不在 Provider 模型列表，去配置方案页重新探测；④ 别名/方案级重写是否把名字改成了你没想到的值（看审计三段模型名）。</p></div>
+    </details>
+    <details>
+      <summary>effort 深度思考什么时候触发升档？</summary>
+      <div class="ans"><p>Messages 协议 <code>thinking.budget_tokens ≥ 63999</code> 或 <code>reasoning_effort=max</code>、Responses 的 <code>reasoning.effort=max</code>。Claude Code 的深度思考开关即落在这些字段上。</p></div>
+    </details>
+    <details>
+      <summary>#MODEL: 标签没生效？</summary>
+      <div class="ans"><p>三个可能：标签写在了扫描窗口之外（只扫 system + 前 2 条 + 最后 6 条消息，把标签写在最新一条消息里最稳）；强制模型填了值（优先级压过标签）；标签目标模型没过第 8 步校验（看审计 <code>validation_fallback</code>）。</p></div>
+    </details>
+    <details>
+      <summary>正则规则勾了「正则」却不生效？</summary>
+      <div class="ans"><p>非法正则会在面板行内提示、保存后自动禁用该规则并在保存结果给警告——修正写法或关掉该规则。另外正则匹配的是小写化后的文本。</p></div>
+    </details>
+    <details>
+      <summary>客户端会看到路由后的模型名吗？</summary>
+      <div class="ans"><p>不会。响应里回显的始终是客户端自己发的模型名（别名与路由结果都不外泄），/resume 等会话续接不受影响。</p></div>
+    </details>
+    <details>
+      <summary>别名映射和方案页的档位重写（opus/sonnet/haiku）冲突吗？</summary>
+      <div class="ans"><p>不冲突，是串联关系：全局别名先替换，方案级重写后执行。一般档位重写已经覆盖常规命名，别名只在没有档位规则匹配时才需要配。</p></div>
+    </details>
+    <details>
+      <summary>关掉智能路由会留下什么影响？</summary>
+      <div class="ans"><p>没有。总开关关闭后整层旁路，行为与从未开启过完全一致；配置保留在 state.json 里，下次开启原样恢复。审计记录也保留，可继续查询。</p></div>
+    </details>
+
+    <p class="endmark">PolyDeck v2.2.1 · 智能路由 · 配置存于 state.json，保存即热更新 · 审计仅记元数据，不含 prompt 与密钥</p>
+  </section>
+
+  </main>
+</div>
+
+<script>
+  // Highlight the TOC entry of the section in view.
+  const links = Array.from(document.querySelectorAll(".toc a"));
+  const map = new Map(links.map(a => [a.getAttribute("href").slice(1), a]));
+  const obs = new IntersectionObserver(entries => {
+    for (const e of entries) {
+      if (e.isIntersecting) {
+        links.forEach(l => l.classList.remove("here"));
+        map.get(e.target.id)?.classList.add("here");
+      }
+    }
+  }, { rootMargin: "-15% 0px -70% 0px" });
+  document.querySelectorAll("main section").forEach(s => obs.observe(s));
+</script>
+</body>
+</html>

@@ -7,7 +7,7 @@ use crate::{
     health::HealthState,
     middleware::{RouteTable, SharedRouteTable},
     model_rewrite::ModelRewriter,
-    router::{build_router, AppState},
+    router::{build_router, smart_route::SmartRouteEngine, AppState},
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -26,6 +26,9 @@ pub struct GatewayServer {
     /// Counters shared by every route: they describe this listener, not a profile.
     health: HealthState,
     rate_limiter_registry: Arc<crate::rate_limiter::RateLimiterRegistry>,
+    /// Shared with the Tauri shell so `ad_get_route_audit` reads the same
+    /// buffer the router writes to. Injected via [`GatewayServer::with_audit_log`].
+    audit: Option<Arc<crate::router::smart_route::AuditLog>>,
 }
 
 impl GatewayServer {
@@ -38,6 +41,7 @@ impl GatewayServer {
             table: Arc::new(tokio::sync::RwLock::new(RouteTable::default())),
             health: HealthState::new(),
             rate_limiter_registry: Arc::new(crate::rate_limiter::RateLimiterRegistry::new()),
+            audit: None,
         }
     }
 
@@ -52,6 +56,18 @@ impl GatewayServer {
 
     pub fn failover(&self) -> Option<&FailoverSlot> {
         self.failover.as_ref()
+    }
+
+    /// Hand the shell the same audit buffer the compiled routes will write to,
+    /// so IPC reads survive hot swaps ([`GatewayServer::apply_routes`] keeps
+    /// the server's buffer instead of building a fresh one per route table).
+    pub fn with_audit_log(mut self, audit: Arc<crate::router::smart_route::AuditLog>) -> Self {
+        self.audit = Some(audit);
+        self
+    }
+
+    pub fn audit_log(&self) -> Option<&Arc<crate::router::smart_route::AuditLog>> {
+        self.audit.as_ref()
     }
 
     pub async fn start(&mut self) -> Result<SocketAddr, String> {
@@ -106,6 +122,20 @@ impl GatewayServer {
         let mut by_upstream: HashMap<String, Arc<AppState>> = HashMap::new();
         let mut entries: Vec<(String, Arc<AppState>)> = Vec::new();
 
+        // Smart route is global: one engine built from the first route's copy,
+        // shared by every AppState so the config cannot drift per profile.
+        let smart_route = routes
+            .first()
+            .map(|r| SmartRouteEngine::new(&r.smart_route))
+            .transpose()?;
+        let smart_route = smart_route.flatten().map(Arc::new);
+        // One buffer per listener: hot swaps keep the server's audit history
+        // alive, and the shell holds the same Arc via `with_audit_log`.
+        let audit = self
+            .audit
+            .clone()
+            .unwrap_or_else(|| Arc::new(crate::router::smart_route::AuditLog::new()));
+
         for route in routes {
             if route.upstream.local_token.trim().is_empty() {
                 return Err(format!(
@@ -151,6 +181,9 @@ impl GatewayServer {
                         default_effort_level: route.upstream.default_effort_level.clone(),
                         thinking_support: route.upstream.thinking_support,
                         claude_max_output_tokens: route.upstream.claude_max_output_tokens,
+                        smart_route: smart_route.clone(),
+                        provider_models: route.upstream.models.clone(),
+                        audit: Arc::clone(&audit),
                     });
                     by_upstream.insert(key, Arc::clone(&state));
                     state
@@ -233,6 +266,7 @@ mod tests {
             claude_max_output_tokens: None,
             relay_chat_compat: Default::default(),
             accept_invalid_certs: false,
+            models: vec![],
         }
     }
 
@@ -269,6 +303,7 @@ mod tests {
             client_id: "second".into(),
             upstream: test_upstream("adk_two", "http://localhost:8080"),
             model_rewrites: vec![],
+            smart_route: Default::default(),
         });
 
         let server = GatewayServer::new(config);
@@ -290,6 +325,7 @@ mod tests {
             client_id: "second".into(),
             upstream: test_upstream("adk_two", "http://localhost:9090"),
             model_rewrites: vec![],
+            smart_route: Default::default(),
         });
 
         let server = GatewayServer::new(config);

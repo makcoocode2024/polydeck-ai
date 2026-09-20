@@ -9,6 +9,7 @@ export const pageLoaders = {
   extensions: () => import("@/pages/ExtensionsPage"),
   history: () => import("@/pages/HistoryPage"),
   settings: () => import("@/pages/SettingsPage"),
+  smartRoute: () => import("@/pages/SmartRoutePage"),
 } satisfies Record<string, () => Promise<PageModule>>;
 
 const preloaded = new Set<string>();

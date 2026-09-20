@@ -265,6 +265,13 @@ pub struct AppSettings {
     /// `serde(default)` for the same reason as the field above.
     #[serde(default)]
     pub enforce_tool_truthfulness: bool,
+    /// User-configurable smart routing for the gateway (model aliases,
+    /// category targets, keyword rules). Global: one config for all profiles.
+    ///
+    /// `serde(default)` is load-bearing for the same reason as the fields
+    /// above — a state document predating smart route must keep parsing.
+    #[serde(default)]
+    pub smart_route: crate::smart_route::SmartRouteSettings,
 }
 
 impl Default for AppSettings {
@@ -291,6 +298,7 @@ impl Default for AppSettings {
             },
             force_chinese_output: false,
             enforce_tool_truthfulness: false,
+            smart_route: crate::smart_route::SmartRouteSettings::default(),
         }
     }
 }

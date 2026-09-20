@@ -1,6 +1,19 @@
 use crate::state::{FailoverState, GatewayState, ProfileState};
 use tauri::{command, State};
 
+/// The audit buffer shared between the gateway and `ad_get_route_audit`.
+///
+/// Built lazily once per app run and never reset, so a gateway restart keeps
+/// the decision history the user may still be reading.
+pub fn audit_log() -> std::sync::Arc<polydeck_gateway::router::smart_route::AuditLog> {
+    use std::sync::OnceLock;
+    static AUDIT: OnceLock<std::sync::Arc<polydeck_gateway::router::smart_route::AuditLog>> =
+        OnceLock::new();
+    AUDIT
+        .get_or_init(|| std::sync::Arc::new(polydeck_gateway::router::smart_route::AuditLog::new()))
+        .clone()
+}
+
 /// One client's route: which upstream its requests go to, under which token.
 pub fn build_route_config(
     client_id: &str,
@@ -70,6 +83,7 @@ pub fn build_gateway_config(
                 .or(primary.probed_max_output_tokens),
             relay_chat_compat: primary.relay_chat_compat,
             accept_invalid_certs: primary.accept_invalid_certs,
+            models: primary.models.clone(),
         },
         polydeck_gateway::model_rewrite::generate_provider_model_rewrites_with_overrides(
             &primary.models,
@@ -166,6 +180,7 @@ pub async fn refresh_gateway(
             // A placeholder every route overwrites, so it validates certificates
             // rather than handing out a bypass no profile asked for.
             accept_invalid_certs: false,
+            models: vec![],
         },
         vec![],
     );
@@ -175,8 +190,9 @@ pub async fn refresh_gateway(
     )));
     config.routes = routes;
 
-    let mut server =
-        polydeck_gateway::GatewayServer::new(config).with_failover_slot((**failover).clone());
+    let mut server = polydeck_gateway::GatewayServer::new(config)
+        .with_failover_slot((**failover).clone())
+        .with_audit_log(audit_log());
     let addr = server.start().await?;
     *gw_guard = Some(server);
     Ok(Some(addr))
@@ -296,6 +312,9 @@ fn collect_routes(
 ) -> (Vec<polydeck_gateway::RouteConfig>, Vec<String>) {
     let mut routes = Vec::new();
     let mut warnings = Vec::new();
+    // Smart route is global: the same settings object goes into every route,
+    // and the gateway compiles them into one shared engine.
+    let smart_route = pm.settings().smart_route;
     // provider id → (profile name, rate limit), to catch two profiles sharing an
     // upstream with different limits.
     let mut seen_providers: std::collections::HashMap<
@@ -344,7 +363,10 @@ fn collect_routes(
         }
 
         match build_route_config(&binding.client_id, &profile, primary) {
-            Ok(route) => routes.push(route),
+            Ok(mut route) => {
+                route.smart_route = smart_route.clone();
+                routes.push(route);
+            }
             Err(e) => warnings.push(format!("{} 的网关路由构建失败：{e}", binding.client_id)),
         }
     }

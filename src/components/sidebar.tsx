@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { Zap, UserCheck, Monitor, Puzzle, History, Settings, Cpu } from "lucide-react";
+import { Zap, UserCheck, Monitor, Puzzle, History, Settings, Cpu, Route } from "lucide-react";
 import { ThemeToggle } from "./ThemeToggle";
 import { preloadPage } from "@/lib/page-preload";
 import { backend } from "@/services/backend";
@@ -12,6 +12,7 @@ const navItems = [
   { to: "/clients", preload: "clients", label: "客户端", icon: Monitor },
   { to: "/extensions", preload: "extensions", label: "扩展管理", icon: Puzzle },
   { to: "/history", preload: "history", label: "会话历史", icon: History },
+  { to: "/smart-route", preload: "smartRoute", label: "智能路由", icon: Route },
   { to: "/settings", preload: "settings", label: "系统设置", icon: Settings },
 ] as const;
 

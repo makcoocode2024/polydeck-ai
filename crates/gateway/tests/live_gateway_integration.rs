@@ -59,6 +59,7 @@ async fn test_full_gateway_and_clients_flow() {
             default_effort_level: None,
             thinking_support: polydeck_core::types::ThinkingSupport::Unprobed,
             claude_max_output_tokens: None,
+            models: vec![],
         },
         rules,
     );

@@ -93,8 +93,10 @@ fn route(base_url: &str, thinking_support: ThinkingSupport) -> RouteConfig {
             thinking_support,
             // The value the user configured for the reported issue.
             claude_max_output_tokens: Some(262_144),
+            models: vec![],
         },
         model_rewrites: vec![],
+        smart_route: Default::default(),
     }
 }
 
@@ -114,6 +116,7 @@ async fn gateway_with(route: RouteConfig) -> (GatewayServer, String) {
             default_effort_level: None,
             thinking_support: ThinkingSupport::default(),
             claude_max_output_tokens: None,
+            models: vec![],
         },
         vec![],
     );

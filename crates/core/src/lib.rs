@@ -36,6 +36,7 @@ pub mod responses_chat;
 pub mod responses_stream;
 pub mod session_parser;
 pub mod skills;
+pub mod smart_route;
 pub mod storage;
 pub mod tray_state;
 pub mod types;

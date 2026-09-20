@@ -7,6 +7,7 @@ import type { DiagnosticReport, UpdateInfo, AutoLaunchStatus, ClientRuleStatus, 
 import type { ProxyStatus } from "@/domain/proxy";
 import type { FailoverStatus } from "@/domain/failover";
 import type { InjectStatus } from "@/domain/injection";
+import type { RouteAuditRecord, RouteDecision, SmartRouteSettings } from "@/domain/smartRoute";
 
 type CacheEntry = { value: unknown; expiresAt: number };
 const READ_CACHE_TTL_MS = 2500;
@@ -129,6 +130,18 @@ export const backend = {
     invoke<void>("ad_set_profile_api_key", { profileId, apiKey }),
   getProfileApiKey: (profileId: string) =>
     invoke<string | null>("ad_get_profile_api_key", { profileId }),
+
+  // Smart route
+  getRouteConfig: () => cachedRead("route-config", () => invoke<SmartRouteSettings>("ad_get_route_config")),
+  updateRouteConfig: (config: SmartRouteSettings) =>
+    invoke<{ config: SmartRouteSettings; warnings: string[] }>("ad_update_route_config", { config }).then((value) => {
+      invalidateReads("route-config");
+      return value;
+    }),
+  simulateRoute: (model: string, prompt: string, effort?: string) =>
+    invoke<RouteDecision | null>("ad_simulate_route", { model, prompt, effort }),
+  getRouteAudit: (requestId?: string, limit?: number) =>
+    invoke<RouteAuditRecord[]>("ad_get_route_audit", { requestId, limit }),
 
   // Cline OAuth
   clineStartDeviceAuth: () =>

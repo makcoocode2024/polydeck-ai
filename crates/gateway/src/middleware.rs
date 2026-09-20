@@ -238,6 +238,9 @@ mod tests {
             default_effort_level: None,
             thinking_support: Default::default(),
             claude_max_output_tokens: None,
+            smart_route: None,
+            provider_models: vec![],
+            audit: Arc::new(crate::router::smart_route::AuditLog::new()),
         })
     }
 

@@ -648,17 +648,19 @@ async fn write_claude_config(
             "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY".into(),
             serde_json::Value::String(if gateway_enabled { "1" } else { "0" }.into()),
         );
-        let effort_level = if let Some(eff) = &provider.default_effort_level {
-            if !eff.trim().is_empty() {
-                eff.trim().to_string()
-            } else {
-                let (def_reasoning, _, _) = get_model_reasoning_config(model_to_use);
-                def_reasoning.as_str().unwrap_or("high").to_string()
-            }
-        } else {
-            let (def_reasoning, _, _) = get_model_reasoning_config(model_to_use);
-            def_reasoning.as_str().unwrap_or("high").to_string()
-        };
+        // `unset` is the client-documented sentinel meaning "this env does not
+        // own effort" — Claude Code resolves it to null and lets the session's
+        // own level (picker, /effort, settings) stand. Any concrete value here
+        // would override those every turn, so it is reserved for an explicit
+        // user choice; guessing one from the model name would silently pin a
+        // level the user never picked and re-pin it after every manual change.
+        let effort_level = provider
+            .default_effort_level
+            .as_deref()
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+            .unwrap_or("unset")
+            .to_string();
 
         env_obj.insert(
             "CLAUDE_CODE_EFFORT_LEVEL".into(),
@@ -2054,6 +2056,66 @@ mod tests {
             "未手动设置时用推荐的思考上限"
         );
         assert_eq!(parsed["env"]["DISABLE_AUTOUPDATER"].as_str(), Some("1"));
+    }
+
+    /// `unset` is the only honest value when the user never picked an effort:
+    /// any concrete level here overrides the session's own effort every turn,
+    /// so guessing one from the model name would pin a level the user never
+    /// chose and re-pin it after every manual change. The explicit choice
+    /// must survive verbatim.
+    #[tokio::test]
+    async fn effort_env_is_unset_unless_the_user_chose_a_level() {
+        let _home_guard = lock_home_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("AI_DECK_HOME_OVERRIDE", temp_home.path());
+        let claude_dir = temp_home.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+
+        // No level chosen: sentinel, not a guess from the model name.
+        let provider = agnes_like_provider(vec!["glm-5.3".into()], "glm-5.3");
+        write_claude_config(&provider, &Default::default(), "adk_test", true)
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(claude_dir.join("settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            parsed["env"]["CLAUDE_CODE_EFFORT_LEVEL"].as_str(),
+            Some("unset"),
+            "未选择思考深度时必须写 unset，不得从模型名推断一个用户没选的档位"
+        );
+
+        // Explicit choice survives verbatim.
+        let mut chosen = agnes_like_provider(vec!["glm-5.3".into()], "glm-5.3");
+        chosen.default_effort_level = Some("max".into());
+        write_claude_config(&chosen, &Default::default(), "adk_test", true)
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(claude_dir.join("settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            parsed["env"]["CLAUDE_CODE_EFFORT_LEVEL"].as_str(),
+            Some("max"),
+            "用户显式选择的档位必须原样写入"
+        );
+
+        // Whitespace-only choice reads as not chosen.
+        let mut blank = agnes_like_provider(vec!["glm-5.3".into()], "glm-5.3");
+        blank.default_effort_level = Some("   ".into());
+        write_claude_config(&blank, &Default::default(), "adk_test", true)
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(claude_dir.join("settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            parsed["env"]["CLAUDE_CODE_EFFORT_LEVEL"].as_str(),
+            Some("unset")
+        );
     }
 
     #[tokio::test]
