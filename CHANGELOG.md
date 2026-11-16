@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [2.2.3] - 2026-11-16
+
+### Added
+- **自动按客户端分组开关。** 开启后只把 `claude-code` 接入本地网关，Codex CLI
+  和其他客户端保持原有连接配置。切换时会立即重写已绑定的 Claude Code 配置，
+  已打开的会话需要重启后才能读取新的 `ANTHROPIC_BASE_URL`
+- **Anthropic Messages 到 OpenAI Chat Completions 的网关桥接。** 支持请求与响应
+  转换、SSE 流式输出、`tool_use` / `tool_result`，并把 `thinking.budget_tokens`
+  映射为上游的 `reasoning_effort`
+- **DeepSeek V4 的 `xhigh` / `max` 思考档位。** Codex 模型目录、网关模型能力声明
+  和 Responses 桥接现在都保留完整档位，不再把 `max` 降成 `high`
+
+### Fixed
+- **第三方中转站拒绝 `/v1/messages` dispatch 时的 Claude Code 403。** 网关在识别到
+  OpenAI / Chat Completions 上游后自动桥接 Messages 请求；上游仍返回包含
+  `does not allow`、`/v1/messages` 或 `dispatch` 的 403/404 时回退到 Chat 桥接
+- Chat Completions 请求不再向上游发送 `x-api-key`、`anthropic-version`、
+  `anthropic-beta` 等 Anthropic 专属请求头
+
+### Notes
+- 本地已完成 Rust workspace 测试、Clippy、rustfmt、前端 lint、类型检查和组件测试
+- 【未执行】真实第三方中转站、Claude Code 和 Codex CLI 的端到端联调；发布后仍需用
+  实际中转站和客户端复测 `/v1/messages` 与 `max` 档位
+
 ## [2.2.1] - 2026-09-14
 
 版本号是 patch，内容不全是——界面基座整层重做了。编号沿用工作区里已定的 2.2.1。
