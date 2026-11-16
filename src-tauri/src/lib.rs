@@ -115,7 +115,9 @@ pub fn run() {
                             let mut pids = Vec::new();
                             for binding in pm_guard.bindings() {
                                 if let Some(profile) = pm_guard.get_profile(&binding.profile_id) {
-                                    if !profile.gateway_enabled { continue; }
+                                    if !pm_guard.effective_gateway_for_client(&binding.client_id) {
+                                        continue;
+                                    }
                                     let is_cline = profile.providers.iter().any(|p| {
                                         polydeck_core::cline_auth::is_cline_api(&p.base_url)
                                     });
@@ -227,6 +229,8 @@ pub fn run() {
             commands::system::ad_set_force_chinese,
             commands::system::ad_tool_truthfulness_status,
             commands::system::ad_set_tool_truthfulness,
+            commands::system::ad_auto_client_grouping_status,
+            commands::system::ad_set_auto_client_grouping,
             // proxy
             commands::proxy::ad_detect_proxy,
             // ops

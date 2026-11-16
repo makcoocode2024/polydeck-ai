@@ -214,7 +214,7 @@ fn failover_candidates(
         };
         // A direct-connect profile's clients never reach the gateway, so probing
         // its chain would monitor an upstream nothing is routed through.
-        if !profile.gateway_enabled || !profile.failover_enabled {
+        if !pm.effective_gateway_for_client(&binding.client_id) || !profile.failover_enabled {
             continue;
         }
         if candidates.iter().any(|p| p.id == profile.id) {
@@ -326,9 +326,10 @@ fn collect_routes(
         let Some(profile) = pm.get_profile(&binding.profile_id) else {
             continue;
         };
-        // A direct-connect profile writes the provider's own URL into its clients'
-        // configs, so those clients never reach the gateway and need no route.
-        if !profile.gateway_enabled {
+        // A direct-connect profile normally needs no route. Auto grouping is the
+        // exception: Claude Code is routed locally so its Messages requests can
+        // be bridged to Chat Completions.
+        if !pm.effective_gateway_for_client(&binding.client_id) {
             continue;
         }
         let Some(primary) = profile
@@ -420,13 +421,15 @@ pub async fn ad_gateway_status(
             .into_iter()
             .filter_map(|b| {
                 let profile = pm_guard.get_profile(&b.profile_id)?;
-                profile.gateway_enabled.then(|| {
-                    serde_json::json!({
-                        "clientId": b.client_id,
-                        "profileId": profile.id,
-                        "profileName": profile.name,
+                pm_guard
+                    .effective_gateway_for_client(&b.client_id)
+                    .then(|| {
+                        serde_json::json!({
+                            "clientId": b.client_id,
+                            "profileId": profile.id,
+                            "profileName": profile.name,
+                        })
                     })
-                })
             })
             .collect()
     };

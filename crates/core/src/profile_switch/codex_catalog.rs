@@ -162,6 +162,20 @@ pub(super) fn get_model_reasoning_config(
         return (serde_json::json!("medium"), levels, true);
     }
 
+    // DeepSeek V4 exposes the extended low..max ladder as one model family.
+    // Its relay ids carry no `-max` suffix, so suffix-based inference cannot
+    // discover the level.
+    if crate::types::supports_extended_reasoning_effort(&lower) {
+        let levels = serde_json::json!([
+            { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
+            { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
+            { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" },
+            { "effort": "xhigh", "description": "极限深度推理 (Extended reasoning depth for hard tasks)" },
+            { "effort": "max", "description": "最大极限推理 (Maximum reasoning budget for toughest challenges)" }
+        ]);
+        return (serde_json::json!("high"), levels, true);
+    }
+
     // 4. Other GPT-5 series (如 gpt-5.4, gpt-5.5)
     if lower.starts_with("gpt-5") {
         let levels = serde_json::json!([

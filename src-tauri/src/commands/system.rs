@@ -157,3 +157,83 @@ pub async fn ad_set_tool_truthfulness(
 
     Ok(serde_json::json!({ "enabled": enabled, "targets": targets }))
 }
+
+/// Whether Claude Code is automatically grouped behind the local gateway, and
+/// which bound clients that currently affects.
+#[command]
+pub async fn ad_auto_client_grouping_status(
+    pm: State<'_, ProfileState>,
+) -> Result<serde_json::Value, String> {
+    let pm = pm.lock().await;
+    let enabled = pm.settings().auto_client_grouping;
+    let clients = bound_claude_clients(&pm);
+    Ok(serde_json::json!({ "enabled": enabled, "clients": clients }))
+}
+
+fn bound_claude_clients(pm: &polydeck_core::profile::ProfileManager) -> Vec<String> {
+    let mut clients: Vec<String> = pm
+        .bindings()
+        .into_iter()
+        .map(|binding| polydeck_core::binding::normalize_client_id(&binding.client_id))
+        .filter(|client| client == "claude-code")
+        .collect();
+    clients.sort();
+    clients.dedup();
+    clients
+}
+
+/// Toggle automatic Claude Code grouping and immediately rewrite its config.
+///
+/// The setting is persisted first, then every bound Claude Code config is
+/// re-activated so enabling starts routing through the gateway and disabling
+/// restores the profile's direct endpoint. Other clients are never touched.
+#[command]
+pub async fn ad_set_auto_client_grouping(
+    enabled: bool,
+    pm: State<'_, ProfileState>,
+    gw: State<'_, GatewayState>,
+    failover: State<'_, FailoverState>,
+) -> Result<serde_json::Value, String> {
+    let mut rewritten = Vec::new();
+    let mut warnings = Vec::new();
+    {
+        let mut pm = pm.lock().await;
+        let clients = bound_claude_clients(&pm);
+
+        let mut settings = pm.settings();
+        settings.auto_client_grouping = enabled;
+        pm.update_settings(settings).map_err(|e| e.to_string())?;
+
+        for client in clients {
+            let Some(profile) = pm.profile_for_client(&client) else {
+                continue;
+            };
+            match polydeck_core::profile_switch::activate_profile(
+                &mut pm,
+                &profile.id,
+                Some(std::slice::from_ref(&client)),
+            )
+            .await
+            {
+                Ok(result) => {
+                    if result.clients_written.contains(&client) {
+                        rewritten.push(client);
+                    }
+                    warnings.extend(result.warnings);
+                }
+                Err(error) => warnings.push(format!("{client} 配置重写失败：{error}")),
+            }
+        }
+    }
+
+    if let Err(error) = crate::commands::gateway::refresh_gateway(&gw, &pm, &failover).await {
+        warnings.push(format!("网关同步失败：{error}"));
+    }
+
+    Ok(serde_json::json!({
+        "enabled": enabled,
+        "clients": bound_claude_clients(&*pm.lock().await),
+        "rewrittenClients": rewritten,
+        "warnings": warnings,
+    }))
+}

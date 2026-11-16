@@ -734,6 +734,31 @@ describe("Frontend Pages", () => {
     expect((screen.getByTestId("force-chinese-toggle") as HTMLInputElement).checked).toBe(false);
   });
 
+  it("enables automatic Claude Code grouping without touching other clients", async () => {
+    const setGrouping = vi.spyOn(backend, "setAutoClientGrouping");
+    render(<SettingsPage />);
+
+    const toggle = await waitFor(() => {
+      const el = screen.getByTestId("auto-client-grouping-toggle") as HTMLInputElement;
+      expect(el.disabled).toBe(false);
+      return el;
+    });
+    expect(toggle.checked).toBe(false);
+    expect(screen.getByTestId("auto-client-grouping-card")).toHaveTextContent(
+      "Codex CLI 和其他客户端不受影响",
+    );
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(setGrouping).toHaveBeenCalledWith(true);
+      expect(
+        (screen.getByTestId("auto-client-grouping-toggle") as HTMLInputElement).checked,
+      ).toBe(true);
+    });
+    setGrouping.mockRestore();
+  });
+
   it("explains why the forced-Chinese toggle is unavailable instead of silently disabling it", async () => {
     // What a stale build does: the command is not registered, so invoke rejects.
     const restore = setMockResponse("ad_force_chinese_status", () => {

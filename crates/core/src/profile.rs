@@ -265,6 +265,15 @@ pub struct AppSettings {
     /// `serde(default)` for the same reason as the field above.
     #[serde(default)]
     pub enforce_tool_truthfulness: bool,
+    /// Route Claude Code through the local gateway even when its bound profile
+    /// is configured for direct connection.
+    ///
+    /// Some relays classify `/v1/messages` requests into a group that rejects
+    /// dispatch. The gateway converts those requests to Chat Completions, so the
+    /// client keeps working without changing the other clients on the profile.
+    /// `serde(default)` keeps older state documents loadable.
+    #[serde(default)]
+    pub auto_client_grouping: bool,
     /// User-configurable smart routing for the gateway (model aliases,
     /// category targets, keyword rules). Global: one config for all profiles.
     ///
@@ -298,6 +307,7 @@ impl Default for AppSettings {
             },
             force_chinese_output: false,
             enforce_tool_truthfulness: false,
+            auto_client_grouping: false,
             smart_route: crate::smart_route::SmartRouteSettings::default(),
         }
     }
@@ -482,6 +492,31 @@ impl ProfileManager {
             .iter()
             .find(|b| b.client_id == clean)
             .and_then(|b| self.get_profile(&b.profile_id))
+    }
+
+    /// Whether this client should use the gateway for `profile`.
+    ///
+    /// Auto grouping is deliberately Claude Code only: `/v1/messages` is the
+    /// endpoint the problematic relay groups reject, and routing every client
+    /// through the gateway would silently change Codex CLI and the others.
+    ///
+    /// This takes the profile explicitly because activation writes client
+    /// configs before recording the new binding. Looking the profile up through
+    /// the old binding would classify a first activation as direct-connect.
+    pub fn gateway_enabled_for_profile_client(&self, client_id: &str, profile: &Profile) -> bool {
+        let clean = crate::binding::normalize_client_id(client_id);
+        profile.gateway_enabled
+            || (self.state.settings.auto_client_grouping && clean == "claude-code")
+    }
+
+    /// Whether this client's currently bound traffic should go through the
+    /// local gateway.
+    pub fn effective_gateway_for_client(&self, client_id: &str) -> bool {
+        let clean = crate::binding::normalize_client_id(client_id);
+        let Some(profile) = self.profile_for_client(&clean) else {
+            return false;
+        };
+        self.gateway_enabled_for_profile_client(&clean, &profile)
     }
 
     /// Which clients follow `profile_id`, sorted.
@@ -805,6 +840,31 @@ mod tests {
             pm.clients_for_profile(&dup.id).is_empty(),
             "副本不应继承绑定"
         );
+    }
+
+    #[test]
+    fn automatic_grouping_only_routes_claude_code_through_the_gateway() {
+        let (mut pm, _dir) = test_pm();
+        let created = pm.create_profile_simple("直连方案").unwrap();
+        let mut direct = created.clone();
+        direct.gateway_enabled = false;
+
+        let mut settings = pm.settings();
+        settings.auto_client_grouping = true;
+        pm.update_settings(settings).unwrap();
+
+        assert!(pm.gateway_enabled_for_profile_client("Claude-Code", &direct));
+        assert!(!pm.gateway_enabled_for_profile_client("codex-cli", &direct));
+
+        let mut settings = pm.settings();
+        settings.auto_client_grouping = false;
+        pm.update_settings(settings).unwrap();
+        assert!(!pm.gateway_enabled_for_profile_client("claude-code", &direct));
+
+        let mut gateway_profile = direct;
+        gateway_profile.gateway_enabled = true;
+        assert!(pm.gateway_enabled_for_profile_client("codex-cli", &gateway_profile));
+        assert!(pm.gateway_enabled_for_profile_client("claude-code", &gateway_profile));
     }
 
     #[test]

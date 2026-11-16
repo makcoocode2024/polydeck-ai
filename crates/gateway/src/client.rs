@@ -553,13 +553,22 @@ impl UpstreamClient {
             body
         };
 
+        // Anthropic relays classify requests by their native headers. Sending
+        // `x-api-key` and `anthropic-version` on a Chat Completions call makes
+        // some relays treat it as a Messages client anyway and can route it into
+        // the same rejected group the bridge is trying to avoid.
+        let anthropic_endpoint =
+            url.ends_with("/messages") || url.ends_with("/messages/count_tokens");
         let mut request = self
             .client
             .post(url)
             .bearer_auth(&self.api_key)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json");
+        if anthropic_endpoint {
+            request = request
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", "2023-06-01");
+        }
         for (key, value) in &self.extra_headers {
             request = request.header(key.as_str(), value.as_str());
         }

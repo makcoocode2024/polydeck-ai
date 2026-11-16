@@ -79,7 +79,7 @@ pub async fn ad_simulate_route(
     )
 }
 
-/// Models of the primary provider of every bound, gateway-enabled profile.
+/// Models of the primary provider of every bound client that uses the gateway.
 /// Empty when the gateway serves nothing — simulation then skips validation.
 fn bound_gateway_models(pm: &ProfileManager) -> Vec<String> {
     let mut models: Vec<String> = Vec::new();
@@ -87,7 +87,7 @@ fn bound_gateway_models(pm: &ProfileManager) -> Vec<String> {
         let Some(profile) = pm.get_profile(&binding.profile_id) else {
             continue;
         };
-        if !profile.gateway_enabled {
+        if !pm.effective_gateway_for_client(&binding.client_id) {
             continue;
         }
         let Some(primary) = profile

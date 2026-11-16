@@ -146,9 +146,10 @@ impl GatewayServer {
             // Keyed on what actually determines behavior. Two routes with the same
             // provider and the same rewrites are the same runtime.
             let key = format!(
-                "{}|{}|{:?}",
+                "{}|{}|{}|{:?}",
                 route.upstream.provider_id.as_deref().unwrap_or_default(),
                 route.upstream.base_url,
+                route.upstream.protocol,
                 route.model_rewrites
             );
             let state = match by_upstream.get(&key) {
@@ -181,6 +182,7 @@ impl GatewayServer {
                         default_effort_level: route.upstream.default_effort_level.clone(),
                         thinking_support: route.upstream.thinking_support,
                         claude_max_output_tokens: route.upstream.claude_max_output_tokens,
+                        upstream_protocol: route.upstream.protocol.clone(),
                         smart_route: smart_route.clone(),
                         provider_models: route.upstream.models.clone(),
                         audit: Arc::clone(&audit),

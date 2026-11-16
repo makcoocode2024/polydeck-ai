@@ -42,7 +42,7 @@ pub async fn ad_list_client_bindings(
                 "clientId": b.client_id,
                 "profileId": b.profile_id,
                 "profileName": profile.as_ref().map(|p| p.name.clone()),
-                "gatewayEnabled": profile.as_ref().map(|p| p.gateway_enabled).unwrap_or(false),
+                "gatewayEnabled": pm.effective_gateway_for_client(&b.client_id),
                 "boundAt": b.bound_at,
             })
         })
@@ -224,7 +224,8 @@ pub async fn ad_client_connection_info(
     )
     .map_err(|e| e.to_string())?;
 
-    let base_url = if profile.gateway_enabled {
+    let uses_gateway = pm_guard.effective_gateway_for_client(&client);
+    let base_url = if uses_gateway {
         format!(
             "http://127.0.0.1:{}",
             polydeck_core::profile_switch::GATEWAY_PORT
@@ -245,7 +246,7 @@ pub async fn ad_client_connection_info(
         "profileName": profile.name,
         "baseUrl": base_url,
         "token": token,
-        "isGateway": profile.gateway_enabled,
+        "isGateway": uses_gateway,
     }))
 }
 

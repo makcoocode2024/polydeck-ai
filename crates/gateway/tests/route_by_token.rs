@@ -23,6 +23,7 @@ const TOKEN_B: &str = "adk_client_b";
 struct Seen {
     paths: Vec<String>,
     bodies: Vec<serde_json::Value>,
+    chat_headers: Vec<Vec<(String, String)>>,
 }
 
 type SeenLog = Arc<Mutex<Seen>>;
@@ -96,8 +97,23 @@ async fn stub_upstream(name: &'static str) -> (String, SeenLog) {
             "/v1/chat/completions",
             post(
                 |State((seen, _)): State<(SeenLog, &'static str)>,
+                 headers: axum::http::HeaderMap,
                  Json(body): Json<serde_json::Value>| async move {
-                    record(&seen, "/v1/chat/completions", Some(&body)).await;
+                    {
+                        let mut guard = seen.lock().unwrap();
+                        guard.paths.push("/v1/chat/completions".into());
+                        guard.bodies.push(body.clone());
+                        guard.chat_headers.push(
+                            headers
+                                .iter()
+                                .filter_map(|(name, value)| {
+                                    value.to_str().ok().map(|value| {
+                                        (name.as_str().to_ascii_lowercase(), value.to_string())
+                                    })
+                                })
+                                .collect(),
+                        );
+                    }
                     Json(serde_json::json!({
                         "id": "chat_1",
                         "object": "chat.completion",
@@ -112,6 +128,60 @@ async fn stub_upstream(name: &'static str) -> (String, SeenLog) {
             ),
         )
         .with_state((Arc::clone(&seen), name));
+
+    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://{addr}"), seen)
+}
+
+/// A relay that rejects the native Messages endpoint exactly like the reported
+/// third-party relay, while still serving Chat Completions.
+async fn stub_dispatch_rejecting_upstream() -> (String, SeenLog) {
+    use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
+
+    let seen: SeenLog = Arc::new(Mutex::new(Seen::default()));
+    let app = Router::new()
+        .route(
+            "/v1/messages",
+            post(|| async {
+                (
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "This group does not allow /v1/messages dispatch"
+                        }
+                    })),
+                )
+            }),
+        )
+        .route(
+            "/v1/chat/completions",
+            post(
+                |State(seen): State<SeenLog>, Json(body): Json<serde_json::Value>| async move {
+                    {
+                        let mut guard = seen.lock().unwrap();
+                        guard.paths.push("/v1/chat/completions".into());
+                        guard.bodies.push(body);
+                    }
+                    Json(serde_json::json!({
+                        "id": "chat_1",
+                        "object": "chat.completion",
+                        "choices": [{
+                            "index": 0,
+                            "message": { "role": "assistant", "content": "ok" },
+                            "finish_reason": "stop"
+                        }],
+                        "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+                    }))
+                },
+            ),
+        )
+        .with_state(Arc::clone(&seen));
 
     let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
         .await
@@ -203,14 +273,152 @@ async fn each_token_reaches_its_own_upstream() {
 
     assert_eq!(
         seen_a.lock().unwrap().paths,
-        vec!["/v1/messages".to_string()],
-        "A 的上游只应收到 A 的那一个请求"
+        vec!["/v1/chat/completions".to_string()],
+        "OpenAI 上游的 Messages 请求应桥接到 Chat Completions，且只到 A 的上游"
     );
     assert_eq!(
         seen_b.lock().unwrap().paths,
-        vec!["/v1/messages".to_string()],
-        "B 的上游只应收到 B 的那一个请求"
+        vec!["/v1/chat/completions".to_string()],
+        "OpenAI 上游的 Messages 请求应桥接到 Chat Completions，且只到 B 的上游"
     );
+
+    server.stop().await;
+}
+
+/// The relay classifies by native Anthropic headers, so the bridge must present
+/// a plain Chat Completions request and keep DeepSeek V4's max reasoning level.
+#[tokio::test]
+async fn messages_bridge_strips_anthropic_headers_and_keeps_max_effort() {
+    let (url, seen) = stub_upstream("alpha").await;
+    let (mut server, base) = gateway_with(vec![route(
+        "claude-code",
+        &url,
+        TOKEN_A,
+        ResponsesMode::Auto,
+        vec![],
+    )])
+    .await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{base}/v1/messages"))
+        .bearer_auth(TOKEN_A)
+        .header("anthropic-version", "2023-06-01")
+        .header("anthropic-beta", "interleaved-thinking-2025-05-14")
+        .header("x-api-key", "client-placeholder")
+        .json(&serde_json::json!({
+            "model": "deepseek-v4.1-flash",
+            "max_tokens": 8192,
+            "thinking": { "type": "enabled", "budget_tokens": 63999 },
+            "messages": [{ "role": "user", "content": "hi" }]
+        }))
+        .send()
+        .await
+        .expect("gateway did not answer");
+
+    assert_eq!(response.status(), 200);
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.paths, vec!["/v1/chat/completions".to_string()]);
+        assert_eq!(
+            seen.bodies[0]["reasoning_effort"].as_str(),
+            Some("max"),
+            "DeepSeek V4 的 max 档位不应在桥接时被降级"
+        );
+        let headers = &seen.chat_headers[0];
+        assert!(
+            headers
+                .iter()
+                .all(|(name, _)| name != "anthropic-version" && name != "anthropic-beta"),
+            "不应把 Anthropic 特征头转发给 Chat Completions 上游：{headers:?}"
+        );
+        assert!(
+            headers.iter().all(|(name, _)| name != "x-api-key"),
+            "Chat Completions 上游不应收到 x-api-key：{headers:?}"
+        );
+    }
+
+    server.stop().await;
+}
+
+/// The route rewrite happens before Responses-to-Chat conversion, so an alias
+/// pointing at DeepSeek V4 must not lose `max` based on the client-facing name.
+#[tokio::test]
+async fn responses_route_rewrite_keeps_max_for_the_final_model() {
+    let (url, seen) = stub_upstream("alpha").await;
+    let (mut server, base) = gateway_with(vec![route(
+        "codex-cli",
+        &url,
+        TOKEN_A,
+        ResponsesMode::Bridge,
+        vec![ModelRewriteRule::exact(
+            "codex-picker-alias",
+            "deepseek-v4.1-flash",
+        )],
+    )])
+    .await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{base}/v1/responses"))
+        .bearer_auth(TOKEN_A)
+        .json(&serde_json::json!({
+            "model": "codex-picker-alias",
+            "input": "hi",
+            "reasoning": { "effort": "max" }
+        }))
+        .send()
+        .await
+        .expect("gateway did not answer");
+
+    assert_eq!(response.status(), 200);
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.paths, vec!["/v1/chat/completions".to_string()]);
+        assert_eq!(
+            seen.bodies[0]["model"].as_str(),
+            Some("deepseek-v4.1-flash")
+        );
+        assert_eq!(
+            seen.bodies[0]["reasoning_effort"].as_str(),
+            Some("max"),
+            "模型重写后应按最终模型保留 max，而不是按客户端别名降级"
+        );
+    }
+
+    server.stop().await;
+}
+
+/// Protocol detection can label a dual-protocol relay as Anthropic. The exact
+/// dispatch rejection must still fall back to Chat instead of surfacing the 403.
+#[tokio::test]
+async fn messages_dispatch_rejection_falls_back_to_chat_even_for_anthropic_routes() {
+    let (url, seen) = stub_dispatch_rejecting_upstream().await;
+    let mut rejecting_route = route("claude-code", &url, TOKEN_A, ResponsesMode::Auto, vec![]);
+    rejecting_route.upstream.protocol = "anthropic".into();
+    let (mut server, base) = gateway_with(vec![rejecting_route]).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{base}/v1/messages"))
+        .bearer_auth(TOKEN_A)
+        .json(&serde_json::json!({
+            "model": "deepseek-v4.1-flash",
+            "max_tokens": 8192,
+            "thinking": { "type": "enabled", "budget_tokens": 63999 },
+            "messages": [{ "role": "user", "content": "hi" }]
+        }))
+        .send()
+        .await
+        .expect("gateway did not answer");
+
+    assert_eq!(response.status(), 200);
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.paths, vec!["/v1/chat/completions".to_string()]);
+        assert_eq!(
+            seen.bodies[0]["reasoning_effort"].as_str(),
+            Some("max"),
+            "403 回退后仍应保留 DeepSeek V4 的 max 档位"
+        );
+    }
 
     server.stop().await;
 }

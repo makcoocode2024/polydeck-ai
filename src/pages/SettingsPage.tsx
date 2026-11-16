@@ -6,7 +6,14 @@ import { Badge } from "@/components/ui/badge";
 import { backend } from "@/services/backend";
 import { useAtom } from "jotai";
 import { themeAtom } from "@/state/theme";
-import type { DiagnosticReport, UpdateInfo, AutoLaunchStatus, ClientRuleStatus, LogEntry } from "@/domain/ops";
+import type {
+  DiagnosticReport,
+  UpdateInfo,
+  AutoLaunchStatus,
+  ClientRuleStatus,
+  AutoClientGroupingStatus,
+  LogEntry,
+} from "@/domain/ops";
 import type { ProxyStatus } from "@/domain/proxy";
 import { ClientRuleCard } from "./settings/ClientRuleCard";
 import {
@@ -27,6 +34,7 @@ import {
   Check,
   Languages,
   ShieldCheck,
+  Network,
 } from "lucide-react";
 
 export default function SettingsPage() {
@@ -54,6 +62,9 @@ export default function SettingsPage() {
   const [toolTruth, setToolTruth] = useState<ClientRuleStatus | null>(null);
   const [toolTruthError, setToolTruthError] = useState<string | null>(null);
   const [savingToolTruth, setSavingToolTruth] = useState(false);
+  const [autoGrouping, setAutoGrouping] = useState<AutoClientGroupingStatus | null>(null);
+  const [autoGroupingError, setAutoGroupingError] = useState<string | null>(null);
+  const [savingAutoGrouping, setSavingAutoGrouping] = useState(false);
 
   useEffect(() => {
     backend.getVersion().then(setVersion).catch(() => {});
@@ -88,6 +99,15 @@ export default function SettingsPage() {
       .catch((err) =>
         setToolTruthError(err instanceof Error ? err.message : String(err)),
       );
+    backend
+      .autoClientGroupingStatus()
+      .then((status) => {
+        setAutoGrouping(status);
+        setAutoGroupingError(null);
+      })
+      .catch((err) =>
+        setAutoGroupingError(err instanceof Error ? err.message : String(err)),
+      );
   }, []);
 
   const handleToggleForceChinese = async (next: boolean) => {
@@ -111,6 +131,18 @@ export default function SettingsPage() {
       setToolTruthError(err instanceof Error ? err.message : String(err));
     } finally {
       setSavingToolTruth(false);
+    }
+  };
+
+  const handleToggleAutoGrouping = async (next: boolean) => {
+    setSavingAutoGrouping(true);
+    try {
+      setAutoGrouping(await backend.setAutoClientGrouping(next));
+      setAutoGroupingError(null);
+    } catch (err) {
+      setAutoGroupingError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingAutoGrouping(false);
     }
   };
 
@@ -302,6 +334,73 @@ export default function SettingsPage() {
                     ? "禁用开机自启"
                     : "启用开机自启"}
             </Button>
+          </CardContent>
+        </Card>
+
+        <Card data-testid="auto-client-grouping-card">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Network className="h-4 w-4 text-primary" />
+                <CardTitle className="text-base font-semibold">自动按客户端分组</CardTitle>
+              </div>
+              {autoGroupingError ? (
+                <Badge variant="destructive">不可用</Badge>
+              ) : autoGrouping ? (
+                <Badge variant={autoGrouping.enabled ? "success" : "secondary"}>
+                  {autoGrouping.enabled ? "已启用" : "已关闭"}
+                </Badge>
+              ) : (
+                <Badge variant="secondary">读取中</Badge>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3 text-xs">
+            <label className="flex items-start gap-3 rounded-lg border bg-muted/30 p-3 transition-colors hover:bg-muted/50 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={autoGrouping?.enabled ?? false}
+                disabled={!autoGrouping || savingAutoGrouping}
+                onChange={(e) => handleToggleAutoGrouping(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded border-input text-primary focus:ring-primary"
+                data-testid="auto-client-grouping-toggle"
+              />
+              <div className="flex-1 space-y-0.5">
+                <div className="text-xs font-medium text-foreground">
+                  自动将 Claude Code 接入本地网关
+                </div>
+                <p className="text-2xs text-muted-foreground">
+                  开启后仅改写 Claude Code 的连接配置，并把它的
+                  <span className="font-mono"> /v1/messages </span>
+                  请求在网关内转换为 OpenAI Chat Completions，绕过中转站拒绝
+                  Messages 分组的限制。Codex CLI 和其他客户端不受影响。
+                </p>
+              </div>
+            </label>
+
+            {autoGroupingError && (
+              <p
+                className="rounded-lg border border-destructive/30 bg-destructive-surface p-3 text-2xs text-destructive"
+                data-testid="auto-client-grouping-error"
+              >
+                读取失败：{autoGroupingError}
+              </p>
+            )}
+
+            {autoGrouping?.warnings?.map((warning) => (
+              <p
+                key={warning}
+                className="rounded-lg border border-warning/30 bg-warning-surface p-3 text-2xs text-warning"
+              >
+                {warning}
+              </p>
+            ))}
+
+            <p className="text-2xs text-muted-foreground">
+              切换时会立即重写已绑定的 Claude Code 配置。已经打开的 Claude Code
+              会话需要重启后才会读取新的
+              <span className="font-mono"> ANTHROPIC_BASE_URL </span>。
+            </p>
           </CardContent>
         </Card>
 

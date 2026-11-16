@@ -19,10 +19,11 @@ use axum::{
 use bytes::Bytes;
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
+use polydeck_core::messages_chat::{chat_to_messages, messages_to_chat, MessagesStreamAdapter};
 use polydeck_core::responses_chat::{chat_to_response, responses_to_chat, StreamAdapter, ToolMap};
 use polydeck_core::responses_stream::ResponsesStreamRepair;
 use polydeck_core::types::ThinkingSupport;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::{
     convert::Infallible,
     sync::{Arc, OnceLock},
@@ -70,6 +71,9 @@ pub struct AppState {
     pub thinking_support: ThinkingSupport,
     /// Output ceiling configured for Claude Code and reflected in discovery.
     pub claude_max_output_tokens: Option<u64>,
+    /// The upstream's protocol marker (`openai`, `anthropic`, `responses`, ...).
+    /// Used to decide whether a Messages request needs the Chat bridge.
+    pub upstream_protocol: String,
     /// Compiled smart-route engine, `None` when the layer is disabled. One
     /// instance shared by every route — the config is global.
     pub smart_route: Option<Arc<SmartRouteEngine>>,
@@ -96,6 +100,19 @@ impl AppState {
                 info!("Upstream has no /v1/responses endpoint; bridging to /v1/chat/completions");
             }
         }
+    }
+
+    /// Whether Anthropic Messages requests must be translated to Chat
+    /// Completions for this upstream.
+    ///
+    /// Only an OpenAI-protocol relay is bridged. Anthropic upstreams already
+    /// speak `/v1/messages`, while Responses endpoints do not necessarily expose
+    /// `/v1/chat/completions`.
+    fn bridges_messages_to_chat(&self) -> bool {
+        matches!(
+            self.upstream_protocol.trim().to_ascii_lowercase().as_str(),
+            "openai" | "chat_completions" | "openai_chat_completions"
+        )
     }
 }
 
@@ -628,6 +645,12 @@ async fn handle_messages(
     let _guard = ConnectionGuard(&state.health);
     debug!("Processing /messages request");
     let client_model = route_model(&mut body, &state, BodyShape::Messages, true);
+    if state.bridges_messages_to_chat() {
+        return handle_bridged_messages(&state, &headers, body, client_model).await;
+    }
+    // Keep the routed request intact for the relay-specific fallback below.
+    // Thinking injection and effort sanitization mutate the native request.
+    let bridge_body = body.clone();
     inject_thinking_if_needed(
         &mut body,
         state.default_effort_level.as_deref(),
@@ -681,6 +704,13 @@ async fn handle_messages(
             is_stream,
             raw.chars().take(600).collect::<String>()
         );
+        if rejects_messages_dispatch(status, &raw) {
+            info!(
+                "Upstream rejected /v1/messages dispatch with {}; retrying through the Chat bridge",
+                status
+            );
+            return handle_bridged_messages(&state, &headers, bridge_body, client_model).await;
+        }
         return error_from_body(status, raw, is_stream);
     }
     if is_stream {
@@ -688,6 +718,191 @@ async fn handle_messages(
     } else {
         passthrough_nonstream(upstream_response, client_model).await
     }
+}
+
+/// Some OpenAI-compatible relays reject Messages requests by putting the caller
+/// into a group whose `allow_dispatch` is false. The error text is specific
+/// enough to fall back safely even when protocol detection labelled the relay
+/// as Anthropic.
+fn rejects_messages_dispatch(status: StatusCode, body: &str) -> bool {
+    if status != StatusCode::FORBIDDEN && status != StatusCode::NOT_FOUND {
+        return false;
+    }
+    let lower = body.to_ascii_lowercase();
+    lower.contains("does not allow") && lower.contains("/v1/messages") && lower.contains("dispatch")
+}
+
+/// Serve an Anthropic Messages request against an OpenAI Chat Completions
+/// upstream.
+///
+/// `client_model` is captured before the request is translated because the
+/// response must echo the model name Claude Code selected, not the relay's
+/// rewritten wire name.
+async fn handle_bridged_messages(
+    state: &AppState,
+    headers: &HeaderMap,
+    body: Value,
+    client_model: Option<String>,
+) -> Response<Body> {
+    let converted = match messages_to_chat(&body, state.default_effort_level.as_deref()) {
+        Ok(converted) => converted,
+        Err(error) => {
+            error!("Failed to convert Messages request: {}", error);
+            return json_error(StatusCode::UNPROCESSABLE_ENTITY, error.to_string());
+        }
+    };
+    for warning in &converted.warnings {
+        warn!("Messages bridge: {warning}");
+    }
+
+    let chat_body = converted.body;
+    let is_stream = converted.stream;
+    let upstream_model = chat_body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    debug!(
+        "messages bridge -> chat/completions model={} stream={}",
+        upstream_model, is_stream
+    );
+
+    let start = std::time::Instant::now();
+    let attempt = match send_upstream(state, Endpoint::ChatCompletions, headers, chat_body).await {
+        Ok(attempt) => attempt,
+        // Claude Code handles the Anthropic JSON error shape even when it asked
+        // for a stream, so do not wrap this in the Responses-specific SSE error.
+        Err(error) => return error.into_response(false),
+    };
+    if let Some(provider) = &attempt.switched_to {
+        info!("Request retried on failover provider '{}'", provider);
+    }
+    let upstream_response = attempt.response;
+    state
+        .health
+        .record_request(start.elapsed().as_millis() as u64);
+
+    if !upstream_response.status().is_success() {
+        let status = upstream_response.status();
+        let raw = upstream_response.text().await.unwrap_or_default();
+        warn!(
+            "upstream-error bridge=messages->chat status={} body={}",
+            status,
+            raw.chars().take(600).collect::<String>()
+        );
+        return error_from_body(status, raw, false);
+    }
+
+    let response_model = client_model
+        .filter(|model| !model.is_empty())
+        .unwrap_or(upstream_model);
+    if is_stream {
+        return messages_stream_from_chat(upstream_response, response_model);
+    }
+
+    let chat_response: Value = match upstream_response.json().await {
+        Ok(response) => response,
+        Err(error) => {
+            error!("Failed to parse bridged Chat response: {}", error);
+            return json_error(StatusCode::BAD_GATEWAY, "Invalid upstream response");
+        }
+    };
+    let response = match chat_to_messages(&chat_response, &response_model) {
+        Ok(response) => response,
+        Err(error) => {
+            error!("Failed to convert Chat response to Messages: {}", error);
+            return json_error(StatusCode::BAD_GATEWAY, error.to_string());
+        }
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(response.to_string()))
+        .unwrap()
+}
+
+fn messages_stream_error(message: &str) -> String {
+    format!(
+        "event: error\ndata: {}\n\n",
+        json!({
+            "type": "error",
+            "error": {
+                "type": "api_error",
+                "message": message
+            }
+        })
+    )
+}
+
+/// Translate an upstream Chat Completions SSE stream into Anthropic Messages
+/// events. The upstream is asked for a stream, so reasoning-heavy turns keep
+/// flowing instead of being buffered until completion.
+fn messages_stream_from_chat(
+    upstream_response: reqwest::Response,
+    model: String,
+) -> Response<Body> {
+    let mut adapter = MessagesStreamAdapter::new(model);
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(100);
+    for event in adapter.start() {
+        let _ = tx.try_send(Ok(Bytes::from(event)));
+    }
+    tokio::spawn(async move {
+        let mut events = upstream_response.bytes_stream().eventsource();
+        let mut truncated_reason = None;
+        loop {
+            let next_item = tokio::time::timeout(SSE_STREAM_IDLE_TIMEOUT, events.next()).await;
+            match next_item {
+                Ok(Some(Ok(event))) if event.data == "[DONE]" => break,
+                Ok(Some(Ok(event))) => match serde_json::from_str::<Value>(&event.data) {
+                    Ok(chunk) => {
+                        for converted in adapter.push_chat_chunk(&chunk) {
+                            if tx.send(Ok(Bytes::from(converted))).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        warn!("Bridged Chat chunk did not parse as JSON, skipping: {error}");
+                    }
+                },
+                Ok(Some(Err(error))) => {
+                    warn!("Bridged Messages stream read error: {error}");
+                    let _ = tx
+                        .send(Ok(Bytes::from(messages_stream_error(&format!(
+                            "Stream error: {error}"
+                        )))))
+                        .await;
+                    truncated_reason = Some("max_tokens");
+                    break;
+                }
+                Ok(None) => break,
+                Err(_elapsed) => {
+                    warn!(
+                        "Bridged Messages stream idle timeout (300s without data); closing the turn"
+                    );
+                    let _ = tx
+                        .send(Ok(Bytes::from(messages_stream_error(
+                            "Upstream SSE stream idle timeout: no data chunk received for 300s",
+                        ))))
+                        .await;
+                    truncated_reason = Some("max_tokens");
+                    break;
+                }
+            }
+        }
+        for event in adapter.finish_with_reason(truncated_reason) {
+            if tx.send(Ok(Bytes::from(event))).await.is_err() {
+                return;
+            }
+        }
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header(header::CONNECTION, "keep-alive")
+        .body(Body::from_stream(ReceiverStream::new(rx)))
+        .unwrap()
 }
 
 async fn handle_count_tokens(
@@ -699,6 +914,16 @@ async fn handle_count_tokens(
     let _guard = ConnectionGuard(&state.health);
     debug!("Processing /messages/count_tokens request");
     rewrite_model_in_place(&mut body, &state.rewriter);
+    if state.bridges_messages_to_chat() {
+        let tokens = crate::rate_limiter::estimate_tokens(&body).max(1);
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({ "input_tokens": tokens }).to_string(),
+            ))
+            .unwrap();
+    }
     match send_upstream(&state, Endpoint::CountTokens, &headers, body.clone()).await {
         Ok(attempt) => {
             if attempt.response.status().is_success() {
@@ -870,8 +1095,12 @@ async fn handle_native_responses(
 async fn handle_bridged_responses(
     state: &AppState,
     headers: &HeaderMap,
-    body: Value,
+    mut body: Value,
 ) -> Response<Body> {
+    // Route before conversion: the final upstream model decides whether
+    // `xhigh`/`max` is preserved by `responses_to_chat`. Routing afterwards
+    // would let an alias or forced model downgrade the effort first.
+    let client_model = route_model(&mut body, state, BodyShape::Responses, true);
     let converted = match responses_to_chat(&body, None) {
         Ok(c) => c,
         Err(e) => {
@@ -879,11 +1108,8 @@ async fn handle_bridged_responses(
             return json_error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string());
         }
     };
-    let mut chat_body = converted.body;
+    let chat_body = converted.body;
     let tools = converted.tools;
-    // The converted chat body carries the Responses dialect's content; the
-    // engine reads it with the ChatCompletions shape.
-    let client_model = route_model(&mut chat_body, state, BodyShape::ChatCompletions, true);
     let is_stream = chat_body
         .get("stream")
         .and_then(|s| s.as_bool())
@@ -1480,6 +1706,7 @@ mod tests {
             default_effort_level: None,
             thinking_support: ThinkingSupport::Signed,
             claude_max_output_tokens: None,
+            upstream_protocol: "anthropic".into(),
             smart_route: None,
             provider_models: vec![],
             audit: Arc::new(AuditLog::new()),
@@ -1868,7 +2095,8 @@ mod tests {
             "data": [
                 { "id": "gpt-5.6-luna" },
                 { "id": "claude-opus-5" },
-                { "id": "deepseek-v4-pro-0813" }
+                { "id": "deepseek-v4-pro-0813" },
+                { "id": "deepseek-v4.1-flash" }
             ]
         });
         let resp = synthesize_models_response(raw, ThinkingSupport::Signed, None);
@@ -1880,17 +2108,28 @@ mod tests {
             .collect();
         assert_eq!(
             ids,
-            vec!["gpt-5.6-luna", "claude-opus-5", "deepseek-v4-pro-0813"]
+            vec![
+                "gpt-5.6-luna",
+                "claude-opus-5",
+                "deepseek-v4-pro-0813",
+                "deepseek-v4.1-flash"
+            ]
         );
 
         // Every model gets capabilities with effort enabled and Anthropic page fields.
         assert_eq!(resp["has_more"], false);
         assert_eq!(resp["first_id"], "gpt-5.6-luna");
-        assert_eq!(resp["last_id"], "deepseek-v4-pro-0813");
+        assert_eq!(resp["last_id"], "deepseek-v4.1-flash");
         for m in resp["data"].as_array().unwrap() {
             assert_eq!(m["capabilities"]["effort"]["supported"], true);
-            // No `-max` id in this catalog, so the level stays off.
-            assert_eq!(m["capabilities"]["effort"]["max"]["supported"], false);
+            let id = m["id"].as_str().unwrap();
+            // DeepSeek V4 exposes max on the single model id; other models still
+            // require a matching `-max` variant before the level is offered.
+            let expected = id.starts_with("deepseek-v4");
+            assert_eq!(
+                m["capabilities"]["effort"]["max"]["supported"], expected,
+                "{id}"
+            );
         }
     }
 
@@ -1969,6 +2208,30 @@ mod tests {
         assert_eq!(
             resp["data"][0]["capabilities"]["effort"]["supported"],
             false
+        );
+    }
+
+    #[test]
+    fn synthesize_models_response_adds_max_to_deepseek_v4_existing_capabilities() {
+        let raw = serde_json::json!({
+            "data": [{
+                "id": "deepseek-v4.1-flash",
+                "capabilities": {
+                    "effort": {
+                        "supported": true,
+                        "high": { "supported": true }
+                    }
+                }
+            }]
+        });
+        let resp = synthesize_models_response(raw, ThinkingSupport::Unsigned, None);
+        assert_eq!(
+            resp["data"][0]["capabilities"]["effort"]["max"]["supported"],
+            true
+        );
+        assert_eq!(
+            resp["data"][0]["capabilities"]["effort"]["xhigh"]["supported"],
+            true
         );
     }
 

@@ -56,3 +56,13 @@ export interface ClientRuleStatus {
   enabled: boolean;
   targets: ClientRuleTarget[];
 }
+
+/** Automatic Claude Code routing through the local gateway. */
+export interface AutoClientGroupingStatus {
+  enabled: boolean;
+  /** Clients the switch currently applies to. */
+  clients: string[];
+  /** Present after a toggle; config files the backend rewrote. */
+  rewrittenClients?: string[];
+  warnings?: string[];
+}

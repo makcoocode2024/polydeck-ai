@@ -98,7 +98,8 @@ pub async fn activate_profile(
         }
 
         for client in &target_clients {
-            match write_client_config(client, &profile).await {
+            let gateway_enabled = manager.gateway_enabled_for_profile_client(client, &profile);
+            match write_client_config(client, &profile, gateway_enabled).await {
                 Ok(()) => clients_written.push(client.clone()),
                 Err(e) => {
                     warnings.push(format!("写入 {client} 配置提示：{e}"));
@@ -166,7 +167,11 @@ pub async fn deactivate_clients(
     Ok(released)
 }
 
-async fn write_client_config(client: &str, profile: &Profile) -> AppResult<()> {
+async fn write_client_config(
+    client: &str,
+    profile: &Profile,
+    gateway_enabled: bool,
+) -> AppResult<()> {
     let primary = profile
         .providers
         .iter()
@@ -177,22 +182,16 @@ async fn write_client_config(client: &str, profile: &Profile) -> AppResult<()> {
     // Normalized with the same function the bindings and the gateway's route table
     // use, so the token looked up here is the one that client authenticates with.
     let clean = crate::binding::normalize_client_id(client);
-    let auth = client_auth(&clean, &profile.id, profile.gateway_enabled)?;
+    let auth = client_auth(&clean, &profile.id, gateway_enabled)?;
 
     if clean.contains("codex") {
-        write_codex_config(primary, &auth, profile.gateway_enabled).await
+        write_codex_config(primary, &auth, gateway_enabled).await
     } else if crate::binding::is_claude_desktop(&clean) {
-        write_claude_desktop_config(primary, &auth, profile.gateway_enabled).await
+        write_claude_desktop_config(primary, &auth, gateway_enabled).await
     } else if clean.contains("claude") {
-        write_claude_config(
-            primary,
-            &profile.claude_code_params,
-            &auth,
-            profile.gateway_enabled,
-        )
-        .await
+        write_claude_config(primary, &profile.claude_code_params, &auth, gateway_enabled).await
     } else if clean.contains("hermes") {
-        write_hermes_config(primary, &auth, profile.gateway_enabled).await
+        write_hermes_config(primary, &auth, gateway_enabled).await
     } else {
         tracing::info!("客户端 {client} 暂无专用本地配置文件需要写入");
         Ok(())
@@ -1218,7 +1217,7 @@ mod tests {
 
     #[test]
     fn unknown_third_party_models_get_the_safe_three_level_ladder() {
-        for name in ["deepseek-v4-pro-0813", "qwen3.8-max", "brand-new-model"] {
+        for name in ["qwen3.8-max", "brand-new-model"] {
             let (default, levels, supports) = get_model_reasoning_config(name);
             assert!(supports, "{name}");
             assert_eq!(default, "medium", "{name}");
@@ -1229,6 +1228,30 @@ mod tests {
                 .map(|l| l["effort"].as_str().unwrap())
                 .collect();
             assert_eq!(efforts, vec!["low", "medium", "high"], "{name}");
+        }
+    }
+
+    #[test]
+    fn deepseek_v4_models_offer_the_extended_effort_ladder() {
+        for name in [
+            "deepseek-v4-pro-0813",
+            "deepseek-v4.1-flash-1017",
+            "DeepSeek_V4.1_Flash",
+        ] {
+            let (default, levels, supports) = get_model_reasoning_config(name);
+            assert!(supports, "{name}");
+            assert_eq!(default, "high", "{name}");
+            let efforts: Vec<&str> = levels
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l["effort"].as_str().unwrap())
+                .collect();
+            assert_eq!(
+                efforts,
+                vec!["low", "medium", "high", "xhigh", "max"],
+                "{name}"
+            );
         }
     }
 

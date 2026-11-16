@@ -526,6 +526,19 @@ const mockResponses: Record<string, unknown> = {
       ],
     };
   },
+  ad_auto_client_grouping_status: {
+    enabled: false,
+    clients: ["claude-code"],
+  },
+  ad_set_auto_client_grouping: (args?: Record<string, unknown>) => {
+    const enabled = Boolean(args?.enabled);
+    return {
+      enabled,
+      clients: ["claude-code"],
+      rewrittenClients: ["claude-code"],
+      warnings: [],
+    };
+  },
   // Smart route: disabled by default, so the page's toggle starts unchecked.
   ad_get_route_config: {
     enableRoute: false,

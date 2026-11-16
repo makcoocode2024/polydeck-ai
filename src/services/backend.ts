@@ -3,7 +3,14 @@ import type { DetectedClient } from "@/domain/client";
 import type { Profile, ProfileTemplate, ProbeResult, ProfileUpdate, ChatTestResult, ProtocolKind, RateLimitRecommendation, ThinkingSupport, ClientBindingView, ClientConnectionInfo, ClaudeEnvPreview, SwitchResult } from "@/domain/profile";
 import type { McpServer, ManagedSkill, PromptTemplate } from "@/domain/extensions";
 import type { ConsolidateReport, SessionSummary } from "@/domain/history";
-import type { DiagnosticReport, UpdateInfo, AutoLaunchStatus, ClientRuleStatus, LogEntry } from "@/domain/ops";
+import type {
+  DiagnosticReport,
+  UpdateInfo,
+  AutoLaunchStatus,
+  ClientRuleStatus,
+  AutoClientGroupingStatus,
+  LogEntry,
+} from "@/domain/ops";
 import type { ProxyStatus } from "@/domain/proxy";
 import type { FailoverStatus } from "@/domain/failover";
 import type { InjectStatus } from "@/domain/injection";
@@ -223,6 +230,17 @@ export const backend = {
       invalidateReads("toolTruthfulness");
       return value;
     }),
+  autoClientGroupingStatus: () =>
+    cachedRead("autoClientGrouping", () =>
+      invoke<AutoClientGroupingStatus>("ad_auto_client_grouping_status"),
+    ),
+  setAutoClientGrouping: (enabled: boolean) =>
+    invoke<AutoClientGroupingStatus>("ad_set_auto_client_grouping", { enabled }).then(
+      (value) => {
+        invalidateReads("autoClientGrouping", "profiles", "bindings", "gateway");
+        return value;
+      },
+    ),
 
   // Proxy
   detectProxy: () => invoke<ProxyStatus>("ad_detect_proxy"),

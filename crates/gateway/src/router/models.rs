@@ -13,7 +13,7 @@ use axum::{
     extract::Extension,
     http::{header, Response, StatusCode},
 };
-use polydeck_core::types::ThinkingSupport;
+use polydeck_core::types::{supports_extended_reasoning_effort, ThinkingSupport};
 use serde_json::Value;
 use std::sync::Arc;
 use tracing::debug;
@@ -143,11 +143,43 @@ pub(super) fn synthesize_models_response(
     let models: Vec<Value> = data
         .into_iter()
         .map(|mut m| {
+            let model_serves_max = m
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(supports_extended_reasoning_effort);
+            let serves_max = serves_max || model_serves_max;
             if m.get("capabilities").is_none() {
                 m["capabilities"] = synthesize_capabilities(serves_max, thinking_support);
             } else {
-                m["capabilities"]["thinking"]["supported"] =
-                    serde_json::json!(thinking_support == ThinkingSupport::Signed);
+                let capabilities = &mut m["capabilities"];
+                if !capabilities.is_object() {
+                    *capabilities = synthesize_capabilities(serves_max, thinking_support);
+                } else {
+                    if !capabilities.get("thinking").is_some_and(Value::is_object) {
+                        capabilities["thinking"] = serde_json::json!({});
+                    }
+                    capabilities["thinking"]["supported"] =
+                        serde_json::json!(thinking_support == ThinkingSupport::Signed);
+                    if model_serves_max {
+                        if !capabilities.get("effort").is_some_and(Value::is_object) {
+                            capabilities["effort"] = serde_json::json!({
+                                "supported": true,
+                                "low": { "supported": true },
+                                "medium": { "supported": true },
+                                "high": { "supported": true },
+                                "xhigh": { "supported": true },
+                                "max": { "supported": true }
+                            });
+                        } else {
+                            capabilities["effort"]["supported"] = serde_json::json!(true);
+                            capabilities["effort"]["xhigh"] = serde_json::json!({
+                                "supported": true
+                            });
+                            capabilities["effort"]["max"] =
+                                serde_json::json!({ "supported": true });
+                        }
+                    }
+                }
             }
             if !m.get("max_input_tokens").and_then(Value::as_u64).is_some() {
                 m["max_input_tokens"] = serde_json::json!(200000);

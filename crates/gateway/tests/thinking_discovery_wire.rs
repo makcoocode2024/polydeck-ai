@@ -82,7 +82,9 @@ fn route(base_url: &str, thinking_support: ThinkingSupport) -> RouteConfig {
             provider_id: Some("stub-relay".into()),
             base_url: base_url.to_string(),
             api_key: "stub-key".into(),
-            protocol: "openai".into(),
+            // This stub speaks the native Messages protocol; the OpenAI bridge
+            // is covered separately in route_by_token.rs.
+            protocol: "anthropic".into(),
             local_token: TOKEN.into(),
             max_price_per_request: None,
             responses_mode: ResponsesMode::Auto,

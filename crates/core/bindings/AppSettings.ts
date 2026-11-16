@@ -22,6 +22,16 @@ forceChineseOutput: boolean,
  */
 enforceToolTruthfulness: boolean, 
 /**
+ * Route Claude Code through the local gateway even when its bound profile
+ * is configured for direct connection.
+ *
+ * Some relays classify `/v1/messages` requests into a group that rejects
+ * dispatch. The gateway converts those requests to Chat Completions, so the
+ * client keeps working without changing the other clients on the profile.
+ * `serde(default)` keeps older state documents loadable.
+ */
+autoClientGrouping: boolean,
+/**
  * User-configurable smart routing for the gateway (model aliases,
  * category targets, keyword rules). Global: one config for all profiles.
  *
