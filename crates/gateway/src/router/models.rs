@@ -127,11 +127,19 @@ pub(super) fn synthesize_models_response(
                     capabilities["effort"] = serde_json::json!({});
                 }
                 let effort = capabilities["effort"].as_object_mut().unwrap();
+                let denied = effort
+                    .get("supported")
+                    .and_then(Value::as_bool)
+                    .is_some_and(|supported| !supported);
                 effort.entry("supported").or_insert(Value::Bool(true));
-                for level in ["low", "medium", "high", "xhigh", "max"] {
-                    effort
-                        .entry(level)
-                        .or_insert_with(|| serde_json::json!({ "supported": true }));
+                // An upstream that says effort is off means the whole ladder is
+                // unavailable; filling levels in would contradict that.
+                if !denied {
+                    for level in ["low", "medium", "high", "xhigh", "max"] {
+                        effort
+                            .entry(level)
+                            .or_insert_with(|| serde_json::json!({ "supported": true }));
+                    }
                 }
             }
             if !m.get("max_input_tokens").and_then(Value::as_u64).is_some() {
@@ -157,7 +165,13 @@ pub(super) fn synthesize_models_response(
     // Claude Code's discovery keeps only ids containing "claude" or
     // "anthropic". Relay catalogs rarely do, and the picker then shows only the
     // model already selected from settings. Keep the originals and add a
-    // discoverable alias for each foreign id.
+    // discoverable alias for each foreign id, unless the upstream already
+    // serves that exact id — a duplicate would make clients index one entry over
+    // the other.
+    let existing: std::collections::HashSet<&str> = models
+        .iter()
+        .filter_map(|model| model.get("id").and_then(Value::as_str))
+        .collect();
     let aliases: Vec<Value> = models
         .iter()
         .filter_map(|model| {
@@ -165,8 +179,12 @@ pub(super) fn synthesize_models_response(
             if is_visible_to_claude_code(id) || id.starts_with("claude-code/") {
                 return None;
             }
+            let alias_id = format!("claude-code/{id}");
+            if existing.contains(alias_id.as_str()) {
+                return None;
+            }
             let mut alias = model.clone();
-            alias["id"] = serde_json::json!(format!("claude-code/{id}"));
+            alias["id"] = serde_json::json!(alias_id);
             Some(alias)
         })
         .collect();

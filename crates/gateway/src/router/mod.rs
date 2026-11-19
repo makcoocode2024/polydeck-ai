@@ -2147,6 +2147,27 @@ mod tests {
     }
 
     #[test]
+    fn alias_is_not_added_when_the_upstream_already_serves_it() {
+        let raw = serde_json::json!({
+            "data": [
+                { "id": "glm-5.3" },
+                { "id": "claude-code/glm-5.3" }
+            ]
+        });
+        let resp = synthesize_models_response(raw, ThinkingSupport::Signed, None);
+        let ids: Vec<&str> = resp["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
+        let mut unique = ids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(ids.len(), unique.len(), "目录里出现了重复 id: {ids:?}");
+    }
+
+    #[test]
     fn synthesize_models_response_preserves_existing_capabilities() {
         let raw = serde_json::json!({
             "data": [
@@ -2166,9 +2187,9 @@ mod tests {
             serde_json::json!({"supported": false, "extra": 42})
         );
         assert_eq!(caps["effort"]["max"]["supported"], false);
-        for level in ["low", "medium", "xhigh"] {
-            assert_eq!(caps["effort"][level]["supported"], true);
-        }
+        assert!(caps["effort"].get("low").is_none());
+        assert!(caps["effort"].get("medium").is_none());
+        assert!(caps["effort"].get("xhigh").is_none());
     }
 
     #[test]

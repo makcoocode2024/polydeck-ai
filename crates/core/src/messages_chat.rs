@@ -335,8 +335,16 @@ fn budget_to_effort(budget: u64) -> Option<String> {
     }
 }
 
-fn normalize_message_effort(raw: &str, _model: &str, warnings: &mut Vec<String>) -> Option<String> {
+fn normalize_message_effort(raw: &str, model: &str, warnings: &mut Vec<String>) -> Option<String> {
     let clean = raw.trim().to_ascii_lowercase();
+    let model_lower = model.to_ascii_lowercase();
+    if model_lower.contains("reasoner") || model_lower.contains("r1") || model_lower.contains("qwq")
+    {
+        warnings.push(format!(
+            "模型 {model} 自动执行思考推理，已安全忽略 effort 参数以避免上游报错"
+        ));
+        return None;
+    }
     let effort = match clean.as_str() {
         "minimal" => "low".to_string(),
         "none" | "off" | "0" | "false" => return None,
@@ -389,7 +397,8 @@ fn effort_from_request(
         .and_then(|value| value.get("budget_tokens"))
         .and_then(Value::as_u64)
     {
-        return budget_to_effort(budget);
+        return budget_to_effort(budget)
+            .and_then(|effort| normalize_message_effort(&effort, model, warnings));
     }
 
     fallback.and_then(|effort| normalize_message_effort(effort, model, warnings))
@@ -974,6 +983,27 @@ mod tests {
         let converted = messages_to_chat(&request, None).unwrap();
         assert_eq!(converted.body["reasoning_effort"], "max");
         assert!(converted.body.get("output_config").is_none());
+    }
+
+    #[test]
+    fn auto_thinking_models_drop_budget_derived_effort() {
+        let request = json!({"model":"deepseek-r1", "messages":[], "thinking":{"type":"enabled", "budget_tokens":32768}});
+        let converted = messages_to_chat(&request, None).unwrap();
+        assert!(converted.body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn auto_thinking_models_still_drop_the_bridged_effort() {
+        let request = json!({
+            "model": "deepseek-reasoner",
+            "messages": [],
+            "output_config": { "effort": "max" }
+        });
+        let converted = messages_to_chat(&request, None).unwrap();
+        assert!(
+            converted.body.get("reasoning_effort").is_none(),
+            "自动思考模型强制自带推理，发 effort 会被上游拒绝"
+        );
     }
 
     #[test]
