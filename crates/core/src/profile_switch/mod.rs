@@ -1222,34 +1222,23 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            3
+            6
         );
         assert_eq!(list[1]["slug"], "subtoken-opus-4-6-thinking");
         assert_eq!(list[2]["slug"], "subtoken-sonnet-4-6");
 
-        // Verify Sol has 6 reasoning levels
-        let (sol_def, sol_levels, sol_supp) = get_model_reasoning_config("gpt-5.6-sol");
-        assert!(sol_supp);
-        assert_eq!(sol_def, "high");
-        assert_eq!(sol_levels.as_array().unwrap().len(), 6);
-
-        // Verify Terra has 5 reasoning levels (no max)
-        let (terra_def, terra_levels, terra_supp) = get_model_reasoning_config("gpt-5.6-terra");
-        assert!(terra_supp);
-        assert_eq!(terra_def, "high");
-        assert_eq!(terra_levels.as_array().unwrap().len(), 5);
-
-        // Verify Luna has 4 reasoning levels (no xhigh/max)
-        let (luna_def, luna_levels, luna_supp) = get_model_reasoning_config("gpt-5.6-luna");
-        assert!(luna_supp);
-        assert_eq!(luna_def, "medium");
-        assert_eq!(luna_levels.as_array().unwrap().len(), 4);
-
-        // Verify Gemini only has low, medium, high (3 levels)
-        let (gem_def, gem_levels, gem_supp) = get_model_reasoning_config("gemini-2.5-pro");
-        assert!(gem_supp);
-        assert_eq!(gem_def, "high");
-        assert_eq!(gem_levels.as_array().unwrap().len(), 3);
+        // 每个模型都是同一张六档表，不再按家族收窄。
+        for name in [
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gemini-2.5-pro",
+        ] {
+            let (default, levels, supports) = get_model_reasoning_config(name);
+            assert!(supports, "{name}");
+            assert_eq!(default, "high", "{name}");
+            assert_eq!(levels.as_array().unwrap().len(), 6, "{name}");
+        }
     }
 
     /// Codex's effort submenu hangs on an empty `supported_reasoning_levels`:
@@ -1295,31 +1284,21 @@ mod tests {
     }
 
     #[test]
-    fn unknown_third_party_models_get_the_safe_three_level_ladder() {
-        for name in ["qwen3.8-max", "brand-new-model"] {
-            let (default, levels, supports) = get_model_reasoning_config(name);
-            assert!(supports, "{name}");
-            assert_eq!(default, "medium", "{name}");
-            let efforts: Vec<&str> = levels
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|l| l["effort"].as_str().unwrap())
-                .collect();
-            assert_eq!(efforts, vec!["low", "medium", "high"], "{name}");
-        }
-    }
-
-    #[test]
-    fn deepseek_v4_models_offer_the_extended_effort_ladder() {
+    fn every_model_gets_the_same_full_six_level_ladder() {
         for name in [
+            "qwen3.8-max",
+            "brand-new-model",
+            "gpt-5.6-luna",
+            "gemini-2.5-pro",
             "deepseek-v4-pro-0813",
-            "deepseek-v4.1-flash-1017",
-            "DeepSeek_V4.1_Flash",
+            "claude-opus-5",
+            "gpt-4o",
+            "deepseek-chat",
+            "llama-3.3-70b",
         ] {
             let (default, levels, supports) = get_model_reasoning_config(name);
-            assert!(supports, "{name}");
-            assert_eq!(default, "high", "{name}");
+            assert!(supports, "{name} 必须声明支持推理摘要");
+            assert_eq!(default, "high", "{name} 的默认档必须是 high");
             let efforts: Vec<&str> = levels
                 .as_array()
                 .unwrap()
@@ -1328,24 +1307,10 @@ mod tests {
                 .collect();
             assert_eq!(
                 efforts,
-                vec!["low", "medium", "high", "xhigh", "max"],
-                "{name}"
+                vec!["none", "low", "medium", "high", "xhigh", "max"],
+                "{name} 必须拿到完整的六档表"
             );
         }
-    }
-
-    #[test]
-    fn non_reasoning_models_offer_none_rather_than_nothing() {
-        let (default, levels, supports) = get_model_reasoning_config("gpt-4o");
-        assert!(!supports, "gpt-4o must not claim reasoning summaries");
-        assert_eq!(default, "none");
-        let efforts: Vec<&str> = levels
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|l| l["effort"].as_str().unwrap())
-            .collect();
-        assert_eq!(efforts, vec!["none"]);
     }
 
     #[tokio::test]

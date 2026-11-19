@@ -8,19 +8,33 @@
 
 use std::collections::HashSet;
 
-/// The conservative effort ladder handed to models no rule recognises.
+/// The effort ladder every model is offered.
 ///
-/// An empty `supported_reasoning_levels` leaves Codex's effort submenu with
-/// nothing to select, and the menu then cannot be committed or dismissed except
-/// with Esc. Third-party relay catalogs are full of names no pattern here
-/// matches (`deepseek-v4-pro-0813`, `qwen3.8-max`), so they get low/medium/high
-/// — the subset essentially every reasoning-capable upstream accepts.
-pub(super) fn fallback_reasoning_levels() -> serde_json::Value {
+/// Codex decides the submenu from this list, not from the upstream, so the
+/// catalogue must advertise every level the user may want to send. Whether the
+/// upstream accepts a level is its own call: the gateway forwards what the user
+/// picked and lets a 400 surface rather than silently narrowing the menu.
+/// `none` stays selectable, so "no reasoning" remains reachable.
+pub(super) fn full_reasoning_levels() -> serde_json::Value {
     serde_json::json!([
+        { "effort": "none", "description": "关闭推理思考 (No reasoning)" },
         { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
         { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
-        { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" }
+        { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" },
+        { "effort": "xhigh", "description": "极限深度推理 (Extended reasoning depth for hard tasks)" },
+        { "effort": "max", "description": "最大极限推理 (Maximum reasoning budget for toughest challenges)" }
     ])
+}
+
+/// `(default, levels, supports_reasoning_summaries)` for a model.
+///
+/// One ladder for every model. Naming rules used to narrow it by family, which
+/// meant any relay model whose name no rule recognised lost `xhigh`/`max` from
+/// the menu entirely.
+pub(super) fn get_model_reasoning_config(
+    _slug: &str,
+) -> (serde_json::Value, serde_json::Value, bool) {
+    (serde_json::json!("high"), full_reasoning_levels(), true)
 }
 
 /// A model's documented token limits.
@@ -94,165 +108,6 @@ pub(super) fn model_window(slug: &str) -> Option<ModelWindow> {
 pub(super) fn codex_context_window(slug: &str, supports_1m: bool) -> i64 {
     let fallback = if supports_1m { 1_000_000 } else { 200_000 };
     model_window(slug).map(|w| w.context).unwrap_or(fallback) as i64
-}
-
-pub(super) fn get_model_reasoning_config(
-    slug: &str,
-) -> (serde_json::Value, serde_json::Value, bool) {
-    let lower = slug.to_ascii_lowercase();
-
-    // Check if explicitly non-reasoning model
-    let is_explicit_non_reasoning = lower.starts_with("gpt-4o")
-        || lower.starts_with("gpt-4-")
-        || lower.starts_with("gpt-3.5")
-        || lower.starts_with("claude-3-5")
-        || lower.starts_with("claude-3.5")
-        || lower.starts_with("claude-3-opus")
-        || lower.starts_with("claude-3-haiku")
-        || lower.starts_with("deepseek-chat")
-        || lower.starts_with("deepseek-v3")
-        || lower.starts_with("deepseek-coder")
-        || lower.starts_with("glm-4")
-        || lower.starts_with("qwen-2.5")
-        || lower.starts_with("llama");
-
-    if is_explicit_non_reasoning {
-        // Still hand Codex one selectable entry: `supported_reasoning_levels: []`
-        // leaves its effort submenu empty and the menu stops responding to
-        // anything but Esc. `none` is the honest level for these models.
-        let levels = serde_json::json!([
-            { "effort": "none", "description": "关闭推理思考 (No reasoning)" }
-        ]);
-        return (serde_json::json!("none"), levels, false);
-    }
-
-    // 1. Sol family (旗舰: 支持 none, low, medium, high, xhigh, max)
-    if lower.contains("sol") {
-        let levels = serde_json::json!([
-            { "effort": "none", "description": "关闭推理思考 (No reasoning)" },
-            { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
-            { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
-            { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" },
-            { "effort": "xhigh", "description": "极限深度推理 (Extended reasoning depth for hard tasks)" },
-            { "effort": "max", "description": "最大极限推理 (Maximum reasoning budget for toughest challenges)" }
-        ]);
-        return (serde_json::json!("high"), levels, true);
-    }
-
-    // 2. Terra family (均衡: 支持 none, low, medium, high, xhigh，不支持 max)
-    if lower.contains("terra") {
-        let levels = serde_json::json!([
-            { "effort": "none", "description": "关闭推理思考 (No reasoning)" },
-            { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
-            { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
-            { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" },
-            { "effort": "xhigh", "description": "极限深度推理 (Extended reasoning depth for hard tasks)" }
-        ]);
-        return (serde_json::json!("high"), levels, true);
-    }
-
-    // 3. Luna family (高速低成本: 支持 none, low, medium, high，不支持 xhigh/max)
-    if lower.contains("luna") {
-        let levels = serde_json::json!([
-            { "effort": "none", "description": "关闭推理思考 (No reasoning)" },
-            { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
-            { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
-            { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" }
-        ]);
-        return (serde_json::json!("medium"), levels, true);
-    }
-
-    // DeepSeek V4 exposes the extended low..max ladder as one model family.
-    // Its relay ids carry no `-max` suffix, so suffix-based inference cannot
-    // discover the level.
-    if crate::types::supports_extended_reasoning_effort(&lower) {
-        let levels = serde_json::json!([
-            { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
-            { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
-            { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" },
-            { "effort": "xhigh", "description": "极限深度推理 (Extended reasoning depth for hard tasks)" },
-            { "effort": "max", "description": "最大极限推理 (Maximum reasoning budget for toughest challenges)" }
-        ]);
-        return (serde_json::json!("high"), levels, true);
-    }
-
-    // 4. Other GPT-5 series (如 gpt-5.4, gpt-5.5)
-    if lower.starts_with("gpt-5") {
-        let levels = serde_json::json!([
-            { "effort": "none", "description": "关闭推理思考 (No reasoning)" },
-            { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
-            { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
-            { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" },
-            { "effort": "xhigh", "description": "极限深度推理 (Extended reasoning depth for hard tasks)" }
-        ]);
-        return (serde_json::json!("high"), levels, true);
-    }
-
-    // 5. Google Gemini family (只支持 low, medium, high；不支持 minimal/none/xhigh/max)
-    if lower.contains("gemini") {
-        let levels = serde_json::json!([
-            { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
-            { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
-            { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" }
-        ]);
-        return (serde_json::json!("high"), levels, true);
-    }
-
-    // 6. Claude 3.7+ / Claude 4+ / Claude 5+ / Opus / Sonnet / Extended Thinking models (支持 none, low, medium, high, xhigh, max)
-    let is_claude_thinking = lower.contains("claude-3-7")
-        || lower.contains("claude-3.7")
-        || lower.contains("claude-4")
-        || lower.contains("claude-5")
-        || lower.contains("claude-opus")
-        || lower.contains("claude-sonnet")
-        || lower.contains("sonnet-3-7")
-        || lower.contains("sonnet-3.7")
-        || lower.contains("sonnet-4")
-        || lower.contains("sonnet-5")
-        || lower.contains("opus-4")
-        || lower.contains("opus-5")
-        || lower.contains("model-s")
-        || lower.contains("model-o");
-
-    if is_claude_thinking {
-        let levels = serde_json::json!([
-            { "effort": "none", "description": "关闭推理思考 (No reasoning)" },
-            { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
-            { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
-            { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" },
-            { "effort": "xhigh", "description": "极限深度推理 (Extended reasoning depth for hard tasks)" },
-            { "effort": "max", "description": "最大极限推理 (Maximum reasoning budget for toughest challenges)" }
-        ]);
-        return (serde_json::json!("high"), levels, true);
-    }
-
-    // 7. Other reasoning patterns (o1, o3, o4, thinking, reasoner, r1, qwq)
-    let is_reasoning = lower.starts_with("o1")
-        || lower.starts_with("o3")
-        || lower.starts_with("o4")
-        || lower.contains("thinking")
-        || lower.contains("reasoner")
-        || lower.contains("reasoning")
-        || lower.contains("r1")
-        || lower.contains("qwq");
-
-    if is_reasoning {
-        let levels = serde_json::json!([
-            { "effort": "low", "description": "快速轻度推理 (Fast responses with lighter reasoning)" },
-            { "effort": "medium", "description": "平衡推理模式 (Balances speed and reasoning depth)" },
-            { "effort": "high", "description": "深度复杂推理 (Greater reasoning depth for complex problems)" },
-            { "effort": "xhigh", "description": "极限深度推理 (Extended reasoning depth for hard tasks)" }
-        ]);
-        (serde_json::json!("high"), levels, true)
-    } else {
-        // Unrecognised name: assume a reasoning model with the safe three-level
-        // ladder rather than declaring no levels, which hangs Codex's menu.
-        (
-            serde_json::json!("medium"),
-            fallback_reasoning_levels(),
-            true,
-        )
-    }
 }
 
 pub fn build_codex_catalog(
