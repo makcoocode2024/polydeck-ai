@@ -35,12 +35,9 @@
 - **Auto / Native / Bridge 三重模式**：优先直通原生协议；遇到不支持端点时毫秒级无缝降级为桥接模式，客户端零感知。
 
 #### 2. ⚡ 模型推理等级与硬件档位全自动动态适配
-- **GPT-5.6 硬件档位与 Effort 匹配**：
- - Sol（旗舰档）：支持全档位推理努力（
-one / low / medium / high / xhigh / max）。
- - Terra（均衡档）：动态自适应最高至 xhigh，防止越界 400 报错。
- - Luna（极速低成本档）：最高自适应至 high。
-- **Gemini Thinking 预算自适应**：智能将 Minimal / Low / Medium / High 映射为符合 Google API 规范的 hinkingBudget 与配置，杜绝 Thinking level MINIMAL is not supported 报错。
+- **全模型统一思考档位**：`none / low / medium / high / xhigh / max` 六档对所有模型开放，
+  不再按模型家族收窄。档位原样透传给上游，由上游决定是否接受；不支持的模型会返回上游
+  自身的错误，网关不做静默降级。
 - **DeepSeek & QwQ & Claude 3.7+ 深度思考适配**：自动探测并适配 
 easoning_content、 hinking 参数与预算。
 

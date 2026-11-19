@@ -5,8 +5,6 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::types::supports_extended_reasoning_effort;
-
 #[derive(Debug, Error)]
 pub enum AdapterError {
     #[error("Responses 请求缺少 model")]
@@ -421,8 +419,7 @@ pub fn responses_to_chat(
     if let Some(effort) = request.pointer("/reasoning/effort").and_then(Value::as_str) {
         let model_lower = model.to_ascii_lowercase();
         let effort_clean = effort.trim().to_ascii_lowercase();
-        // Auto-thinking DeepSeek reasoner variants and QwQ drop the field; the
-        // plain DeepSeek chat models accept low/medium/high/xhigh/max.
+        // All non-auto-thinking models pass the selected effort verbatim.
         if model_lower.contains("reasoner")
             || model_lower.contains("r1")
             || model_lower.contains("qwq")
@@ -430,48 +427,17 @@ pub fn responses_to_chat(
             warnings.push(format!(
                 "模型 {model} 自动执行思考推理，已安全忽略 reasoning_effort 参数以避免上游报错"
             ));
-        } else if model_lower.contains("gemini") {
-            if effort_clean == "minimal" {
-                body.insert("reasoning_effort".into(), Value::String("low".into()));
-                warnings.push("Gemini 不支持 minimal 推理档位，已自动平滑提升为 low".into());
-            } else if matches!(effort_clean.as_str(), "xhigh" | "max") {
-                body.insert("reasoning_effort".into(), Value::String("high".into()));
-                warnings.push(format!(
-                    "Gemini 不支持 {effort} 推理档位，已自动降级为 high"
-                ));
-            } else if matches!(effort_clean.as_str(), "low" | "medium" | "high") {
-                body.insert("reasoning_effort".into(), Value::String(effort_clean));
-            } else {
-                warnings.push(format!("Gemini 忽略未知/关闭推理档位 effort={effort}"));
-            }
-        } else {
-            // DeepSeek V4 models accept the full low..max range, so pass the
-            // extended levels through instead of clamping to high. Match the
-            // same family rule the catalog and Messages bridge use.
-            let supports_extended = supports_extended_reasoning_effort(model);
-            if effort_clean == "minimal" {
-                body.insert("reasoning_effort".into(), Value::String("low".into()));
-                warnings.push("Chat 后端不支持 minimal 推理档位，已自动平滑映射为 low".into());
-            // Levels this upstream takes verbatim: low..high everywhere, plus
-            // xhigh/max on DeepSeek, which accepts the extended range. Kept as
-            // one arm because the action is the same; the `xhigh`/`max` arm
-            // below then only sees upstreams that need the downgrade.
-            } else if matches!(effort_clean.as_str(), "low" | "medium" | "high")
-                || (supports_extended && matches!(effort_clean.as_str(), "xhigh" | "max"))
-            {
-                body.insert("reasoning_effort".into(), Value::String(effort_clean));
-            } else if matches!(effort_clean.as_str(), "xhigh" | "max") {
-                body.insert("reasoning_effort".into(), Value::String("high".into()));
-                warnings.push(format!(
-                    "Chat 后端不支持 Responses reasoning effort={effort}，已降级为 high"
-                ));
-            } else if effort_clean == "none" {
-                // none: do not inject
-            } else {
-                warnings.push(format!(
-                    "Chat 后端不支持 Responses reasoning effort={effort}，已省略该字段"
-                ));
-            }
+        } else if effort_clean == "minimal" {
+            body.insert("reasoning_effort".into(), Value::String("low".into()));
+        } else if matches!(
+            effort_clean.as_str(),
+            "low" | "medium" | "high" | "xhigh" | "max"
+        ) {
+            body.insert("reasoning_effort".into(), Value::String(effort_clean));
+        } else if effort_clean != "none" {
+            warnings.push(format!(
+                "Chat 后端不支持 Responses reasoning effort={effort}，已省略该字段"
+            ));
         }
     }
     if let Some(format) = request.pointer("/text/format") {
@@ -1033,16 +999,13 @@ mod tests {
     }
 
     #[test]
-    fn downgrades_extended_reasoning_effort_for_chat_backends() {
+    fn passes_extended_reasoning_effort_through_to_chat_backends() {
         let request = json!({
             "model": "dynamic-model", "input": "x", "reasoning": { "effort": "xhigh" }
         });
         let converted = responses_to_chat(&request, None).unwrap();
-        assert_eq!(converted.body["reasoning_effort"], "high");
-        assert!(converted
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("xhigh")));
+        assert_eq!(converted.body["reasoning_effort"], "xhigh");
+        assert!(!converted.warnings.iter().any(|w| w.contains("降级")));
     }
 
     #[test]
@@ -1387,6 +1350,12 @@ mod tests {
         let c_gemini = responses_to_chat(&req_gemini, None).unwrap();
         assert_eq!(c_gemini.body["reasoning_effort"], "low");
 
+        let req_gemini_max = json!({
+            "model": "gemini-2.5-pro", "input": "x", "reasoning": { "effort": "max" }
+        });
+        let c_gemini_max = responses_to_chat(&req_gemini_max, None).unwrap();
+        assert_eq!(c_gemini_max.body["reasoning_effort"], "max");
+
         // DeepSeek R1 -> omits reasoning_effort
         let req_ds = json!({
             "model": "deepseek-reasoner", "input": "x", "reasoning": { "effort": "high" }
@@ -1394,12 +1363,12 @@ mod tests {
         let c_ds = responses_to_chat(&req_ds, None).unwrap();
         assert!(c_ds.body.get("reasoning_effort").is_none());
 
-        // Generic chat backend xhigh -> high
+        // Chat backend also receives xhigh unchanged.
         let req_gen = json!({
             "model": "gpt-5.6-sol", "input": "x", "reasoning": { "effort": "xhigh" }
         });
         let c_gen = responses_to_chat(&req_gen, None).unwrap();
-        assert_eq!(c_gen.body["reasoning_effort"], "high");
+        assert_eq!(c_gen.body["reasoning_effort"], "xhigh");
 
         // Plain DeepSeek V4 keeps xhigh/max (upstream accepts the full range).
         let req_dsv4 = json!({
@@ -1414,11 +1383,11 @@ mod tests {
         let c_dsv4_max = responses_to_chat(&req_dsv4_max, None).unwrap();
         assert_eq!(c_dsv4_max.body["reasoning_effort"], "max");
 
-        // A non-V4 DeepSeek model still needs the conservative clamp.
+        // A non-V4 DeepSeek model also keeps the selected level.
         let req_ds_old = json!({
             "model": "deepseek-v3.2", "input": "x", "reasoning": { "effort": "max" }
         });
         let c_ds_old = responses_to_chat(&req_ds_old, None).unwrap();
-        assert_eq!(c_ds_old.body["reasoning_effort"], "high");
+        assert_eq!(c_ds_old.body["reasoning_effort"], "max");
     }
 }

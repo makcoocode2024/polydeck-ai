@@ -45,7 +45,7 @@ pub use smart_route::{
 use effort::{inject_max_price, normalize_effort, sanitize_messages_effort};
 use models::handle_models;
 #[cfg(test)]
-use models::{synthesize_models_response, upstream_serves_max_effort};
+use models::synthesize_models_response;
 #[cfg(test)]
 use polydeck_core::messages_stream::MessagesStreamRepair;
 use respond::{error_from_body, json_error, passthrough_error, response_with_body, sse_error};
@@ -2126,14 +2126,9 @@ mod tests {
         assert_eq!(resp["last_id"], "claude-code/deepseek-v4.1-flash");
         for m in resp["data"].as_array().unwrap() {
             assert_eq!(m["capabilities"]["effort"]["supported"], true);
-            let id = m["id"].as_str().unwrap();
-            // DeepSeek V4 exposes max on the single model id; other models still
-            // require a matching `-max` variant before the level is offered.
-            let expected = id.starts_with("deepseek-v4") || id.contains("/deepseek-v4");
-            assert_eq!(
-                m["capabilities"]["effort"]["max"]["supported"], expected,
-                "{id}"
-            );
+            for level in ["low", "medium", "high", "xhigh", "max"] {
+                assert_eq!(m["capabilities"]["effort"][level]["supported"], true);
+            }
         }
 
         // The alias must keep the upstream display name, which is what Claude
@@ -2151,75 +2146,11 @@ mod tests {
         assert!(!ids.contains(&"claude-code/claude-opus-5"));
     }
 
-    /// A relay that exposes `max` as its own model id does serve the level, so
-    /// the picker must offer it. Hard-coding it off hid the level from exactly
-    /// the upstreams that have it.
-    #[test]
-    fn max_effort_offered_when_upstream_advertises_a_max_model() {
-        let raw = serde_json::json!({
-            "data": [
-                { "id": "claude-opus-5" },
-                { "id": "claude-opus-5-max" },
-                { "id": "model-T" }
-            ]
-        });
-        let resp = synthesize_models_response(raw, ThinkingSupport::Signed, Some(262_144));
-        for m in resp["data"].as_array().unwrap() {
-            assert_eq!(m["capabilities"]["effort"]["max"]["supported"], true);
-            assert_eq!(m["capabilities"]["effort"]["xhigh"]["supported"], true);
-        }
-    }
-
-    fn ids_to_data(ids: &[&str]) -> Vec<Value> {
-        ids.iter()
-            .map(|id| serde_json::json!({ "id": id }))
-            .collect()
-    }
-
-    #[test]
-    fn max_effort_detection_spans_suffix_spellings() {
-        // The separator and any trailing context marker must not hide the pair.
-        for ids in [
-            ["claude-opus-5", "claude-opus-5-max"],
-            ["claude-opus-5", "claude-opus-5_max"],
-            ["claude-opus-5", "claude-opus-5:max"],
-            ["claude-opus-5", "claude-opus-5-max[1m]"],
-            ["claude-opus-5[1m]", "claude-opus-5-max"],
-            ["CLAUDE-OPUS-5", "Claude-Opus-5-MAX"],
-        ] {
-            assert!(
-                upstream_serves_max_effort(&ids_to_data(&ids)),
-                "{ids:?} advertises a max variant of an advertised base"
-            );
-        }
-    }
-
-    #[test]
-    fn max_effort_not_inferred_from_product_names() {
-        // `max` as part of a model tier's own name is not an effort level, and
-        // offering it would only produce requests the upstream rejects.
-        for ids in [
-            vec!["qwen-max", "qwen-plus"],
-            vec!["kimi-max", "kimi-k2"],
-            vec!["glm-4-max", "glm-4-air"],
-            vec!["gpt-maxi", "gpt"],
-            // No base model advertised alongside it.
-            vec!["claude-opus-5-max"],
-            // Nothing resembling max at all.
-            vec!["claude-opus-5", "claude-opus-5-xhigh"],
-        ] {
-            assert!(
-                !upstream_serves_max_effort(&ids_to_data(&ids)),
-                "{ids:?} carries no evidence of a max effort level"
-            );
-        }
-    }
-
     #[test]
     fn synthesize_models_response_preserves_existing_capabilities() {
         let raw = serde_json::json!({
             "data": [
-                { "id": "m1", "capabilities": { "effort": { "supported": false } } }
+                { "id": "m1", "capabilities": { "thinking": { "supported": false }, "custom": { "supported": false }, "effort": { "supported": false, "high": { "supported": false, "extra": 42 }, "max": { "supported": false } } } }
             ]
         });
         let resp = synthesize_models_response(raw, ThinkingSupport::Signed, None);
@@ -2227,6 +2158,17 @@ mod tests {
             resp["data"][0]["capabilities"]["effort"]["supported"],
             false
         );
+        let caps = &resp["data"][0]["capabilities"];
+        assert_eq!(caps["custom"]["supported"], false);
+        assert_eq!(caps["thinking"]["supported"], true);
+        assert_eq!(
+            caps["effort"]["high"],
+            serde_json::json!({"supported": false, "extra": 42})
+        );
+        assert_eq!(caps["effort"]["max"]["supported"], false);
+        for level in ["low", "medium", "xhigh"] {
+            assert_eq!(caps["effort"][level]["supported"], true);
+        }
     }
 
     #[test]

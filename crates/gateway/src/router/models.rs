@@ -1,9 +1,7 @@
 //! The `/v1/models` handler and the catalogue it synthesizes.
 //!
 //! An upstream model list says which ids exist but not which reasoning efforts
-//! they accept, so the gateway adds a `capabilities` block. Whether `max` is
-//! offered is inferred from the ids themselves; see `upstream_serves_max_effort`
-//! for why the inference requires a matching base model.
+//! they accept, so the gateway adds missing capability metadata.
 
 use super::passthrough_verbatim;
 use super::respond::json_error;
@@ -13,7 +11,7 @@ use axum::{
     extract::Extension,
     http::{header, Response, StatusCode},
 };
-use polydeck_core::types::{supports_extended_reasoning_effort, ThinkingSupport};
+use polydeck_core::types::ThinkingSupport;
 use serde_json::Value;
 use std::sync::Arc;
 use tracing::debug;
@@ -47,49 +45,13 @@ pub(super) async fn handle_models(Extension(state): Extension<Arc<AppState>>) ->
         .unwrap()
 }
 
-/// Separators relays put between a model name and an effort suffix.
-const EFFORT_SUFFIX_SEPARATORS: [char; 3] = ['-', '_', ':'];
-
-/// Whether this upstream deals in `max` effort at all.
-///
-/// Relays that serve the level expose it as its own model id, so the signal is a
-/// `…-max` id **whose base model is also advertised** — `claude-opus-5` next to
-/// `claude-opus-5-max` means the suffix selects an effort level. Requiring the
-/// pair is what separates that from a product name: `qwen-max` and `glm-4-max`
-/// end the same way but are model tiers, and offering `max` there would only
-/// produce requests the upstream rejects.
-///
-/// Asked per response rather than assumed, because most upstreams have no `max`.
-pub(super) fn upstream_serves_max_effort(data: &[Value]) -> bool {
-    let ids: Vec<String> = data
-        .iter()
-        .filter_map(|m| m.get("id").and_then(Value::as_str))
-        .map(|id| id.trim().to_ascii_lowercase())
-        .collect();
-
-    // A context marker such as `[1m]` sits outside the effort suffix, so compare
-    // on the part before it: a relay may advertise only `claude-opus-5-max[1m]`.
-    let core = |id: &str| id.split('[').next().unwrap_or(id).to_string();
-
-    ids.iter().any(|id| {
-        EFFORT_SUFFIX_SEPARATORS.iter().any(|sep| {
-            core(id)
-                .strip_suffix(&format!("{sep}max"))
-                .is_some_and(|base| !base.is_empty() && ids.iter().any(|other| core(other) == base))
-        })
-    })
-}
-
 /// Default capability blob for models that carry no capability metadata.
 ///
 /// Claude Code decides whether a model gets an effort picker from
 /// `capabilities.effort.supported`, not from the model name, so third-party
 /// names (gpt-5.6-luna, deepseek-v4-pro-0813) need this synthesized or the
 /// picker never appears.
-pub(super) fn synthesize_capabilities(
-    serves_max: bool,
-    thinking_support: ThinkingSupport,
-) -> Value {
+pub(super) fn synthesize_capabilities(thinking_support: ThinkingSupport) -> Value {
     serde_json::json!({
         "effort": {
             "supported": true,
@@ -97,7 +59,7 @@ pub(super) fn synthesize_capabilities(
             "medium": {"supported": true},
             "high": {"supported": true},
             "xhigh": {"supported": true},
-            "max": {"supported": serves_max}
+            "max": {"supported": true}
         },
         "thinking": {
             "supported": thinking_support == ThinkingSupport::Signed,
@@ -147,46 +109,29 @@ pub(super) fn synthesize_models_response(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let serves_max = upstream_serves_max_effort(&data);
     let mut models: Vec<Value> = data
         .into_iter()
         .map(|mut m| {
-            let model_serves_max = m
-                .get("id")
-                .and_then(Value::as_str)
-                .is_some_and(supports_extended_reasoning_effort);
-            let serves_max = serves_max || model_serves_max;
-            if m.get("capabilities").is_none() {
-                m["capabilities"] = synthesize_capabilities(serves_max, thinking_support);
+            if !m.get("capabilities").is_some_and(Value::is_object) {
+                m["capabilities"] = synthesize_capabilities(thinking_support);
             } else {
                 let capabilities = &mut m["capabilities"];
-                if !capabilities.is_object() {
-                    *capabilities = synthesize_capabilities(serves_max, thinking_support);
-                } else {
-                    if !capabilities.get("thinking").is_some_and(Value::is_object) {
-                        capabilities["thinking"] = serde_json::json!({});
-                    }
-                    capabilities["thinking"]["supported"] =
-                        serde_json::json!(thinking_support == ThinkingSupport::Signed);
-                    if model_serves_max {
-                        if !capabilities.get("effort").is_some_and(Value::is_object) {
-                            capabilities["effort"] = serde_json::json!({
-                                "supported": true,
-                                "low": { "supported": true },
-                                "medium": { "supported": true },
-                                "high": { "supported": true },
-                                "xhigh": { "supported": true },
-                                "max": { "supported": true }
-                            });
-                        } else {
-                            capabilities["effort"]["supported"] = serde_json::json!(true);
-                            capabilities["effort"]["xhigh"] = serde_json::json!({
-                                "supported": true
-                            });
-                            capabilities["effort"]["max"] =
-                                serde_json::json!({ "supported": true });
-                        }
-                    }
+                if !capabilities.get("thinking").is_some_and(Value::is_object) {
+                    capabilities["thinking"] = serde_json::json!({});
+                }
+                capabilities["thinking"].as_object_mut().unwrap().insert(
+                    "supported".to_string(),
+                    Value::Bool(thinking_support == ThinkingSupport::Signed),
+                );
+                if !capabilities.get("effort").is_some_and(Value::is_object) {
+                    capabilities["effort"] = serde_json::json!({});
+                }
+                let effort = capabilities["effort"].as_object_mut().unwrap();
+                effort.entry("supported").or_insert(Value::Bool(true));
+                for level in ["low", "medium", "high", "xhigh", "max"] {
+                    effort
+                        .entry(level)
+                        .or_insert_with(|| serde_json::json!({ "supported": true }));
                 }
             }
             if !m.get("max_input_tokens").and_then(Value::as_u64).is_some() {

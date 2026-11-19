@@ -726,6 +726,14 @@ async fn write_claude_config(
             "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY".into(),
             serde_json::Value::String(if gateway_enabled { "1" } else { "0" }.into()),
         );
+        if gateway_enabled {
+            env_obj.insert(
+                "CLAUDE_CODE_MODEL_CAPABILITIES".into(),
+                serde_json::Value::String("*=effort,max_effort,xhigh_effort".into()),
+            );
+        } else {
+            env_obj.remove("CLAUDE_CODE_MODEL_CAPABILITIES");
+        }
         // `unset` is the client-documented sentinel meaning "this env does not
         // own effort" — Claude Code resolves it to null and lets the session's
         // own level (picker, /effort, settings) stand. Any concrete value here
@@ -2183,6 +2191,32 @@ mod tests {
             parsed["env"]["CLAUDE_CODE_EFFORT_LEVEL"].as_str(),
             Some("unset")
         );
+    }
+
+    #[tokio::test]
+    async fn claude_env_forces_full_effort_capabilities_behind_the_gateway() {
+        let _guard = lock_home_env();
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("AI_DECK_HOME_OVERRIDE", home.path());
+        let provider = agnes_like_provider(vec!["glm-5.3".into()], "glm-5.3");
+        let path = home.path().join(".claude/settings.json");
+        write_claude_config(&provider, &Default::default(), "token", true)
+            .await
+            .unwrap();
+        let settings: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            settings["env"]["CLAUDE_CODE_MODEL_CAPABILITIES"],
+            "*=effort,max_effort,xhigh_effort"
+        );
+        write_claude_config(&provider, &Default::default(), "token", false)
+            .await
+            .unwrap();
+        let settings: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(settings["env"]
+            .get("CLAUDE_CODE_MODEL_CAPABILITIES")
+            .is_none());
     }
 
     #[tokio::test]

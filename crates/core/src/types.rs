@@ -70,16 +70,6 @@ impl ProtocolKind {
     }
 }
 
-/// Whether a model is known to accept the extended `xhigh` / `max` effort pair.
-///
-/// This is a model-family fact, not a suffix guess: `qwen-max`, `glm-4-max`,
-/// and `kimi-max` are product names, while DeepSeek V4 exposes `max` as a real
-/// reasoning level without advertising a separate `-max` model id.
-pub fn supports_extended_reasoning_effort(model: &str) -> bool {
-    let normalized = model.trim().to_ascii_lowercase().replace('_', "-");
-    normalized.contains("deepseek-v4")
-}
-
 /// Reasoning confidence level (4-tier from AI Deck).
 ///
 /// This scale is an OpenAI-protocol signal: every level is set by probing

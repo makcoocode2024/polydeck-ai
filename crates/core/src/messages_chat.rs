@@ -11,7 +11,6 @@ use serde_json::{json, Map, Value};
 use thiserror::Error;
 use uuid::Uuid;
 
-
 #[derive(Debug, Error)]
 pub enum MessagesAdapterError {
     #[error("Messages 请求缺少 model")]
@@ -375,6 +374,11 @@ fn effort_from_request(
         .or_else(|| {
             thinking
                 .and_then(|value| value.get("effort"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            request
+                .pointer("/output_config/effort")
                 .and_then(Value::as_str)
         })
     {
@@ -962,6 +966,14 @@ mod tests {
         assert_eq!(body["stop"][0], "END");
         assert_eq!(body["reasoning_effort"], "max");
         assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn output_config_effort_reaches_chat() {
+        let request = json!({"model":"glm-5.3", "messages":[], "output_config":{"effort":"max"}});
+        let converted = messages_to_chat(&request, None).unwrap();
+        assert_eq!(converted.body["reasoning_effort"], "max");
+        assert!(converted.body.get("output_config").is_none());
     }
 
     #[test]
