@@ -11,7 +11,6 @@ use serde_json::{json, Map, Value};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::types::supports_extended_reasoning_effort;
 
 #[derive(Debug, Error)]
 pub enum MessagesAdapterError {
@@ -337,17 +336,13 @@ fn budget_to_effort(budget: u64) -> Option<String> {
     }
 }
 
-fn normalize_message_effort(raw: &str, model: &str, warnings: &mut Vec<String>) -> Option<String> {
+fn normalize_message_effort(raw: &str, _model: &str, warnings: &mut Vec<String>) -> Option<String> {
     let clean = raw.trim().to_ascii_lowercase();
     let effort = match clean.as_str() {
         "minimal" => "low".to_string(),
         "none" | "off" | "0" | "false" => return None,
-        "low" | "medium" | "high" => clean,
-        "xhigh" | "max" if supports_extended_reasoning_effort(model) => clean,
-        "xhigh" | "max" => {
-            warnings.push(format!("模型 {model} 不支持 effort={clean}，已降级为 high"));
-            "high".to_string()
-        }
+        // Every level travels verbatim; the upstream decides whether it takes it.
+        "low" | "medium" | "high" | "xhigh" | "max" => clean,
         numeric => match numeric.parse::<u64>().ok().and_then(budget_to_effort) {
             Some(effort) => effort,
             None => {
@@ -390,18 +385,7 @@ fn effort_from_request(
         .and_then(|value| value.get("budget_tokens"))
         .and_then(Value::as_u64)
     {
-        return budget_to_effort(budget).map(|effort| {
-            if matches!(effort.as_str(), "xhigh" | "max")
-                && !supports_extended_reasoning_effort(model)
-            {
-                warnings.push(format!(
-                    "模型 {model} 不支持 thinking budget 对应的 {effort}，已降级为 high"
-                ));
-                "high".to_string()
-            } else {
-                effort
-            }
-        });
+        return budget_to_effort(budget);
     }
 
     fallback.and_then(|effort| normalize_message_effort(effort, model, warnings))
@@ -981,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn clamps_extended_effort_for_models_that_do_not_support_it() {
+    fn passes_extended_effort_through_without_clamping() {
         let request = json!({
             "model": "plain-model",
             "max_tokens": 1024,
@@ -989,11 +973,14 @@ mod tests {
             "messages": [{ "role": "user", "content": "hi" }]
         });
         let converted = messages_to_chat(&request, None).unwrap();
-        assert_eq!(converted.body["reasoning_effort"], "high");
-        assert!(converted
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("降级")));
+        assert_eq!(
+            converted.body["reasoning_effort"], "max",
+            "深档必须原样透传，由上游决定接不接受"
+        );
+        assert!(
+            !converted.warnings.iter().any(|w| w.contains("降级")),
+            "透传路径不该产生降级警告"
+        );
     }
 
     #[test]
