@@ -245,3 +245,67 @@ async fn client_thinking_passes_through_to_a_signed_upstream() {
 
     server.stop().await;
 }
+
+/// Claude Code 2.1.x keeps only ids containing `claude` or `anthropic` from
+/// gateway discovery. A relay catalog of `glm-*` / `deepseek-*` names must still
+/// reach the picker, so the gateway advertises a discoverable alias without
+/// hiding the real id from OpenAI-shaped clients.
+#[tokio::test]
+async fn foreign_model_ids_get_a_claude_code_discoverable_alias() {
+    let (upstream_url, _seen) = stub_upstream().await;
+    let (mut server, base) = gateway_with(route(&upstream_url, ThinkingSupport::Unprobed)).await;
+
+    let models = fetch_models(&base).await;
+    let data = models["data"].as_array().unwrap();
+    let original = data
+        .iter()
+        .find(|m| m["id"] == "glm-5.3-flash")
+        .expect("原始 id 必须保留给 Codex/OpenAI 客户端");
+    let alias = data
+        .iter()
+        .find(|m| m["id"] == "claude-code/glm-5.3-flash")
+        .expect("非 Claude 模型必须有一个可被 Claude Code 发现的别名");
+
+    assert_eq!(original["display_name"], "glm-5.3-flash");
+    assert_eq!(
+        alias["display_name"], "glm-5.3-flash",
+        "别名在 picker 中必须显示真实模型名，不能显示 claude-code/ 前缀"
+    );
+
+    server.stop().await;
+}
+
+/// Choosing an alias in the picker must still send the upstream's real model
+/// name; the prefix exists only for discovery.
+#[tokio::test]
+async fn claude_code_alias_routes_to_the_bare_upstream_model() {
+    let (upstream_url, seen) = stub_upstream().await;
+    let (mut server, base) = gateway_with(route(&upstream_url, ThinkingSupport::Unprobed)).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{base}/v1/messages"))
+        .bearer_auth(TOKEN)
+        .json(&json!({
+            "model": "claude-code/glm-5.3-flash",
+            "max_tokens": 128,
+            "messages": [{ "role": "user", "content": "hi" }]
+        }))
+        .send()
+        .await
+        .expect("gateway did not answer /v1/messages");
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.json::<Value>().await.unwrap()["model"],
+        "claude-code/glm-5.3-flash",
+        "响应必须回显客户端选择的 picker id"
+    );
+
+    let bodies = seen.lock().unwrap().message_bodies.clone();
+    assert_eq!(bodies.len(), 1);
+    assert_eq!(
+        bodies[0]["model"], "glm-5.3-flash",
+        "转发上游前必须剥掉 claude-code/ 前缀"
+    );
+
+    server.stop().await;
+}

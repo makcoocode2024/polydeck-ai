@@ -2086,11 +2086,12 @@ mod tests {
         assert!(body4["reasoning"].get("effort").is_none());
     }
 
-    /// Ids reach the picker verbatim. Namespacing third-party names under
-    /// `claude-code/` made Claude Code drop them from the picker entirely, so a
-    /// catalog of 7 offered only the 3 already named `claude-*`.
+    /// Original ids stay addressable for Codex/OpenAI clients. Claude Code's
+    /// discovery only keeps ids containing `claude` or `anthropic`, so each
+    /// foreign id also gets a `claude-code/` alias that carries the real
+    /// display name into the picker.
     #[test]
-    fn synthesize_models_response_passes_ids_through_verbatim() {
+    fn synthesize_models_response_adds_claude_visible_aliases() {
         let raw = serde_json::json!({
             "data": [
                 { "id": "gpt-5.6-luna" },
@@ -2112,25 +2113,42 @@ mod tests {
                 "gpt-5.6-luna",
                 "claude-opus-5",
                 "deepseek-v4-pro-0813",
-                "deepseek-v4.1-flash"
+                "deepseek-v4.1-flash",
+                "claude-code/gpt-5.6-luna",
+                "claude-code/deepseek-v4-pro-0813",
+                "claude-code/deepseek-v4.1-flash"
             ]
         );
 
         // Every model gets capabilities with effort enabled and Anthropic page fields.
         assert_eq!(resp["has_more"], false);
         assert_eq!(resp["first_id"], "gpt-5.6-luna");
-        assert_eq!(resp["last_id"], "deepseek-v4.1-flash");
+        assert_eq!(resp["last_id"], "claude-code/deepseek-v4.1-flash");
         for m in resp["data"].as_array().unwrap() {
             assert_eq!(m["capabilities"]["effort"]["supported"], true);
             let id = m["id"].as_str().unwrap();
             // DeepSeek V4 exposes max on the single model id; other models still
             // require a matching `-max` variant before the level is offered.
-            let expected = id.starts_with("deepseek-v4");
+            let expected = id.starts_with("deepseek-v4") || id.contains("/deepseek-v4");
             assert_eq!(
                 m["capabilities"]["effort"]["max"]["supported"], expected,
                 "{id}"
             );
         }
+
+        // The alias must keep the upstream display name, which is what Claude
+        // Code renders in the picker; the `claude-code/` prefix is only the
+        // discoverable wire id.
+        let alias = resp["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == "claude-code/gpt-5.6-luna")
+            .expect("foreign model should have a Claude Code visible alias");
+        assert_eq!(alias["display_name"], "gpt-5.6-luna");
+
+        // A name already visible to Claude Code must not be duplicated.
+        assert!(!ids.contains(&"claude-code/claude-opus-5"));
     }
 
     /// A relay that exposes `max` as its own model id does serve the level, so

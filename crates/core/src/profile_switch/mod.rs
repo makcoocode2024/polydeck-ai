@@ -6,6 +6,9 @@ use crate::error::{AppError, AppResult};
 use crate::profile::{Profile, ProfileManager};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::time::Duration;
 use ts_rs::TS;
 
 /// Loopback port the built-in gateway listens on.
@@ -233,7 +236,6 @@ async fn write_codex_config(
     let codex_dir = home.join(".codex");
     std::fs::create_dir_all(&codex_dir)?;
     let config_path = codex_dir.join("config.toml");
-
     // Read existing config or create new
     let mut doc = if config_path.exists() {
         let content = std::fs::read_to_string(&config_path)?;
@@ -341,7 +343,84 @@ async fn write_codex_config(
         std::fs::create_dir_all(parent)?;
     }
     crate::storage::atomic_replace(&config_path, content.as_bytes())?;
+
+    // A managed Codex app-server loads the catalog once at process start. Applying
+    // a profile is the explicit sync point, so restart even when the generated
+    // files are unchanged: the running daemon may still hold an older catalog.
+    restart_codex_daemon().await;
     Ok(())
+}
+
+/// Restart the local Codex app-server after its model catalog changes.
+///
+/// The daemon is optional: Codex may not be installed, may be running with
+/// `--no-daemon`, or may be mid-turn. A failed restart must not fail a profile
+/// switch, so every error is logged and swallowed.
+async fn restart_codex_daemon() {
+    if cfg!(test) {
+        return;
+    }
+
+    let Some(home) = crate::user_home_dir() else {
+        return;
+    };
+    let control_socket = home
+        .join(".codex")
+        .join("app-server-control")
+        .join("app-server-control.sock");
+    if !control_socket.exists() {
+        return;
+    }
+
+    let mut command = if cfg!(windows) {
+        let mut command = tokio::process::Command::new("cmd.exe");
+        command.args(["/C", "codex", "app-server", "daemon", "restart"]);
+        // GUI launches often inherit a PATH without the npm global bin directory.
+        if let (Some(path), Some(appdata)) = (std::env::var_os("PATH"), std::env::var_os("APPDATA"))
+        {
+            let npm_bin = PathBuf::from(appdata).join("npm");
+            let mut entries: Vec<PathBuf> = std::env::split_paths(&path).collect();
+            if npm_bin.is_dir() && !entries.iter().any(|entry| entry == &npm_bin) {
+                entries.insert(0, npm_bin);
+            }
+            if let Ok(joined) = std::env::join_paths(entries) {
+                command.env("PATH", joined);
+            }
+        }
+        command
+    } else {
+        let mut command = tokio::process::Command::new("codex");
+        command.args(["app-server", "daemon", "restart"]);
+        command
+    };
+
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    match tokio::time::timeout(Duration::from_secs(20), command.output()).await {
+        Ok(Ok(output)) if output.status.success() => {
+            tracing::info!("已重启 Codex app-server，使新的模型目录生效");
+        }
+        Ok(Ok(output)) => {
+            tracing::warn!(
+                status = ?output.status,
+                stderr = %String::from_utf8_lossy(&output.stderr),
+                "重启 Codex app-server 失败，模型列表可能仍是旧缓存"
+            );
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(
+                error = %error,
+                "无法执行 Codex app-server 重启命令"
+            );
+        }
+        Err(_) => {
+            tracing::warn!("重启 Codex app-server 超时，模型列表可能仍是旧缓存");
+        }
+    }
 }
 
 async fn write_claude_config(

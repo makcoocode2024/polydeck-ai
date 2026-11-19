@@ -315,7 +315,10 @@ pub fn build_codex_catalog_with_1m(
             serde_json::json!({
                 "slug": slug,
                 "display_name": slug,
-                "description": format!("{slug} via {provider_name}"),
+                // Codex already renders `slug` in the name column. Repeating it
+                // here doubles the width of every picker row and truncates long
+                // relay descriptions.
+                "description": format!("via {provider_name}"),
                 "default_reasoning_level": default_reasoning,
                 "default_reasoning_summary": "none",
                 "default_verbosity": "medium",
@@ -402,5 +405,26 @@ pub(super) fn codex_wire_api(
         // Codex speaks neither Anthropic nor Gemini, and an Azure deployment path
         // is not this shape either. None of them are served by guessing here.
         _ => "responses",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_codex_catalog;
+
+    #[test]
+    fn catalog_description_does_not_repeat_the_model_slug() {
+        let catalog = build_codex_catalog(
+            "relay.example",
+            "model-a",
+            &["model-a".into(), "model-b".into()],
+        );
+
+        for model in catalog["models"].as_array().unwrap() {
+            let slug = model["slug"].as_str().unwrap();
+            let description = model["description"].as_str().unwrap();
+            assert_eq!(description, "via relay.example");
+            assert!(!description.contains(slug));
+        }
     }
 }

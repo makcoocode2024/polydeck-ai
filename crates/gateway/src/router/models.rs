@@ -115,20 +115,28 @@ pub(super) fn synthesize_capabilities(
     })
 }
 
+/// Whether Claude Code's gateway discovery keeps an id.
+///
+/// Claude Code 2.1.x filters `GET /v1/models` with `/(claude|anthropic)/i`
+/// before building the picker. A relay catalog made only of `deepseek-*`,
+/// `hy3`, or `kimi-*` therefore discovers zero models, even though every entry
+/// parsed successfully.
+fn is_visible_to_claude_code(id: &str) -> bool {
+    let lower = id.to_ascii_lowercase();
+    lower.contains("claude") || lower.contains("anthropic")
+}
+
 /// Turn a raw upstream `/models` payload into the shape Claude Code consumes.
 ///
 /// Upstreams return either an OpenAI list (`{"data":[{id,...}]}`) or an
 /// Anthropic page (`{"data":[...], "has_more":...}`). We walk `data[]`, inject
-/// capabilities, prefix non-Claude model ids with `claude-code/` (Claude Code's
-/// model picker filters on that prefix), and always emit an Anthropic page.
-/// Build the Anthropic-shaped `/v1/models` page Claude Code's discovery expects.
+/// capabilities, and always emit an Anthropic page.
 ///
-/// Ids are passed through verbatim. A `claude-code/` namespace prefix was tried
-/// here first, on the assumption Claude Code needed third-party names marked as
-/// foreign; the picker silently dropped every prefixed entry instead, so a
-/// 7-model catalog showed only the 3 whose names already began with `claude-`.
-/// Requests still accept the prefix (see `strip_claude_code_prefix`) so a name
-/// persisted by an older build keeps resolving.
+/// Original ids stay in the page so Codex and other OpenAI clients can address
+/// them. Each id Claude Code's discovery would filter out also gets a
+/// `claude-code/<id>` alias with the same display name; the gateway strips the
+/// prefix before forwarding (see `router::strip_claude_code_prefix`), so the
+/// picker shows the real model name while requests still reach the upstream.
 pub(super) fn synthesize_models_response(
     raw: Value,
     thinking_support: ThinkingSupport,
@@ -140,7 +148,7 @@ pub(super) fn synthesize_models_response(
         .cloned()
         .unwrap_or_default();
     let serves_max = upstream_serves_max_effort(&data);
-    let models: Vec<Value> = data
+    let mut models: Vec<Value> = data
         .into_iter()
         .map(|mut m| {
             let model_serves_max = m
@@ -189,9 +197,35 @@ pub(super) fn synthesize_models_response(
             } else if m.get("max_tokens").and_then(Value::as_u64).is_none() {
                 m["max_tokens"] = serde_json::json!(32000);
             }
+            // Claude Code's picker labels a discovered model with
+            // `display_name` and falls back to the wire id. A missing label
+            // would expose the `claude-code/` alias instead of the real name.
+            if m.get("display_name").and_then(Value::as_str).is_none() {
+                if let Some(id) = m.get("id").cloned() {
+                    m["display_name"] = id;
+                }
+            }
             m
         })
         .collect();
+
+    // Claude Code's discovery keeps only ids containing "claude" or
+    // "anthropic". Relay catalogs rarely do, and the picker then shows only the
+    // model already selected from settings. Keep the originals and add a
+    // discoverable alias for each foreign id.
+    let aliases: Vec<Value> = models
+        .iter()
+        .filter_map(|model| {
+            let id = model.get("id")?.as_str()?;
+            if is_visible_to_claude_code(id) || id.starts_with("claude-code/") {
+                return None;
+            }
+            let mut alias = model.clone();
+            alias["id"] = serde_json::json!(format!("claude-code/{id}"));
+            Some(alias)
+        })
+        .collect();
+    models.extend(aliases);
 
     let mut resp = serde_json::json!({
         "data": models,
