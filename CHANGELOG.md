@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.2.4] - 2026-11-19
 
 ### Changed
 - **所有模型的思考档位无条件开放。** Codex 模型目录、网关 `/v1/models` 能力声明统一提供
@@ -12,6 +12,8 @@
   `output_config.effort`，并在转发给 Chat Completions 前移除不兼容的 `output_config` 字段。
 - **Claude Code haiku 档位槽补全思考能力。** 网关模式下写入
   `CLAUDE_CODE_MODEL_CAPABILITIES`，覆盖内置模型目录缺少 `effort` 能力的问题。
+
+## [Unreleased]
 
 ## [2.2.3] - 2026-11-16
 
