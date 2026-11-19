@@ -742,7 +742,3 @@ Expected: 无输出。
 `capabilities.effort.{low,medium,high,xhigh,max}.supported` 均为 `true`（上游显式否认的除外）。
 
 【无法确认】真实 Codex CLI / Claude Code 客户端与真实中转站的端到端行为——需要装包实测。
-
-
-
-

@@ -92,7 +92,7 @@ function _Ri(e){ let t=new Map(), o=s.CLAUDE_CODE_MODEL_CAPABILITIES; ... }
   3. `output_config.effort`（新增）
   4. `thinking.budget_tokens` 反推
   5. `fallback_effort`
-  
+
   同时把 `output_config` 从转发体里剥掉：Chat Completions 不认识这个字段，原样带着会让部分严格上游 400。
 
 ### 6. `crates/core/src/responses_chat.rs`
