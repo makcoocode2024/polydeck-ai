@@ -1,6 +1,7 @@
 ﻿import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { DetectedClient } from "@/domain/client";
-import type { Profile, ProfileTemplate, ProbeResult, ProfileUpdate, ChatTestResult, ProtocolKind, RateLimitRecommendation, ThinkingSupport, ClientBindingView, ClientConnectionInfo, ClaudeEnvPreview, SwitchResult } from "@/domain/profile";
+import type { Profile, ProfileTemplate, ProbeResult, ProfileUpdate, ChatTestResult, ProtocolKind, RateLimitRecommendation, ThinkingSupport, ClientBindingView, ClientConnectionInfo, ClaudeEnvPreview, SwitchResult, CodexRefreshStatus } from "@/domain/profile";
 import type { McpServer, ManagedSkill, PromptTemplate } from "@/domain/extensions";
 import type { ConsolidateReport, SessionSummary } from "@/domain/history";
 import type {
@@ -138,7 +139,12 @@ export const backend = {
   getProfileApiKey: (profileId: string) =>
     invoke<string | null>("ad_get_profile_api_key", { profileId }),
 
-  // Smart route
+  // Codex daemon
+  getCodexRefreshStatus: () => invoke<CodexRefreshStatus>("ad_get_codex_refresh_status"),
+  retryCodexRefresh: () => invoke<number>("ad_retry_codex_refresh"),
+  listenCodexRefresh: (handler: (status: CodexRefreshStatus) => void): Promise<UnlistenFn> =>
+    listen<CodexRefreshStatus>("codex-daemon-refresh", (event) => handler(event.payload)),
+
   getRouteConfig: () => cachedRead("route-config", () => invoke<SmartRouteSettings>("ad_get_route_config")),
   updateRouteConfig: (config: SmartRouteSettings) =>
     invoke<{ config: SmartRouteSettings; warnings: string[] }>("ad_update_route_config", { config }).then((value) => {

@@ -2,13 +2,14 @@
 //!
 //! Modular IPC command layer replaces the monolithic God File pattern.
 
+mod codex_refresh;
 mod commands;
 mod state;
 mod tray;
 
 use polydeck_core::profile::ProfileManager;
 use polydeck_inject::InjectionManager;
-use state::{FailoverState, GatewayState, InjectState, ProfileState};
+use state::{CodexRefreshState, FailoverState, GatewayState, InjectState, ProfileState};
 use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::Mutex;
@@ -30,6 +31,10 @@ pub fn run() {
     let gateway_state: GatewayState = Arc::new(Mutex::new(None));
     let inject_state: InjectState =
         Arc::new(Mutex::new(InjectionManager::new(INJECT_SCRIPT_SOURCE)));
+    let codex_refresh_state: CodexRefreshState = codex_refresh::CodexRefreshCoordinator::new(
+        codex_refresh::production_executor(),
+        codex_refresh::event_sink_placeholder(),
+    );
     // Empty until a bound profile enables failover; `refresh_gateway` fills it.
     let failover_state: FailoverState = Arc::new(polydeck_gateway::FailoverSlot::new());
     // The same Arc the gateway's compiled routes will write audit records to
@@ -41,9 +46,14 @@ pub fn run() {
         .manage(profile_state)
         .manage(gateway_state)
         .manage(inject_state)
+        .manage(codex_refresh_state)
         .manage(failover_state)
         .manage(route_audit_state)
         .setup(|app| {
+            if let Some(coordinator) = app.try_state::<CodexRefreshState>() {
+                coordinator.set_sink(codex_refresh::event_sink(app.handle().clone()));
+                coordinator.start();
+            }
             // Setup system tray
             let _ = tray::create_tray(app.handle());
 
@@ -78,16 +88,24 @@ pub fn run() {
                     };
                     for (profile_id, clients) in profiles_to_reapply {
                         let mut pm_guard = pm.lock().await;
-                        if let Err(e) = polydeck_core::profile_switch::activate_profile(
+                        match polydeck_core::profile_switch::activate_profile(
                             &mut pm_guard,
                             &profile_id,
                             Some(&clients),
                         )
                         .await
                         {
-                            tracing::warn!(
-                                "迁移后重新下发方案 {profile_id} 的配置失败：{e}；相关客户端需要手动重新激活"
-                            );
+                            Ok(result) if result.codex_config_written => {
+                                if let Some(refresh) = app_handle.try_state::<CodexRefreshState>() {
+                                    refresh.request().await;
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                tracing::warn!(
+                                    "迁移后重新下发方案 {profile_id} 的配置失败：{e}；相关客户端需要手动重新激活"
+                                );
+                            }
                         }
                     }
 
@@ -192,6 +210,9 @@ pub fn run() {
             commands::profile::ad_cline_token_status,
             commands::profile::ad_cline_refresh_token,
             commands::profile::ad_cline_delete_credentials,
+            // Codex daemon
+            commands::codex_refresh::ad_get_codex_refresh_status,
+            commands::codex_refresh::ad_retry_codex_refresh,
             // gateway
             commands::gateway::ad_gateway_start,
             commands::gateway::ad_gateway_stop,

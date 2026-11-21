@@ -4,11 +4,14 @@ use polydeck_core::profile::ProfileManager;
 use polydeck_gateway::{FailoverSlot, GatewayServer};
 use polydeck_inject::InjectionManager;
 use std::sync::Arc;
+
+use crate::codex_refresh::CodexRefreshCoordinator;
 use tokio::sync::Mutex;
 
 pub type GatewayState = Arc<Mutex<Option<GatewayServer>>>;
 pub type ProfileState = Arc<Mutex<ProfileManager>>;
 pub type InjectState = Arc<Mutex<InjectionManager>>;
+pub type CodexRefreshState = Arc<CodexRefreshCoordinator>;
 
 /// The failover manager the running gateway is using, if any.
 ///

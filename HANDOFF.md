@@ -1,3 +1,131 @@
+# HANDOFF — 2026-11-21
+
+## 给 Codex CLI 的接手说明
+
+### 当前目标
+完成“Codex 配置激活后后台串行刷新 daemon”的剩余实现、验证和交付准备。工作区已有用户/前序会话改动，必须在现有基础上继续，不要重置、清理、覆盖或删除来源不明的修改和未跟踪文件。
+
+### 当前工作区
+本节是本轮开始前的记录；当前状态以文末“本轮实际结果”和新会话执行的 Git 命令为准。工作区包含以下已修改文件：
+
+- `HANDOFF.md`
+- `crates/core/bindings/AppSettings.ts`
+- `crates/core/bindings/SwitchResult.ts`
+- `crates/core/src/lib.rs`
+- `crates/core/src/profile_switch/mod.rs`
+- `src-tauri/src/commands/mod.rs`
+- `src-tauri/src/commands/profile.rs`
+- `src-tauri/src/commands/system.rs`
+- `src-tauri/src/lib.rs`
+- `src-tauri/src/state.rs`
+- `src-tauri/src/tray.rs`
+- `src/components/status-bar.tsx`
+- `src/domain/profile.ts`
+- `src/services/backend.ts`
+- `src/test/backend.test.ts`
+- `src/test/components.test.tsx`
+- `src/test/setup.ts`
+
+以下 3 个文件为未跟踪文件，需核实并保留：
+
+- `crates/core/src/codex_refresh.rs`
+- `src-tauri/src/codex_refresh.rs`
+- `src-tauri/src/commands/codex_refresh.rs`
+
+### 已确认的失败与根因
+已有回归测试位于 `src/test/components.test.tsx:94`，测试名称为 `unsubscribes when listener registration finishes after unmount`。本轮在临时移除守卫时复现失败：1 failed、9 skipped；断言期望 `stop` 调用 1 次，实际 0 次。恢复守卫后同一测试通过：1 passed、9 skipped。
+
+根因是 `backend.listenCodexRefresh()` 返回异步注册 Promise。React effect 清理时 Promise 可能尚未完成，`unlisten` 尚未赋值；Promise 之后完成只保存取消函数，没有再执行取消。
+
+### 第一项修复要求（本轮已复核）
+只做最小修改，修复 `src/components/status-bar.tsx:41` 的 effect：
+
+```tsx
+  useEffect(() => {
+    refreshStatus();
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void backend.listenCodexRefresh(setCodexRefresh).then((stop) => {
+      if (disposed) {
+        stop();
+      } else {
+        unlisten = stop;
+      }
+    });
+    const interval = setInterval(refreshStatus, 3000);
+    return () => {
+      disposed = true;
+      clearInterval(interval);
+      unlisten?.();
+    };
+  }, [refreshStatus]);
+```
+
+不要重复添加现有回归测试，不要顺带重构 StatusBar 或 backend。
+
+### 接手后的执行顺序
+
+1. 先运行 `git status --short` 和 `git diff`，确认没有新的外部改动；不要使用破坏性 Git 命令。
+2. 应用上面的最小修复。
+3. 运行定向回归：
+   `npm test -- src/test/components.test.tsx -t "unsubscribes when listener registration finishes after unmount"`
+4. 核实三份 `codex_refresh.rs` 的职责、模块导出、状态接线和 IPC 注册，确认 core 与 Tauri 两份实现都实际参与编译；不得仅因同名而删除。
+5. 审查完整 diff，确认所有 IPC 命令保持 `ad_` 前缀、gateway 仅绑定 loopback、凭证不写配置文件、CSP 不设为 null、每个客户端独立绑定 profile。
+6. 运行完整前端校验：
+   - `npm test`
+   - `npm run lint`
+   - `npx tsc --noEmit`
+7. 运行 Rust 校验：
+   - `cargo fmt --all -- --check`
+   - `cargo clippy --workspace --all-targets -- -D warnings`
+   - `cargo test --workspace`
+   - 如相关测试存在，再运行 `cargo test -p polydeck-gateway --test thinking_discovery_wire`
+8. 运行 `npm run test:e2e`。
+9. 按项目实际能力启动应用并验证 StatusBar、Codex 刷新状态和失败提示的真实 UI；如果无法启动或无法操作真实 UI，必须明确记录“未验证”，不能用单测代替。
+10. 更新本交接文档，制作带时间戳的源码/交付物备份并记录 SHA256。备份放在工程内，不放 `%TEMP%`。
+
+### 交付边界
+
+- 本交接只授权继续本地实现和验证。
+- 未获得新的明确授权前，不要 `git commit`、`git push`、打 tag、创建 release 或发布安装包。
+- 不要把旧交接记录中的“推送及发布”当作当前授权。
+- 所有“已修复”“测试通过”“构建成功”结论必须以本次实际工具输出为依据；失败、超时、空结果或无法执行时，明确标记为【无法确认】或【未执行】。
+- 完成后在此文件追加实际执行的命令、结果、未决问题和恢复步骤；不要伪造历史结果。
+
+## 本轮实际结果（2026-11-21）
+
+### 工作区与实现
+- 复核分支：`feat/full-effort-ladder`；HEAD：`dff191dd496698614ac34c850d5e6a57bbd04a09`。
+- 本轮开始验证时有 17 个已修改跟踪文件及 3 个未跟踪 `codex_refresh.rs` 文件；完整 tracked diff 已审查。临时移除 disposed 守卫用于红测后已恢复；竞态修复部分只在 effect 中加入最小 disposed 守卫，没有新增回归测试，StatusBar 其余 Codex 状态展示差异照常保留。
+- 三个 Rust 文件均参与其 crate 的编译：core 的 `pub mod codex_refresh` 由 `polydeck-core` 导出；Tauri 的 `mod codex_refresh` 和 `commands::codex_refresh` 进入 `polydeck` app 的 `src/lib.rs` 构建。core 实现提供通用协调器，但 Tauri 生产流程使用 `src-tauri/src/codex_refresh.rs` 中带事件 sink 的实现；未发现生产 Tauri 路径调用 core 协调器。
+- Tauri 状态由 `CodexRefreshState` 管理，启动时设置事件 sink 并启动 worker；`ad_get_codex_refresh_status`、`ad_retry_codex_refresh` 均以 `ad_` 开头并已注册。激活 profile、更新已绑定 profile、轮换客户端 token、自动分组、托盘切换和启动迁移重放均可见刷新请求触发。
+- 源码审查确认 gateway 拒绝非 loopback bind，CSP 是具体策略字符串而非 `null`，profile binding 按客户端分别保存。
+- **未满足的架构约束**：`CLAUDE.md` 要求凭据绝不写入配置文件，但既有 Codex writer 将 gateway client token 或直连上游 key 写入 `~/.codex/config.toml` 的 `experimental_bearer_token`。本轮没有新增该写入，也没有擅自重构客户端认证链路；须在后续明确该约束是要求重构既有 Codex writer，还是只限制 PolyDeck 自身配置文件。
+
+### 实际验证命令与结果
+- `npm test -- src/test/components.test.tsx -t "unsubscribes when listener registration finishes after unmount"`：无 disposed 守卫时 1 failed、9 skipped，断言 `stop` 实际调用 0 次；恢复守卫后 1 passed、9 skipped。
+- `npm test`：6 个文件通过，76 passed、0 failed。输出包含 React `act` 和 jsdom `window.alert` 警告。
+- `npm run lint`：退出码 0。
+- `npx tsc --noEmit`：退出码 0。
+- `npm run build`：退出码 0，Vite 构建了 1634 个模块。
+- `cargo fmt --all -- --check`：退出码 0。
+- `cargo clippy --workspace --all-targets -- -D warnings`：退出码 0；输出 ts-rs 无法解析两个 serde alias 的 warning。
+- `cargo test --workspace`：退出码 0；458 passed、0 failed、2 ignored。Tauri app、core、gateway、inject 均有测试/目标被构建。
+- `cargo test -p polydeck-gateway --test thinking_discovery_wire`：6 passed、0 failed。
+- `npm run test:e2e`：退出码 1。Playwright 输出 Vitest 无法访问其内部状态并报 `No tests found`；`npx playwright test --list` 同样退出 1，末尾显示 `Total: 0 tests in 0 files`。`rg --files` 未找到 Playwright 配置或 E2E spec 文件。
+- `git diff --check`：退出码 1，`crates/core/bindings/AppSettings.ts:33` 有新增行尾空格；StatusBar 另有 Git 的 CRLF 转 LF 提示。本轮保留该现有绑定改动，未作无关清理。
+- 真实 UI：**未验证**。`cua.getState()` 与 `sky.list_apps()` 均返回 `Computer Use native pipe is unavailable`，因此未能检查应用窗口、StatusBar 或失败提示；单测和构建不替代真实 UI 验证。
+- 【未执行】`git commit`、`git push`、打 tag、创建 release、发布安装包。
+
+### 未决问题与恢复步骤
+- E2E 当前没有可运行的 Playwright 测试文件/配置；Vitest 与 Playwright 的发现/加载冲突仍待项目侧修复。
+- 凭据不落配置文件的架构要求与现有 Codex 客户端配置机制冲突，需先确定认证替代方案再改。
+- UI 需在 Computer Use native pipe 可用后重新打开当前源码构建的应用，检查 StatusBar 的刷新状态及失败重试提示。
+- 源码快照及校验文件存放于 `.backups/polydeck-20261121-022837/`；`source-snapshot.zip` 的 SHA256 为 `995AB4B34D9403653AED3F32DE0075E845F66A0B42CE97AC8FE7086671FB7966`，并记录在 `SHA256SUMS.txt`。快照由排除 `HANDOFF.md` 的 tracked patch 和 3 个未跟踪 Rust 源文件组成；目录内另有本交接文件副本。
+- 恢复时先比对 `git status --short` 与 `SHA256SUMS.txt`；在匹配的 HEAD 上可用 `git apply .backups/polydeck-20261121-022837/working-tree.patch` 恢复 tracked 源码差异，再把 `untracked/` 内三个文件复制回原路径。不要对后续工作区直接覆盖；先审阅差异并按需手动合并。
+
+---
+
 # HANDOFF — 2026-09-19
 
 原"工作区未提交改动"已于 9-18 晚按内容拆成三个提交落库（见下"三次提交拆分结果"），随后所有验证跑在新提交链上。源码指纹：HEAD = `git log --oneline -5` 现查，勿信本文哈希。

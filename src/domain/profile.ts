@@ -211,6 +211,7 @@ export interface SwitchResult {
   success: boolean;
   profileId: string;
   profileName: string;
+  codexConfigWritten: boolean;
   /// Clients whose config file was rewritten.
   clientsWritten: string[];
   /// Clients now recorded as following this profile. Wider than `clientsWritten`:
@@ -218,6 +219,14 @@ export interface SwitchResult {
   clientsBound: string[];
   warnings: string[];
   message: string;
+}
+
+export type CodexRefreshState = "idle" | "refreshing" | "success" | "failed" | "skipped";
+
+export interface CodexRefreshStatus {
+  generation: number;
+  state: CodexRefreshState;
+  message: string | null;
 }
 
 export interface Profile {

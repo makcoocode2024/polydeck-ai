@@ -1,4 +1,4 @@
-use crate::state::{FailoverState, GatewayState, ProfileState};
+use crate::state::{CodexRefreshState, FailoverState, GatewayState, ProfileState};
 use polydeck_core::client_rules::RuleKind;
 use polydeck_core::tray_state::{TrayState, TrayStatus};
 use tauri::command;
@@ -193,6 +193,7 @@ pub async fn ad_set_auto_client_grouping(
     pm: State<'_, ProfileState>,
     gw: State<'_, GatewayState>,
     failover: State<'_, FailoverState>,
+    refresh: State<'_, CodexRefreshState>,
 ) -> Result<serde_json::Value, String> {
     let mut rewritten = Vec::new();
     let mut warnings = Vec::new();
@@ -216,6 +217,9 @@ pub async fn ad_set_auto_client_grouping(
             .await
             {
                 Ok(result) => {
+                    if result.codex_config_written {
+                        refresh.request().await;
+                    }
                     if result.clients_written.contains(&client) {
                         rewritten.push(client);
                     }

@@ -47,6 +47,11 @@ describe("Backend API Service", () => {
     expect(created.name).toBe("New Profile");
   });
 
+  it("reads and retries Codex daemon refresh status", async () => {
+    const status = await backend.getCodexRefreshStatus();
+    expect(status.state).toBe("idle");
+    expect(await backend.retryCodexRefresh()).toBe(1);
+  });
   it("controls gateway lifecycle and status", async () => {
     const status = await backend.gatewayStatus();
     expect(status.running).toBe(true);

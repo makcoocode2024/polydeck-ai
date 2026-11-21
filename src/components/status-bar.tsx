@@ -4,7 +4,7 @@ import { gatewayStatusAtom } from "@/state/gateway";
 import { backend } from "@/services/backend";
 import { Button } from "@/components/ui/button";
 import { Play, Square, RefreshCw, Layers, RotateCw } from "lucide-react";
-import type { ClientBindingView } from "@/domain/profile";
+import type { ClientBindingView, CodexRefreshStatus } from "@/domain/profile";
 
 export function StatusBar() {
   const [gateway, setGateway] = useAtom(gatewayStatusAtom);
@@ -13,6 +13,11 @@ export function StatusBar() {
   // would read as "nothing configured" exactly when the most is.
   const [bindings, setBindings] = useState<ClientBindingView[]>([]);
   const [loading, setLoading] = useState(false);
+  const [codexRefresh, setCodexRefresh] = useState<CodexRefreshStatus>({
+    generation: 0,
+    state: "idle",
+    message: null,
+  });
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -24,14 +29,32 @@ export function StatusBar() {
     try {
       setBindings((await backend.listClientBindings()) ?? []);
     } catch {
-      // Ignored
+      // Keep previous bindings if unavailable
+    }
+    try {
+      setCodexRefresh(await backend.getCodexRefreshStatus());
+    } catch {
+      // Keep previous state if unavailable
     }
   }, [setGateway]);
 
   useEffect(() => {
     refreshStatus();
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void backend.listenCodexRefresh(setCodexRefresh).then((stop) => {
+      if (disposed) {
+        stop();
+      } else {
+        unlisten = stop;
+      }
+    });
     const interval = setInterval(refreshStatus, 3000);
-    return () => clearInterval(interval);
+    return () => {
+      disposed = true;
+      clearInterval(interval);
+      unlisten?.();
+    };
   }, [refreshStatus]);
 
   const toggleGateway = async () => {
@@ -65,6 +88,28 @@ export function StatusBar() {
           <Button variant="ghost" size="xs" onClick={toggleGateway} disabled={loading}>
             {loading ? (<><RotateCw className="h-3 w-3 animate-spin text-primary" />处理中...</>) : gateway.running ? (<><Square className="h-3 w-3 text-destructive" />停止</>) : (<><Play className="h-3 w-3 text-success" />启动</>)}
           </Button>
+        </div>
+
+        <div className="h-3 w-px bg-border" />
+
+        <div className="flex items-center gap-1.5" data-testid="status-codex-refresh">
+          <span className={`h-2 w-2 rounded-full ${
+            codexRefresh.state === "refreshing" ? "bg-warning animate-pulse" :
+            codexRefresh.state === "failed" ? "bg-destructive" :
+            codexRefresh.state === "success" ? "bg-success" :
+            "bg-muted-foreground/50"
+          }`} />
+          <span className={codexRefresh.state === "failed" ? "text-destructive" : "text-muted-foreground"}>
+            {codexRefresh.state === "refreshing" ? "Codex 刷新中" :
+              codexRefresh.state === "failed" ? "Codex 刷新失败" :
+              codexRefresh.state === "skipped" ? "Codex 未运行" :
+              codexRefresh.state === "success" ? "Codex 已刷新" : "Codex 空闲"}
+          </span>
+          {codexRefresh.state === "failed" && (
+            <Button variant="ghost" size="xs" onClick={() => void backend.retryCodexRefresh()}>
+              重试
+            </Button>
+          )}
         </div>
 
         <div className="h-3 w-px bg-border" />

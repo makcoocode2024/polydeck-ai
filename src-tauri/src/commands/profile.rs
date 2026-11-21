@@ -1,4 +1,4 @@
-use crate::state::{FailoverState, GatewayState, ProfileState};
+use crate::state::{CodexRefreshState, FailoverState, GatewayState, ProfileState};
 use polydeck_core::profile::Profile;
 use tauri::{command, State};
 
@@ -63,6 +63,7 @@ pub async fn ad_update_profile(
     pm: State<'_, ProfileState>,
     gw: State<'_, GatewayState>,
     failover: State<'_, FailoverState>,
+    refresh: State<'_, CodexRefreshState>,
     id: String,
     update: polydeck_core::profile::ProfileUpdate,
 ) -> Result<Profile, String> {
@@ -77,9 +78,13 @@ pub async fn ad_update_profile(
         let bound = pm_guard.clients_for_profile(&id);
         let is_active = !bound.is_empty();
         if is_active {
-            let _ =
+            let result =
                 polydeck_core::profile_switch::activate_profile(&mut pm_guard, &id, Some(&bound))
-                    .await;
+                    .await
+                    .map_err(|e| e.to_string())?;
+            if result.codex_config_written {
+                refresh.request().await;
+            }
         }
         (updated, is_active)
     };
@@ -115,6 +120,7 @@ pub async fn ad_activate_profile(
     pm: State<'_, ProfileState>,
     gw: State<'_, GatewayState>,
     failover: State<'_, FailoverState>,
+    refresh: State<'_, CodexRefreshState>,
     id: String,
     clients: Option<Vec<String>>,
 ) -> Result<polydeck_core::profile_switch::SwitchResult, String> {
@@ -131,6 +137,10 @@ pub async fn ad_activate_profile(
         let active = pm_guard.get_profile(&id);
         (result, active)
     };
+
+    if result.codex_config_written {
+        refresh.request().await;
+    }
 
     // Record which provider these clients are now running against, and fold any
     // duplicate session rows together while doing it.
@@ -257,6 +267,7 @@ pub async fn ad_client_connection_info(
 #[command]
 pub async fn ad_rotate_client_token(
     pm: State<'_, ProfileState>,
+    refresh: State<'_, CodexRefreshState>,
     client: String,
 ) -> Result<String, String> {
     let clean = polydeck_core::binding::normalize_client_id(&client);
@@ -267,9 +278,14 @@ pub async fn ad_rotate_client_token(
 
     let token =
         polydeck_core::credentials::rotate_client_token(&clean).map_err(|e| e.to_string())?;
-    polydeck_core::profile_switch::activate_profile(&mut pm_guard, &profile.id, Some(&[clean]))
-        .await
-        .map_err(|e| e.to_string())?;
+    let result =
+        polydeck_core::profile_switch::activate_profile(&mut pm_guard, &profile.id, Some(&[clean]))
+            .await
+            .map_err(|e| e.to_string())?;
+    drop(pm_guard);
+    if result.codex_config_written {
+        refresh.request().await;
+    }
     Ok(token)
 }
 

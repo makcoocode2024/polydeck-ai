@@ -49,6 +49,7 @@ pub struct SwitchResult {
     /// routes through the gateway but has nothing on disk to update, so it appears
     /// here and not there.
     pub clients_bound: Vec<String>,
+    pub codex_config_written: bool,
     pub warnings: Vec<String>,
     pub message: String,
 }
@@ -79,6 +80,7 @@ pub async fn activate_profile(
         .ok_or_else(|| AppError::InvalidInput(format!("Profile {profile_id} 不存在")))?;
 
     let mut clients_written = Vec::new();
+    let mut codex_config_written = false;
     let mut warnings = Vec::new();
 
     let target_clients: Vec<String> = match targets {
@@ -103,7 +105,10 @@ pub async fn activate_profile(
         for client in &target_clients {
             let gateway_enabled = manager.gateway_enabled_for_profile_client(client, &profile);
             match write_client_config(client, &profile, gateway_enabled).await {
-                Ok(()) => clients_written.push(client.clone()),
+                Ok(wrote_codex) => {
+                    clients_written.push(client.clone());
+                    codex_config_written |= wrote_codex;
+                }
                 Err(e) => {
                     warnings.push(format!("写入 {client} 配置提示：{e}"));
                 }
@@ -143,6 +148,7 @@ pub async fn activate_profile(
         profile_name: profile.name,
         clients_written,
         clients_bound,
+        codex_config_written,
         warnings,
         message: "Profile 激活并同步配置成功".into(),
     })
@@ -174,7 +180,7 @@ async fn write_client_config(
     client: &str,
     profile: &Profile,
     gateway_enabled: bool,
-) -> AppResult<()> {
+) -> AppResult<bool> {
     let primary = profile
         .providers
         .iter()
@@ -188,16 +194,24 @@ async fn write_client_config(
     let auth = client_auth(&clean, &profile.id, gateway_enabled)?;
 
     if clean.contains("codex") {
-        write_codex_config(primary, &auth, gateway_enabled).await
+        write_codex_config(primary, &auth, gateway_enabled)
+            .await
+            .map(|_| true)
     } else if crate::binding::is_claude_desktop(&clean) {
-        write_claude_desktop_config(primary, &auth, gateway_enabled).await
+        write_claude_desktop_config(primary, &auth, gateway_enabled)
+            .await
+            .map(|_| false)
     } else if clean.contains("claude") {
-        write_claude_config(primary, &profile.claude_code_params, &auth, gateway_enabled).await
+        write_claude_config(primary, &profile.claude_code_params, &auth, gateway_enabled)
+            .await
+            .map(|_| false)
     } else if clean.contains("hermes") {
-        write_hermes_config(primary, &auth, gateway_enabled).await
+        write_hermes_config(primary, &auth, gateway_enabled)
+            .await
+            .map(|_| false)
     } else {
         tracing::info!("客户端 {client} 暂无专用本地配置文件需要写入");
-        Ok(())
+        Ok(false)
     }
 }
 
@@ -344,18 +358,11 @@ async fn write_codex_config(
     }
     crate::storage::atomic_replace(&config_path, content.as_bytes())?;
 
-    // A managed Codex app-server loads the catalog once at process start. Applying
-    // a profile is the explicit sync point, so restart even when the generated
-    // files are unchanged: the running daemon may still hold an older catalog.
-    restart_codex_daemon().await;
     Ok(())
 }
 
-/// Restart the local Codex app-server after its model catalog changes.
-///
-/// The daemon is optional: Codex may not be installed, may be running with
-/// `--no-daemon`, or may be mid-turn. A failed restart must not fail a profile
-/// switch, so every error is logged and swallowed.
+/// Synchronous daemon restart is no longer used; refreshing is owned by the Tauri coordinator.
+#[allow(dead_code)]
 async fn restart_codex_daemon() {
     if cfg!(test) {
         return;
@@ -713,9 +720,6 @@ async fn write_claude_config(
         // discovery call on to let every provider model reach the picker — each
         // with its own effort control, which a bare tier slot never gets.
         //
-        // Only meaningful behind the gateway: pointed straight at a provider,
-        // the discovery call would hit an upstream that owes us nothing.
-        //
         // Written on both branches rather than only when enabled. This file is
         // merged, not replaced, so skipping the write leaves whatever the last
         // profile put here — a gateway-less profile inheriting "1" sends the
@@ -726,14 +730,13 @@ async fn write_claude_config(
             "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY".into(),
             serde_json::Value::String(if gateway_enabled { "1" } else { "0" }.into()),
         );
-        if gateway_enabled {
-            env_obj.insert(
-                "CLAUDE_CODE_MODEL_CAPABILITIES".into(),
-                serde_json::Value::String("*=effort,max_effort,xhigh_effort".into()),
-            );
-        } else {
-            env_obj.remove("CLAUDE_CODE_MODEL_CAPABILITIES");
-        }
+        // Capability declaration is independent from model discovery. Claude
+        // Code uses this value to label custom provider models in `/model`,
+        // including direct-mode profiles where discovery is disabled.
+        env_obj.insert(
+            "CLAUDE_CODE_MODEL_CAPABILITIES".into(),
+            serde_json::Value::String("*=effort,max_effort,xhigh_effort".into()),
+        );
         // `unset` is the client-documented sentinel meaning "this env does not
         // own effort" — Claude Code resolves it to null and lets the session's
         // own level (picker, /effort, settings) stand. Any concrete value here
@@ -2194,7 +2197,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claude_env_forces_full_effort_capabilities_behind_the_gateway() {
+    async fn claude_env_declares_full_effort_capabilities_in_both_modes() {
         let _guard = lock_home_env();
         let home = tempfile::tempdir().unwrap();
         std::env::set_var("AI_DECK_HOME_OVERRIDE", home.path());
@@ -2214,9 +2217,10 @@ mod tests {
             .unwrap();
         let settings: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert!(settings["env"]
-            .get("CLAUDE_CODE_MODEL_CAPABILITIES")
-            .is_none());
+        assert_eq!(
+            settings["env"]["CLAUDE_CODE_MODEL_CAPABILITIES"],
+            "*=effort,max_effort,xhigh_effort"
+        );
     }
 
     #[tokio::test]

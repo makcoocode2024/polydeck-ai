@@ -12,4 +12,4 @@ clientsWritten: Array<string>,
  * routes through the gateway but has nothing on disk to update, so it appears
  * here and not there.
  */
-clientsBound: Array<string>, warnings: Array<string>, message: string, };
+clientsBound: Array<string>, codexConfigWritten: boolean, warnings: Array<string>, message: string, };

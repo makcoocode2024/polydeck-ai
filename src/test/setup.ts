@@ -176,6 +176,7 @@ const mockResponses: Record<string, unknown> = {
     success: true,
     profileId: "prof_default",
     profileName: "Default Profile",
+    codexConfigWritten: true,
     clientsWritten: ["codex-cli", "claude-code"],
     clientsBound: ["codex-cli", "claude-code"],
     warnings: [],
@@ -206,6 +207,7 @@ const mockResponses: Record<string, unknown> = {
     success: true,
     profileId: "prof_default",
     profileName: "Default Profile",
+    codexConfigWritten: true,
     clientsWritten: ["codex-cli", "claude-code"],
     warnings: [],
     message: "Profile 激活成功",
@@ -258,6 +260,9 @@ const mockResponses: Record<string, unknown> = {
     baseUrl: "https://api.openai.com/v1",
     supportsStreaming: true,
   },
+  ad_get_codex_refresh_status: { generation: 0, state: "idle", message: null },
+  ad_retry_codex_refresh: 1,
+
   ad_gateway_start: "127.0.0.1:18888",
   ad_gateway_stop: null,
   ad_gateway_status: { running: true, port: 18888 },
@@ -590,6 +595,9 @@ const mockInvoke = async (cmd: string, args?: Record<string, unknown>) => {
 };
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => undefined),
+}));
 
 /// Override one command's mock for a single test. Returns a restore function;
 /// call it in a `finally` or the override leaks into every later test.

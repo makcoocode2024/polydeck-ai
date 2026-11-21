@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -88,6 +89,24 @@ describe("UI Components", () => {
     await waitFor(() => {
       expect(screen.getByText(/网关/)).toBeInTheDocument();
     });
+  });
+
+  it("unsubscribes when listener registration finishes after unmount", async () => {
+    let finishRegistration!: (stop: UnlistenFn) => void;
+    const registration = new Promise<UnlistenFn>((resolve) => {
+      finishRegistration = resolve;
+    });
+    vi.mocked(listen).mockReturnValueOnce(registration);
+    const stop = vi.fn();
+    const { unmount } = render(<StatusBar />);
+
+    unmount();
+    await act(async () => {
+      finishRegistration(stop);
+      await registration;
+    });
+
+    expect(stop).toHaveBeenCalledTimes(1);
   });
 
   it("reports every bound profile, not one active one", async () => {

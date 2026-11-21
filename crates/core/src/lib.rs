@@ -13,6 +13,7 @@ pub mod client_detector;
 pub mod client_rules;
 pub mod cline_auth;
 pub mod cloud_sync;
+pub mod codex_refresh;
 pub mod credentials;
 pub mod deep_link;
 pub mod diagnostics;
