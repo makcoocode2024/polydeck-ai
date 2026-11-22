@@ -246,6 +246,47 @@ async fn client_thinking_passes_through_to_a_signed_upstream() {
     server.stop().await;
 }
 
+#[tokio::test]
+async fn opus_55_uses_adaptive_thinking_on_the_wire() {
+    let (upstream_url, seen) = stub_upstream().await;
+    let mut config = route(&upstream_url, ThinkingSupport::Signed);
+    config.upstream.default_effort_level = Some("high".into());
+    let (mut server, base) = gateway_with(config).await;
+    let client = reqwest::Client::new();
+
+    for fields in [
+        json!({}),
+        json!({"thinking": {"type": "enabled", "budget_tokens": 8192},
+               "output_config": {"effort": "low"}}),
+        json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "max"}}),
+    ] {
+        let mut body = json!({
+            "model": "claude-opus-5-5",
+            "max_tokens": 32000,
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        body.as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        let response = client
+            .post(format!("{base}/v1/messages"))
+            .bearer_auth(TOKEN)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+    }
+
+    let bodies = seen.lock().unwrap().message_bodies.clone();
+    assert_eq!(bodies.len(), 3);
+    for (body, effort) in bodies.iter().zip(["high", "low", "max"]) {
+        assert_eq!(body["thinking"], json!({"type": "adaptive"}));
+        assert_eq!(body["output_config"]["effort"], effort);
+    }
+    server.stop().await;
+}
+
 /// Claude Code 2.1.x keeps only ids containing `claude` or `anthropic` from
 /// gateway discovery. A relay catalog of `glm-*` / `deepseek-*` names must still
 /// reach the picker, so the gateway advertises a discoverable alias without

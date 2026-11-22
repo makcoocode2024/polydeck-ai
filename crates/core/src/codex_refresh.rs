@@ -142,6 +142,9 @@ pub fn production_executor() -> Executor {
     Arc::new(|| Box::pin(async { refresh_codex_daemon().await }))
 }
 
+// Codex 强制关闭旧 daemon 前可能等待约 60 秒，之后还要启动新进程。
+const RESTART_TIMEOUT: Duration = Duration::from_secs(90);
+
 async fn refresh_codex_daemon() -> RefreshOutcome {
     let Some(home) = crate::user_home_dir() else {
         return RefreshOutcome::Skipped;
@@ -183,10 +186,31 @@ async fn refresh_codex_daemon() -> RefreshOutcome {
         .stderr(Stdio::null())
         .kill_on_drop(true);
 
-    match tokio::time::timeout(Duration::from_secs(20), command.status()).await {
+    wait_for_restart(command.status()).await
+}
+
+async fn wait_for_restart(
+    status: impl Future<Output = std::io::Result<std::process::ExitStatus>>,
+) -> RefreshOutcome {
+    match tokio::time::timeout(RESTART_TIMEOUT, status).await {
         Ok(Ok(status)) if status.success() => RefreshOutcome::Success,
         Ok(_) | Err(_) => RefreshOutcome::Failed,
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn codex_restart_accepts_slow_clean_exit() {
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
+    #[cfg(windows)]
+    use std::os::windows::process::ExitStatusExt;
+
+    let outcome = wait_for_restart(async {
+        tokio::time::sleep(Duration::from_secs(65)).await;
+        Ok(std::process::ExitStatus::from_raw(0))
+    })
+    .await;
+    assert_eq!(outcome, RefreshOutcome::Success);
 }
 
 #[cfg(test)]

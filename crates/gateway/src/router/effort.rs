@@ -7,7 +7,7 @@
 
 use polydeck_core::types::ThinkingSupport;
 use serde_json::Value;
-use tracing::{debug, warn};
+use tracing::warn;
 
 pub fn effort_to_budget_tokens(effort: &str) -> Option<u64> {
     match effort.trim().to_ascii_lowercase().as_str() {
@@ -34,8 +34,13 @@ pub fn inject_thinking_if_needed(
     default_effort_level: Option<&str>,
     thinking_support: ThinkingSupport,
 ) {
-    if body.get("thinking").is_some() {
-        if !thinking_support.is_injectable() {
+    let adaptive_model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .is_some_and(is_adaptive_thinking_model);
+
+    if !thinking_support.is_injectable() {
+        if body.get("thinking").is_some() {
             body.as_object_mut().map(|o| o.remove("thinking"));
             warn!(
                 "Removed client thinking: upstream thinking support is {:?}",
@@ -45,16 +50,18 @@ pub fn inject_thinking_if_needed(
         return;
     }
 
+    if adaptive_model {
+        adapt_opus_55_thinking(body, default_effort_level);
+        return;
+    }
+
+    if body.get("thinking").is_some() {
+        return;
+    }
+
     let Some(effort) = default_effort_level else {
         return;
     };
-    if !thinking_support.is_injectable() {
-        debug!(
-            "thinking injection skipped: upstream thinking support is {:?}",
-            thinking_support
-        );
-        return;
-    }
     let Some(budget_tokens) = effort_to_budget_tokens(effort) else {
         return;
     };
@@ -76,6 +83,57 @@ pub fn inject_thinking_if_needed(
 
     if let Some(temp) = body.get_mut("temperature") {
         *temp = serde_json::json!(1.0);
+    }
+}
+
+fn is_adaptive_thinking_model(model: &str) -> bool {
+    let id = model
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+    id == "claude-opus-5-5" || id.starts_with("claude-opus-5-5-")
+}
+
+fn adapt_opus_55_thinking(body: &mut Value, default_effort_level: Option<&str>) {
+    let Some(body) = body.as_object_mut() else {
+        return;
+    };
+    let default_effort =
+        default_effort_level.and_then(|effort| normalize_effort(effort, "claude-opus-5-5"));
+    match body
+        .get("thinking")
+        .and_then(|thinking| thinking.get("type"))
+        .and_then(Value::as_str)
+    {
+        Some("disabled") => {
+            body.remove("thinking");
+            return;
+        }
+        Some("enabled" | "adaptive") => {
+            let thinking = body
+                .get_mut("thinking")
+                .and_then(Value::as_object_mut)
+                .unwrap();
+            thinking.insert("type".into(), Value::from("adaptive"));
+            thinking.remove("budget_tokens");
+        }
+        None if !body.contains_key("thinking") && default_effort.is_some() => {
+            body.insert("thinking".into(), serde_json::json!({"type": "adaptive"}));
+        }
+        _ => return,
+    }
+
+    if let Some(effort) = default_effort {
+        if let Some(config) = body
+            .entry("output_config")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+        {
+            config
+                .entry("effort")
+                .or_insert_with(|| Value::String(effort));
+        }
     }
 }
 

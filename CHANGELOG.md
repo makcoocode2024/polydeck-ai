@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.2.6] - 2026-11-22
+
+### Changed
+- Codex 配置激活后的 daemon 刷新统一复用 core 执行器，允许旧进程在 90 秒内完成退出，并由桌面端按结果事件更新状态。
+- 网关原生 Messages 路径适配 Opus 5.5 的 adaptive thinking，移除不兼容的 `budget_tokens`，保留显式 effort 设置。
+- 增加 Playwright Chromium 导航测试及独立配置，覆盖快速设置到系统设置的基本导航链路。
+
+### Fixed
+- 修复 Codex daemon 重启超过旧 20 秒等待上限时被误判失败的问题。
+- 修复 Opus 5.5 请求携带旧式 thinking 配置导致上游协议不兼容的问题。
+
 ## [2.2.5] - 2026-11-21
 
 ### Changed

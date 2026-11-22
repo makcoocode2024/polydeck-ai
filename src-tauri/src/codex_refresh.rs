@@ -1,6 +1,6 @@
+pub use polydeck_core::codex_refresh::production_executor;
+use polydeck_core::codex_refresh::{Executor, RefreshOutcome};
 use serde::{Deserialize, Serialize};
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{Mutex, Notify};
@@ -25,15 +25,6 @@ pub struct RefreshStatus {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RefreshOutcome {
-    Success,
-    Failed,
-    Skipped,
-}
-
-pub type ExecutorFuture = Pin<Box<dyn Future<Output = RefreshOutcome> + Send>>;
-pub type Executor = Arc<dyn Fn() -> ExecutorFuture + Send + Sync>;
 pub type StatusSink = Arc<dyn Fn(RefreshStatus) + Send + Sync>;
 
 struct Inner {
@@ -162,71 +153,29 @@ pub fn event_sink(app: AppHandle) -> StatusSink {
 pub fn event_sink_placeholder() -> StatusSink {
     Arc::new(|_| {})
 }
-pub fn production_executor() -> Executor {
-    Arc::new(|| Box::pin(async { refresh_codex_daemon().await }))
-}
-
-async fn refresh_codex_daemon() -> RefreshOutcome {
-    let Some(home) = polydeck_core::user_home_dir() else {
-        return RefreshOutcome::Skipped;
-    };
-    let control_socket = home
-        .join(".codex")
-        .join("app-server-control")
-        .join("app-server-control.sock");
-    if !control_socket.exists() {
-        return RefreshOutcome::Skipped;
-    }
-
-    let mut command = if cfg!(windows) {
-        let mut command = tokio::process::Command::new("cmd.exe");
-        command.args(["/C", "codex", "app-server", "daemon", "restart"]);
-        #[cfg(windows)]
-        command.creation_flags(0x08000000);
-        if let (Some(path), Some(appdata)) = (std::env::var_os("PATH"), std::env::var_os("APPDATA"))
-        {
-            let npm_bin = std::path::PathBuf::from(appdata).join("npm");
-            let mut entries: Vec<std::path::PathBuf> = std::env::split_paths(&path).collect();
-            if npm_bin.is_dir() && !entries.iter().any(|entry| entry == &npm_bin) {
-                entries.insert(0, npm_bin);
-            }
-            if let Ok(joined) = std::env::join_paths(entries) {
-                command.env("PATH", joined);
-            }
-        }
-        command
-    } else {
-        let mut command = tokio::process::Command::new("codex");
-        command.args(["app-server", "daemon", "restart"]);
-        command
-    };
-
-    command
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-
-    match tokio::time::timeout(std::time::Duration::from_secs(20), command.status()).await {
-        Ok(Ok(status)) if status.success() => RefreshOutcome::Success,
-        Ok(_) | Err(_) => RefreshOutcome::Failed,
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::sync::oneshot;
-    use tokio::time::{sleep, Duration};
+    use tokio::sync::{mpsc, oneshot};
+    use tokio::time::{timeout, Duration};
 
-    fn sink() -> (StatusSink, Arc<std::sync::Mutex<Vec<RefreshStatus>>>) {
-        let statuses = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let target = Arc::clone(&statuses);
-        let sink: StatusSink = Arc::new(move |status| {
-            target.lock().expect("test sink lock poisoned").push(status);
+    fn sink() -> (StatusSink, mpsc::UnboundedReceiver<RefreshStatus>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let sink = Arc::new(move |status: RefreshStatus| {
+            if status.state != RefreshState::Refreshing {
+                let _ = tx.send(status);
+            }
         });
-        (sink, statuses)
+        (sink, rx)
+    }
+
+    async fn next_result(statuses: &mut mpsc::UnboundedReceiver<RefreshStatus>) -> RefreshStatus {
+        timeout(Duration::from_secs(5), statuses.recv())
+            .await
+            .expect("refresh worker did not report a result")
+            .expect("refresh status channel closed")
     }
 
     #[test]
@@ -283,7 +232,7 @@ mod tests {
                 RefreshOutcome::Success
             })
         });
-        let (sink, statuses) = sink();
+        let (sink, mut statuses) = sink();
         let coordinator = CodexRefreshCoordinator::new(executor, sink);
         coordinator.start();
 
@@ -291,18 +240,15 @@ mod tests {
         started_rx.await.unwrap();
         let second = coordinator.request().await;
         release_tx.send(()).unwrap();
-        sleep(Duration::from_millis(20)).await;
+        let completed = next_result(&mut statuses).await;
 
         assert_eq!(first, 1);
         assert_eq!(second, 2);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert_eq!(coordinator.status().await.state, RefreshState::Success);
         assert_eq!(coordinator.status().await.generation, 2);
-        assert!(statuses
-            .lock()
-            .expect("test sink lock poisoned")
-            .iter()
-            .any(|s| s.generation == 2 && s.state == RefreshState::Success));
+        assert_eq!(completed.generation, 2);
+        assert_eq!(completed.state, RefreshState::Success);
     }
 
     #[tokio::test]
@@ -319,15 +265,17 @@ mod tests {
                 }
             })
         });
-        let (sink, _) = sink();
+        let (sink, mut statuses) = sink();
         let coordinator = CodexRefreshCoordinator::new(executor, sink);
         coordinator.start();
-        coordinator.request().await;
-        sleep(Duration::from_millis(20)).await;
-        assert_eq!(coordinator.status().await.state, RefreshState::Failed);
-        coordinator.request().await;
-        sleep(Duration::from_millis(20)).await;
-        assert_eq!(coordinator.status().await.state, RefreshState::Success);
+        let first = coordinator.request().await;
+        let failed = next_result(&mut statuses).await;
+        assert_eq!(failed.generation, first);
+        assert_eq!(failed.state, RefreshState::Failed);
+        let second = coordinator.request().await;
+        let succeeded = next_result(&mut statuses).await;
+        assert_eq!(succeeded.generation, second);
+        assert_eq!(succeeded.state, RefreshState::Success);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }
